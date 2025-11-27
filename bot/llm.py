@@ -19,65 +19,33 @@ You can update these memories using the provided tools.
 
 When you receive a list of recent messages:
 1. Analyze the conversation.
-2. Update your thoughts about user if you learn something new or your opinion changes. use the update_user_thought local tool.
-3. Add to general memory if a new topic is discussed. use the add_general_memory local tool.
+2. Update your thoughts about user if you learn something new or your opinion changes.
+3. Add to general memory if a new topic is discussed. 
 4. Decide if you should reply to any of the messages. 
    - You don't always have to reply.
    - If you reply, specify which message ID you are replying to (or None for a general message).
    - Your reply should be casual, relevant, and fit the group vibe.
 
+You have access to the following tools:
+1. update_user_thought(user_id: int, username: str, thought: str): Update your internal thoughts/opinion about a user.
+2. add_general_memory(topic: str, summary: str): Add a new general memory about a topic.
+
 Output your response as a JSON object with the following structure:
 {
+  "tool_calls": [
+    {
+      "name": "update_user_thought",
+      "arguments": {
+        "user_id": 123,
+        "username": "example_user",
+        "thought": "User is helpful."
+      }
+    }
+  ],
   "reply_to_message_id": <message_id or null>,
   "content": "<your reply text>"
 }
 """
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "update_user_thought",
-            "description": "Update your internal thoughts/opinion about a user.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "user_id": {"type": "integer", "description": "The user's ID"},
-                    "username": {
-                        "type": "string",
-                        "description": "The user's username",
-                    },
-                    "thought": {
-                        "type": "string",
-                        "description": "The new thought/summary about the user",
-                    },
-                },
-                "required": ["user_id", "username", "thought"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "add_general_memory",
-            "description": "Add a new general memory about a topic.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "The topic of the memory",
-                    },
-                    "summary": {
-                        "type": "string",
-                        "description": "The summary of the memory",
-                    },
-                },
-                "required": ["topic", "summary"],
-            },
-        },
-    },
-]
 
 
 async def generate_response(
@@ -124,11 +92,13 @@ async def generate_response(
         response = await client.chat.completions.create(
             model=OPENROUTER_MODEL,
             messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
             response_format={"type": "json_object"},
-            reasoning_effort="none",
+            # reasoning_effort="none",
             extra_body={
+                "reasoning": {
+                    "effort": "none",
+                    "enabled": False,
+                },
                 "safetySettings": [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                     {
@@ -156,28 +126,29 @@ async def generate_response(
         # Log the raw response content
         logging.info(f"LLM Response Content: {message}")
 
-        # Handle tool calls
-        if message.tool_calls:
-            for tool_call in message.tool_calls:
-                if tool_call.function.name == "update_user_thought":
-                    args = json.loads(tool_call.function.arguments)
-                    logging.info(
-                        f"Memorizing (User Thought): {json.dumps(args, ensure_ascii=False)}"
-                    )
-                    await update_user_thought(
-                        args["user_id"], args["username"], args["thought"]
-                    )
-                elif tool_call.function.name == "add_general_memory":
-                    args = json.loads(tool_call.function.arguments)
-                    logging.info(
-                        f"Memorizing (General): {json.dumps(args, ensure_ascii=False)}"
-                    )
-                    await add_general_memory(args["topic"], args["summary"])
-
-        # Parse the JSON content for the reply
         if message.content:
             try:
                 content_json = json.loads(message.content)
+
+                # Handle tool calls
+                if "tool_calls" in content_json:
+                    for tool_call in content_json["tool_calls"]:
+                        name = tool_call.get("name")
+                        args = tool_call.get("arguments")
+
+                        if name == "update_user_thought":
+                            logging.info(
+                                f"Memorizing (User Thought): {json.dumps(args, ensure_ascii=False)}"
+                            )
+                            await update_user_thought(
+                                args["user_id"], args["username"], args["thought"]
+                            )
+                        elif name == "add_general_memory":
+                            logging.info(
+                                f"Memorizing (General): {json.dumps(args, ensure_ascii=False)}"
+                            )
+                            await add_general_memory(args["topic"], args["summary"])
+
                 if content_json.get("content"):
                     return content_json
             except json.JSONDecodeError:
