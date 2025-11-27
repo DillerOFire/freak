@@ -1,0 +1,14 @@
+[Unit]
+Description=Freak Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=sfire
+WorkingDirectory=/home/sfire/PythonProjects/freak
+ExecStart=/home/sfire/PythonProjects/freak/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
