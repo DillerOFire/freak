@@ -2,7 +2,7 @@ import logging
 from collections import deque
 from telegram import Update
 from telegram.ext import ContextTypes
-from bot.logic import should_reply
+from bot.logic import should_reply, get_paused
 from bot.llm import generate_response
 from bot.memory import (
     get_user_thought,
@@ -27,6 +27,10 @@ chat_history = deque(maxlen=20)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
+        return
+
+    # Check if bot is paused
+    if get_paused():
         return
 
     user = update.message.from_user
@@ -250,24 +254,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Gather context
         # 1. Get user thoughts for participants in history
         # Create a map of user_id -> username from history
-        uid_to_username = {msg["user_id"]: msg["sender"] for msg in chat_history}
-        logging.info(f"DEBUG: Active participants in history: {uid_to_username}")
+        # uid_to_username = {msg["user_id"]: msg["sender"] for msg in chat_history}
+        # logging.info(f"DEBUG: Active participants in history: {uid_to_username}")
 
+        # Retrieve memory
         user_thoughts = {}
-        for uid in uid_to_username.keys():
-            thought = await get_user_thought(uid)
+        # We only need thoughts for users involved in the context
+        involved_user_ids = set(msg["user_id"] for msg in chat_history)
+        for uid in involved_user_ids:
+            thought = await get_user_thought(uid, update.effective_chat.id)
             if thought:
-                username = uid_to_username[uid]
+                # Find username for this uid from context
+                username = next(
+                    (msg["sender"] for msg in chat_history if msg["user_id"] == uid),
+                    "Unknown",
+                )
                 user_thoughts[username] = thought
 
-        # 2. Get general memories
-        general_memories = await get_general_memories()
+        general_memories = await get_general_memories(update.effective_chat.id, limit=5)
 
-        # 3. Call LLM
+        # Generate response
         response = await generate_response(
             list(chat_history),
             user_thoughts,
             general_memories,
+            update.effective_chat.id,
             focus_message_id=message_id,
         )
 

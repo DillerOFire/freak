@@ -7,6 +7,10 @@ from bot.commands import (
     whitelist_add_command,
     whitelist_remove_command,
     whitelist_list_command,
+    stop_command,
+    start_command,
+    ping_command,
+    memories_command,
 )
 from bot.memory import init_db
 
@@ -53,6 +57,10 @@ def main():
         CommandHandler("whitelist_remove", whitelist_remove_command)
     )
     application.add_handler(CommandHandler("whitelist_list", whitelist_list_command))
+    application.add_handler(CommandHandler("stop", stop_command))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("ping", ping_command))
+    application.add_handler(CommandHandler("memories", memories_command))
 
     logging.info("Bot started polling...")
     application.run_polling()

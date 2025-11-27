@@ -51,6 +51,7 @@ async def generate_response(
     messages_context: list[dict],
     user_thoughts: dict,
     general_memories: list[str],
+    chat_id: int,
     focus_message_id: int | None = None,
 ) -> dict | None:
     # Construct the full context
@@ -146,7 +147,9 @@ async def generate_response(
                             logging.info(
                                 f"Memorizing (General): {json.dumps(args, ensure_ascii=False)}"
                             )
-                            await add_general_memory(args["topic"], args["summary"])
+                            await add_general_memory(
+                                args["topic"], args["summary"], chat_id
+                            )
 
                 if content_json.get("content"):
                     return content_json

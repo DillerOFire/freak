@@ -3,7 +3,14 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import COOKIES_DIR, ADMIN_ID
-from bot.memory import add_whitelist, remove_whitelist, get_whitelist
+from bot.memory import (
+    add_whitelist,
+    remove_whitelist,
+    get_whitelist,
+    get_user_thought,
+    get_general_memories,
+)
+from bot.logic import set_paused
 
 
 async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,3 +177,61 @@ async def whitelist_list_command(update: Update, context: ContextTypes.DEFAULT_T
         msg += f"{row[0]} ({row[1]}) - {row[2]}\n"
 
     await update.message.reply_text(msg)
+
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    set_paused(True)
+    await update.message.reply_text("Bot paused.")
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    set_paused(False)
+    await update.message.reply_text("Bot resumed.")
+
+
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    # If replied to a message, show that user's ID
+    if update.message.reply_to_message:
+        replied_user = update.message.reply_to_message.from_user
+        msg = f"User ID: {replied_user.id}\nChat ID: {update.effective_chat.id}"
+    else:
+        msg = (
+            f"Chat ID: {update.effective_chat.id}\nYour ID: {update.effective_user.id}"
+        )
+
+    await update.message.reply_text(msg)
+
+
+async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    # If replied to a message, get thoughts about that user
+    if update.message.reply_to_message:
+        target_user_id = update.message.reply_to_message.from_user.id
+        target_username = (
+            update.message.reply_to_message.from_user.username
+            or update.message.reply_to_message.from_user.first_name
+        )
+        thought = await get_user_thought(target_user_id)
+        if thought:
+            await update.message.reply_text(
+                f"Memories of {target_username}:\n{thought}"
+            )
+        else:
+            await update.message.reply_text(f"No memories found for {target_username}.")
+    else:
+        # Get general memories
+        memories = await get_general_memories(update.effective_chat.id, limit=10)
+        if memories:
+            msg = "General Memories:\n\n" + "\n\n".join(memories)
+            await update.message.reply_text(msg)
+        else:
+            await update.message.reply_text("No general memories found.")

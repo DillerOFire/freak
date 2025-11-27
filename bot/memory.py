@@ -38,6 +38,16 @@ async def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migration: Add chat_id to general_memory if not exists
+        async with db.execute("PRAGMA table_info(general_memory)") as cursor:
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "chat_id" not in columns:
+                logging.info("Migrating DB: Adding chat_id to general_memory")
+                await db.execute(
+                    "ALTER TABLE general_memory ADD COLUMN chat_id INTEGER"
+                )
+
         await db.commit()
 
 
@@ -68,21 +78,24 @@ async def update_user_thought(user_id: int, username: str, thought: str):
         logging.info("DEBUG: Committed user thought to DB")
 
 
-async def get_general_memories(limit: int = 5) -> list[str]:
+async def get_general_memories(chat_id: int, limit: int = 5) -> list[str]:
     async with aiosqlite.connect(DB_NAME) as db:
+        # Filter by chat_id. We handle NULL chat_id as global or just ignore?
+        # Plan said: "Existing memories will have NULL. I will update queries to filter by chat_id."
+        # So we only fetch memories for this chat_id.
         async with db.execute(
-            "SELECT topic, summary FROM general_memory ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            "SELECT topic, summary FROM general_memory WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (chat_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
             return [f"Topic: {row[0]}, Summary: {row[1]}" for row in rows]
 
 
-async def add_general_memory(topic: str, summary: str):
+async def add_general_memory(topic: str, summary: str, chat_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
-            "INSERT INTO general_memory (topic, summary) VALUES (?, ?)",
-            (topic, summary),
+            "INSERT INTO general_memory (topic, summary, chat_id) VALUES (?, ?, ?)",
+            (topic, summary, chat_id),
         )
         await db.commit()
 

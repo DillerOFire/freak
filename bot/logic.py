@@ -7,6 +7,18 @@ messages_since_last_reply = 0
 COOLDOWN_THRESHOLD = 10
 REPLY_CHANCE = 0.25
 
+# Global pause state
+is_paused = False
+
+
+def set_paused(value: bool):
+    global is_paused
+    is_paused = value
+
+
+def get_paused() -> bool:
+    return is_paused
+
 
 def should_reply(message, bot_username: str) -> bool:
     global messages_since_last_reply
