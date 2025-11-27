@@ -159,6 +159,12 @@ async def is_whitelisted(entity_id: int) -> bool:
         ) as cursor:
             return await cursor.fetchone() is not None
 
+
+async def get_whitelist() -> list[tuple]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT entity_id, entity_type, timestamp FROM whitelist"
+        ) as cursor:
             return await cursor.fetchall()
 
 
