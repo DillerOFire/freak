@@ -22,6 +22,13 @@ async def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS media_descriptions (
+                media_unique_id TEXT PRIMARY KEY,
+                description TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
 
@@ -67,5 +74,29 @@ async def add_general_memory(topic: str, summary: str):
         await db.execute(
             "INSERT INTO general_memory (topic, summary) VALUES (?, ?)",
             (topic, summary),
+        )
+        await db.commit()
+
+
+async def get_media_description(media_unique_id: str) -> str | None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT description FROM media_descriptions WHERE media_unique_id = ?",
+            (media_unique_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def save_media_description(media_unique_id: str, description: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO media_descriptions (media_unique_id, description) 
+            VALUES (?, ?) 
+            ON CONFLICT(media_unique_id) DO UPDATE SET 
+                description=excluded.description
+            """,
+            (media_unique_id, description),
         )
         await db.commit()

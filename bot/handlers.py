@@ -4,18 +4,134 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from bot.logic import should_reply
 from bot.llm import generate_response
-from bot.memory import get_user_thought, get_general_memories
+from bot.memory import (
+    get_user_thought,
+    get_general_memories,
+    get_media_description,
+    save_media_description,
+)
+from bot.media_utils import download_file, extract_frames_from_video
+from bot.vision import analyze_image, analyze_frames
+import os
 
 # In-memory chat history (store last 20 messages)
 chat_history = deque(maxlen=20)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
     user = update.message.from_user
-    text = update.message.text
+
+    # Determine if message has media
+    media_description = ""
+    file_unique_id = None
+
+    # Check for Photo
+    if update.message.photo:
+        # Get the largest photo
+        photo = update.message.photo[-1]
+        file_unique_id = photo.file_unique_id
+
+        # Check cache
+        cached_desc = await get_media_description(file_unique_id)
+        if cached_desc:
+            media_description = f"[User sent a photo: {cached_desc}]"
+            logging.info(f"Found photo description in cache: {cached_desc}")
+        else:
+            logging.info("Analyzing new photo...")
+            file = await photo.get_file()
+            file_path = await download_file(file)
+
+            with open(file_path, "rb") as f:
+                image_bytes = f.read()
+
+            description = await analyze_image(image_bytes)
+            if not description.startswith("Error"):
+                await save_media_description(file_unique_id, description)
+            media_description = f"[User sent a photo: {description}]"
+
+            # Cleanup
+            os.remove(file_path)
+
+    # Check for Sticker
+    elif update.message.sticker:
+        sticker = update.message.sticker
+        file_unique_id = sticker.file_unique_id
+
+        # Check cache
+        cached_desc = await get_media_description(file_unique_id)
+        if cached_desc:
+            media_description = f"[User sent a sticker: {cached_desc}]"
+        else:
+            if sticker.is_animated or sticker.is_video:
+                # Handle animated/video stickers
+                logging.info("Analyzing animated/video sticker...")
+                file = await sticker.get_file()
+                file_path = await download_file(file)
+
+                frames = extract_frames_from_video(file_path)
+                if frames:
+                    description = await analyze_frames(frames)
+                    if not description.startswith("Error"):
+                        await save_media_description(file_unique_id, description)
+                    media_description = (
+                        f"[User sent an animated sticker: {description}]"
+                    )
+                else:
+                    media_description = (
+                        "[User sent an animated sticker (could not analyze)]"
+                    )
+
+                os.remove(file_path)
+            else:
+                # Static sticker
+                logging.info("Analyzing static sticker...")
+                file = await sticker.get_file()
+                file_path = await download_file(file)
+
+                with open(file_path, "rb") as f:
+                    image_bytes = f.read()
+
+                description = await analyze_image(image_bytes)
+                if not description.startswith("Error"):
+                    await save_media_description(file_unique_id, description)
+                media_description = f"[User sent a sticker: {description}]"
+
+                os.remove(file_path)
+
+    # Check for Video/Animation
+    elif update.message.video or update.message.animation:
+        video = update.message.video or update.message.animation
+        file_unique_id = video.file_unique_id
+
+        # Check cache
+        cached_desc = await get_media_description(file_unique_id)
+        if cached_desc:
+            media_description = f"[User sent a video/animation: {cached_desc}]"
+        else:
+            logging.info("Analyzing video/animation...")
+            file = await video.get_file()
+            file_path = await download_file(file)
+
+            frames = extract_frames_from_video(file_path)
+            if frames:
+                description = await analyze_frames(frames)
+                if not description.startswith("Error"):
+                    await save_media_description(file_unique_id, description)
+                media_description = f"[User sent a video/animation: {description}]"
+            else:
+                media_description = "[User sent a video/animation (could not analyze)]"
+
+            os.remove(file_path)
+
+    text = update.message.text or update.message.caption or ""
+    if media_description:
+        text = f"{media_description}\n{text}".strip()
+
+    if not text and not media_description:
+        return
     message_id = update.message.message_id
 
     reply_to_id = None

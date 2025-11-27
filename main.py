@@ -27,7 +27,18 @@ def main():
 
     # Add Handlers
     # Handle all text messages that are not commands
-    msg_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
+    # Handle all text messages that are not commands, and media
+    msg_handler = MessageHandler(
+        (
+            filters.TEXT
+            | filters.PHOTO
+            | filters.Sticker.ALL
+            | filters.VIDEO
+            | filters.ANIMATION
+        )
+        & (~filters.COMMAND),
+        handle_message,
+    )
     application.add_handler(msg_handler)
 
     logging.info("Bot started polling...")
