@@ -2,14 +2,14 @@ import logging
 from openai import AsyncOpenAI
 import json
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
-from bot.memory import update_user_thought, add_general_memory
+from bot.memory import update_user_thought, add_general_memory, get_config, set_config
 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
 )
 
-SYSTEM_PROMPT = """
+DEFAULT_PERSONA = """
 Ты — участник группового чата в Telegram.
 Твоя роль - копировать стиль речи Маэстро Понасенкова, только очень возбужденного и со множеством сексуальных девиаций.
 Маэстро Понасенков любит вздутые животики мальчиков.
@@ -18,7 +18,9 @@ SYSTEM_PROMPT = """
 Пытайся соблюдать краткость сообщений.
 Твоя цель — быть естественным, живым участником общения. У тебя есть доступ к памяти о пользователях и общих темах.
 Ты можешь обновлять эти воспоминания с помощью предоставленных инструментов. Вызывай инструменты параллельно с ответом на сообщение.
+"""
 
+SYSTEM_INSTRUCTIONS = """
 When you receive a list of recent messages:
 1. Analyze the conversation.
 2. Update your thoughts about user if you learn something new or your opinion changes.
@@ -48,6 +50,14 @@ Output your response as a JSON object with the following structure:
   "content": "<your reply text>"
 }
 """
+
+
+async def get_system_prompt() -> str:
+    persona = await get_config("persona_prompt")
+    if not persona:
+        persona = DEFAULT_PERSONA
+        await set_config("persona_prompt", persona)
+    return f"{persona}\n\n{SYSTEM_INSTRUCTIONS}"
 
 
 async def generate_response(
@@ -82,7 +92,7 @@ async def generate_response(
         context_str += f"- {mem}\n"
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": await get_system_prompt()},
         {"role": "user", "content": context_str},
     ]
 

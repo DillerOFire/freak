@@ -9,6 +9,8 @@ from bot.memory import (
     get_whitelist,
     get_user_thought,
     get_general_memories,
+    get_config,
+    set_config,
 )
 from bot.logic import set_paused
 
@@ -240,3 +242,38 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg)
         else:
             await update.message.reply_text("No general memories found.")
+
+
+async def update_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /update_prompt <new prompt text>")
+        return
+
+    # Join all args to form the new prompt
+    # Or better, take the rest of the message text to preserve formatting
+    # The command is /update_prompt <text>
+    # We can split by maxsplit=1
+    parts = update.message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /update_prompt <new prompt text>")
+        return
+
+    new_prompt = parts[1]
+    await set_config("persona_prompt", new_prompt)
+    await update.message.reply_text("System prompt updated successfully.")
+    logging.info(f"System prompt updated by {update.effective_user.id}")
+
+
+async def show_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    current_prompt = await get_config("persona_prompt")
+    if not current_prompt:
+        await update.message.reply_text("No custom prompt set (using default).")
+    else:
+        await update.message.reply_text(f"Current System Prompt:\n\n{current_prompt}")

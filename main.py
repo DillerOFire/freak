@@ -11,6 +11,8 @@ from bot.commands import (
     start_command,
     ping_command,
     memories_command,
+    update_prompt_command,
+    show_prompt_command,
 )
 from bot.memory import init_db
 
@@ -62,6 +64,8 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("ping", ping_command))
     application.add_handler(CommandHandler("memories", memories_command))
+    application.add_handler(CommandHandler("update_prompt", update_prompt_command))
+    application.add_handler(CommandHandler("show_prompt", show_prompt_command))
 
     logging.info("Bot started polling...")
     application.run_polling()

@@ -38,6 +38,12 @@ async def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
 
         # Migration: Add chat_id to general_memory if not exists
         async with db.execute("PRAGMA table_info(general_memory)") as cursor:
@@ -153,10 +159,27 @@ async def is_whitelisted(entity_id: int) -> bool:
         ) as cursor:
             return await cursor.fetchone() is not None
 
+            return await cursor.fetchall()
 
-async def get_whitelist() -> list[tuple]:
+
+async def get_config(key: str) -> str | None:
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
-            "SELECT entity_id, entity_type, timestamp FROM whitelist"
+            "SELECT value FROM bot_config WHERE key = ?", (key,)
         ) as cursor:
-            return await cursor.fetchall()
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def set_config(key: str, value: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO bot_config (key, value) 
+            VALUES (?, ?) 
+            ON CONFLICT(key) DO UPDATE SET 
+                value=excluded.value
+            """,
+            (key, value),
+        )
+        await db.commit()
