@@ -7,20 +7,23 @@ from bot.memory import init_db
 
 # Configure logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 # Silence httpx logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+
 async def post_init(application):
     await init_db()
     logging.info("Database initialized.")
 
+
 def main():
     # Build Application
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    application = (
+        ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    )
 
     # Add Handlers
     # Handle all text messages that are not commands
@@ -30,5 +33,6 @@ def main():
     logging.info("Bot started polling...")
     application.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
