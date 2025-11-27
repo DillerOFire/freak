@@ -12,4 +12,5 @@ dependencies = [
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.5",
+    "yt-dlp>=2025.11.12",
 ]

@@ -10,9 +10,15 @@ from bot.memory import (
     get_media_description,
     save_media_description,
 )
-from bot.media_utils import download_file, extract_frames_from_video
+from bot.media_utils import (
+    download_file,
+    extract_frames_from_video,
+    download_video_ytdlp,
+)
 from bot.vision import analyze_image, analyze_frames
+from config import COOKIES_DIR
 import os
+import re
 
 # In-memory chat history (store last 20 messages)
 chat_history = deque(maxlen=20)
@@ -127,6 +133,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
 
     text = update.message.text or update.message.caption or ""
+
+    # Check for Video URLs (YouTube, Instagram, X, etc.)
+    # Expanded list of domains
+    target_domains = [
+        "youtube.com",
+        "youtu.be",
+        "instagram.com",
+        "tiktok.com",
+        "twitter.com",
+        "x.com",
+        "facebook.com",
+        "reddit.com",
+        "pinterest.com",
+    ]
+
+    # Construct regex pattern from domains
+    # Escaping dots and creating a non-capturing group
+    domain_pattern = "|".join([re.escape(d) for d in target_domains])
+    url_pattern = rf"(https?://(?:www\.)?(?:{domain_pattern})/[^\s]+)"
+
+    urls = re.findall(url_pattern, text)
+
+    if urls:
+        for url in urls:
+            logging.info(f"Detected URL: {url}")
+
+            # Determine service for cookies
+            cookies_path = None
+            if "youtube.com" in url or "youtu.be" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
+            elif "instagram.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "instagram.txt")
+            elif "x.com" in url or "twitter.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "x.txt")
+            elif "tiktok.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "tiktok.txt")
+            elif "facebook.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "facebook.txt")
+            elif "reddit.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "reddit.txt")
+            elif "pinterest.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "pinterest.txt")
+
+            video_path = download_video_ytdlp(url, cookies_path)
+            if video_path:
+                try:
+                    await context.bot.send_video(
+                        chat_id=update.effective_chat.id,
+                        video=open(video_path, "rb"),
+                        reply_to_message_id=update.message.message_id,
+                    )
+                    os.remove(video_path)
+                    return  # Stop processing if we handled a video download
+                except Exception as e:
+                    logging.error(f"Failed to send video: {e}")
+                    if os.path.exists(video_path):
+                        os.remove(video_path)
+
     if media_description:
         text = f"{media_description}\n{text}".strip()
 

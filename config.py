@@ -15,3 +15,7 @@ if not OPENROUTER_API_KEY:
 OPENROUTER_VISION_MODEL = os.getenv(
     "OPENROUTER_VISION_MODEL", "google/gemini-flash-1.5"
 )
+
+COOKIES_DIR = os.path.join(os.path.dirname(__file__), "cookies")
+if not os.path.exists(COOKIES_DIR):
+    os.makedirs(COOKIES_DIR)
