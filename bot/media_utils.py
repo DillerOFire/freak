@@ -35,6 +35,8 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> str | None:
         "max_filesize": 50 * 1024 * 1024,  # 50MB
         "quiet": True,
         "noplaylist": True,
+        # Enable remote components to solve n-challenge (requires ejs)
+        "remote_components": {"ejs:github"},
     }
 
     if cookies_path and os.path.exists(cookies_path):

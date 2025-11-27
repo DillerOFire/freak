@@ -9,6 +9,7 @@ from bot.memory import (
     get_general_memories,
     get_media_description,
     save_media_description,
+    is_whitelisted,
 )
 from bot.media_utils import (
     download_file,
@@ -16,7 +17,7 @@ from bot.media_utils import (
     download_video_ytdlp,
 )
 from bot.vision import analyze_image, analyze_frames
-from config import COOKIES_DIR
+from config import COOKIES_DIR, ADMIN_ID
 import os
 import re
 
@@ -29,6 +30,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.message.from_user
+
+    # Access Control: Whitelist Check
+    # Admin is always allowed
+    if user.id != ADMIN_ID:
+        # Check if chat (group or user) is whitelisted
+        # For DMs, effective_chat.id is user_id
+        # For Groups, effective_chat.id is group_id
+        if not await is_whitelisted(update.effective_chat.id):
+            # If it's a DM, maybe check if the user ID is whitelisted explicitly?
+            # The logic above covers it if we add user_id to whitelist.
+            # But if a user is in a non-whitelisted group, should they be ignored?
+            # Yes, "work only with whitelisted groups".
+
+            # If it's a group, and not whitelisted, ignore.
+            # If it's a DM, and not whitelisted, ignore.
+
+            # Optional: Log ignored attempt
+            # logging.info(f"Ignored message from {user.id} in chat {update.effective_chat.id} (not whitelisted)")
+            return
 
     # Determine if message has media
     media_description = ""

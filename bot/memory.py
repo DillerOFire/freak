@@ -29,6 +29,15 @@ async def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS whitelist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_id INTEGER UNIQUE,
+                entity_type TEXT,
+                added_by INTEGER,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
 
@@ -100,3 +109,41 @@ async def save_media_description(media_unique_id: str, description: str):
             (media_unique_id, description),
         )
         await db.commit()
+
+
+async def add_whitelist(entity_id: int, entity_type: str, added_by: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO whitelist (entity_id, entity_type, added_by)
+            VALUES (?, ?, ?)
+            ON CONFLICT(entity_id) DO NOTHING
+            """,
+            (entity_id, entity_type, added_by),
+        )
+        await db.commit()
+
+
+async def remove_whitelist(entity_id: int) -> bool:
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "DELETE FROM whitelist WHERE entity_id = ?", (entity_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def is_whitelisted(entity_id: int) -> bool:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT 1 FROM whitelist WHERE entity_id = ?", (entity_id,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def get_whitelist() -> list[tuple]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT entity_id, entity_type, timestamp FROM whitelist"
+        ) as cursor:
+            return await cursor.fetchall()

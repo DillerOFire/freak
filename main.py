@@ -1,9 +1,13 @@
 import logging
-import asyncio
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
 from config import TELEGRAM_BOT_TOKEN
 from bot.handlers import handle_message
-from bot.commands import update_cookies_command
+from bot.commands import (
+    update_cookies_command,
+    whitelist_add_command,
+    whitelist_remove_command,
+    whitelist_list_command,
+)
 from bot.memory import init_db
 
 # Configure logging
@@ -44,6 +48,11 @@ def main():
 
     # Command Handlers
     application.add_handler(CommandHandler("update_cookies", update_cookies_command))
+    application.add_handler(CommandHandler("whitelist_add", whitelist_add_command))
+    application.add_handler(
+        CommandHandler("whitelist_remove", whitelist_remove_command)
+    )
+    application.add_handler(CommandHandler("whitelist_list", whitelist_list_command))
 
     logging.info("Bot started polling...")
     application.run_polling()

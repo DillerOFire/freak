@@ -5,7 +5,7 @@ import logging
 # We track the number of messages seen since the last reply
 messages_since_last_reply = 0
 COOLDOWN_THRESHOLD = 10
-REPLY_CHANCE = 0.15
+REPLY_CHANCE = 0.25
 
 
 def should_reply(message, bot_username: str) -> bool:
