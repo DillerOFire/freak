@@ -21,8 +21,9 @@ from config import COOKIES_DIR, ADMIN_ID
 import os
 import re
 
-# In-memory chat history (store last 20 messages)
-chat_history = deque(maxlen=20)
+# In-memory chat history (store last 20 messages per chat)
+# Map: chat_id -> deque
+chat_history: dict[int, deque] = {}
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -34,6 +35,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.message.from_user
+    chat_id = update.effective_chat.id
 
     # Access Control: Whitelist Check
     # Admin is always allowed
@@ -41,7 +43,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check if chat (group or user) is whitelisted
         # For DMs, effective_chat.id is user_id
         # For Groups, effective_chat.id is group_id
-        if not await is_whitelisted(update.effective_chat.id):
+        if not await is_whitelisted(chat_id):
             # If it's a DM, maybe check if the user ID is whitelisted explicitly?
             # The logic above covers it if we add user_id to whitelist.
             # But if a user is in a non-whitelisted group, should they be ignored?
@@ -51,7 +53,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # If it's a DM, and not whitelisted, ignore.
 
             # Optional: Log ignored attempt
-            # logging.info(f"Ignored message from {user.id} in chat {update.effective_chat.id} (not whitelisted)")
+            # logging.info(f"Ignored message from {user.id} in chat {chat_id} (not whitelisted)")
             return
 
     # Determine if message has media
@@ -156,6 +158,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             os.remove(file_path)
 
+    # Check for Document
+    elif update.message.document:
+        doc = update.message.document
+        media_description = f"[User sent a document: {doc.file_name} ({doc.mime_type})]"
+
     text = update.message.text or update.message.caption or ""
 
     # Check for Video URLs (YouTube, Instagram, X, etc.)
@@ -204,7 +211,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if video_path:
                 try:
                     await context.bot.send_video(
-                        chat_id=update.effective_chat.id,
+                        chat_id=chat_id,
                         video=open(video_path, "rb"),
                         reply_to_message_id=update.message.message_id,
                     )
@@ -231,8 +238,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             or update.message.reply_to_message.from_user.first_name
         )
 
+    # Initialize chat history if needed
+    if chat_id not in chat_history:
+        chat_history[chat_id] = deque(maxlen=20)
+
     # Add to history
-    chat_history.append(
+    chat_history[chat_id].append(
         {
             "message_id": message_id,
             "sender": user.username or user.first_name,
@@ -248,7 +259,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Fallback if bot username not yet available (shouldn't happen usually)
         bot_username = "@Bot"
 
-    if should_reply(update.message, f"@{bot_username}"):
+    if should_reply(update.message, f"@{bot_username}", chat_id):
         logging.info("Decided to reply...")
 
         # Gather context
@@ -260,25 +271,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Retrieve memory
         user_thoughts = {}
         # We only need thoughts for users involved in the context
-        involved_user_ids = set(msg["user_id"] for msg in chat_history)
+        current_history = chat_history[chat_id]
+        involved_user_ids = set(msg["user_id"] for msg in current_history)
         for uid in involved_user_ids:
-            thought = await get_user_thought(uid, update.effective_chat.id)
+            thought = await get_user_thought(uid)
             if thought:
                 # Find username for this uid from context
                 username = next(
-                    (msg["sender"] for msg in chat_history if msg["user_id"] == uid),
+                    (msg["sender"] for msg in current_history if msg["user_id"] == uid),
                     "Unknown",
                 )
                 user_thoughts[username] = thought
 
-        general_memories = await get_general_memories(update.effective_chat.id, limit=5)
+        general_memories = await get_general_memories(chat_id, limit=5)
 
         # Generate response
         response = await generate_response(
-            list(chat_history),
+            list(current_history),
             user_thoughts,
             general_memories,
-            update.effective_chat.id,
+            chat_id,
             focus_message_id=message_id,
         )
 
@@ -291,13 +303,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 if reply_to:
                     await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
+                        chat_id=chat_id,
                         text=content,
                         reply_to_message_id=reply_to,
                     )
                 else:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id, text=content
-                    )
+                    await context.bot.send_message(chat_id=chat_id, text=content)
             except Exception as e:
                 logging.error(f"Failed to send message: {e}")

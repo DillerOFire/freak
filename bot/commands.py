@@ -18,6 +18,7 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
     Handler for /update_cookies <service>
     Expects a file attachment (cookies.txt).
     """
+    logging.info(f"Cookies being updated with file by user {update.effective_user.id}")
     if not update.message:
         return
 
@@ -56,8 +57,12 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
     target_path = os.path.join(COOKIES_DIR, f"{service}.txt")
 
     # Check for file attachment
-    if update.message.document:
-        file = await update.message.document.get_file()
+    document = update.message.document
+    if not document and update.message.reply_to_message:
+        document = update.message.reply_to_message.document
+
+    if document:
+        file = await document.get_file()
         try:
             await file.download_to_drive(target_path)
             await update.message.reply_text(

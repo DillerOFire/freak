@@ -44,6 +44,7 @@ def main():
             | filters.Sticker.ALL
             | filters.VIDEO
             | filters.ANIMATION
+            | filters.Document.ALL
         )
         & (~filters.COMMAND),
         handle_message,

@@ -2,8 +2,9 @@ import random
 import logging
 
 # Cooldown state
-# We track the number of messages seen since the last reply
-messages_since_last_reply = 0
+# We track the number of messages seen since the last reply per chat
+# Map: chat_id -> count
+messages_since_last_reply: dict[int, int] = {}
 COOLDOWN_THRESHOLD = 10
 REPLY_CHANCE = 0.25
 
@@ -20,15 +21,18 @@ def get_paused() -> bool:
     return is_paused
 
 
-def should_reply(message, bot_username: str) -> bool:
+def should_reply(message, bot_username: str, chat_id: int) -> bool:
     global messages_since_last_reply
 
-    # Check for direct mention
+    # Initialize if not present
+    if chat_id not in messages_since_last_reply:
+        messages_since_last_reply[chat_id] = 0
+
     # Check for direct mention
     if message.text:  # Check for direct mention
         if bot_username in message.text:
-            logging.info("Trigger: Mentioned")
-            messages_since_last_reply = 0
+            logging.info(f"Trigger: Mentioned in chat {chat_id}")
+            messages_since_last_reply[chat_id] = 0
             return True
 
     # Check for reply to bot's message
@@ -36,25 +40,25 @@ def should_reply(message, bot_username: str) -> bool:
         message.reply_to_message
         and message.reply_to_message.from_user.username == bot_username.replace("@", "")
     ):
-        logging.info("Trigger: Replied to")
-        messages_since_last_reply = 0
+        logging.info(f"Trigger: Replied to in chat {chat_id}")
+        messages_since_last_reply[chat_id] = 0
         return True
 
     # Check cooldown
-    if messages_since_last_reply < COOLDOWN_THRESHOLD:
-        messages_since_last_reply += 1
+    if messages_since_last_reply[chat_id] < COOLDOWN_THRESHOLD:
+        messages_since_last_reply[chat_id] += 1
         return False
 
     # Random chance
     if random.random() < REPLY_CHANCE:
-        logging.info("Trigger: Random chance")
-        messages_since_last_reply = 0
+        logging.info(f"Trigger: Random chance in chat {chat_id}")
+        messages_since_last_reply[chat_id] = 0
         return True
 
-    messages_since_last_reply += 1
+    messages_since_last_reply[chat_id] += 1
     return False
 
 
-def reset_cooldown():
+def reset_cooldown(chat_id: int):
     global messages_since_last_reply
-    messages_since_last_reply = 0
+    messages_since_last_reply[chat_id] = 0
