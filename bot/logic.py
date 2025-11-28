@@ -6,7 +6,7 @@ import logging
 # Map: chat_id -> count
 messages_since_last_reply: dict[int, int] = {}
 COOLDOWN_THRESHOLD = 10
-REPLY_CHANCE = 0.25
+REPLY_CHANCE = 0.15
 
 # Global pause state
 is_paused = False
