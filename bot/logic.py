@@ -7,6 +7,8 @@ import logging
 messages_since_last_reply: dict[int, int] = {}
 COOLDOWN_THRESHOLD = 10
 REPLY_CHANCE = 0.04
+REACTION_CHANCE = 0.07  # Default, can be overridden by config if imported, but we'll pass it or use config
+
 
 # Global pause state
 is_paused = False
@@ -58,7 +60,14 @@ def should_reply(message, bot_username: str, chat_id: int) -> bool:
     messages_since_last_reply[chat_id] += 1
     return False
 
-
-def reset_cooldown(chat_id: int):
-    global messages_since_last_reply
     messages_since_last_reply[chat_id] = 0
+
+
+def should_react(chat_id: int) -> bool:
+    # Random chance for reaction
+    from config import REACTION_CHANCE
+
+    if random.random() < REACTION_CHANCE:
+        logging.info(f"Trigger: Reaction chance in chat {chat_id}")
+        return True
+    return False

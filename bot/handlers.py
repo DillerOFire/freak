@@ -2,8 +2,8 @@ import logging
 from collections import deque
 from telegram import Update
 from telegram.ext import ContextTypes
-from bot.logic import should_reply, get_paused
-from bot.llm import generate_response
+from bot.logic import should_reply, get_paused, should_react
+from bot.llm import generate_response, generate_reaction
 from bot.memory import (
     get_user_thought,
     get_general_memories,
@@ -311,3 +311,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=chat_id, text=content)
             except Exception as e:
                 logging.error(f"Failed to send message: {e}")
+
+    # Reaction Logic
+    if should_react(chat_id):
+        logging.info("Decided to react...")
+        emoji = await generate_reaction(text)
+        if emoji:
+            try:
+                # emoji should be a single character or a list of ReactionType
+                # python-telegram-bot expects 'reaction' argument which can be a string (emoji) or ReactionType
+                # We'll assume the LLM returns a single emoji char.
+                logging.info(f"Reacting with: {emoji}")
+                await context.bot.set_message_reaction(
+                    chat_id=chat_id, message_id=message_id, reaction=emoji
+                )
+            except Exception as e:
+                logging.error(f"Failed to set reaction: {e}")

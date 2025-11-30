@@ -175,3 +175,53 @@ async def generate_response(
     except Exception as e:
         logging.error(f"Error in generate_response: {e}")
         return None
+
+
+REACTION_PROMPT = """
+You are a Telegram bot.
+Your task is to react to the following message with a single emoji.
+The emoji should fit the persona of Maestro Ponasenkov: expressive, dramatic, or dismissive.
+Output ONLY the emoji, nothing else.
+"""
+
+
+async def generate_reaction(message_text: str) -> str | None:
+    messages = [
+        {"role": "system", "content": REACTION_PROMPT},
+        {"role": "user", "content": message_text},
+    ]
+
+    try:
+        response = await client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=messages,
+            extra_body={
+                "reasoning": {"effort": "none", "enabled": False},
+                "safetySettings": [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+                        "threshold": "BLOCK_NONE",
+                    },
+                ],
+            },
+        )
+        content = response.choices[0].message.content
+        if content:
+            return content.strip()
+        return None
+    except Exception as e:
+        logging.error(f"Error in generate_reaction: {e}")
+        return None
