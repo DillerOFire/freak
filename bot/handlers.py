@@ -259,7 +259,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Fallback if bot username not yet available (shouldn't happen usually)
         bot_username = "@Bot"
 
-    if should_reply(update.message, f"@{bot_username}", chat_id):
+    if await should_reply(update.message, f"@{bot_username}", chat_id):
         logging.info("Decided to reply...")
 
         # Gather context
@@ -313,7 +313,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Failed to send message: {e}")
 
     # Reaction Logic
-    if should_react(chat_id):
+    if await should_react(chat_id):
         logging.info("Decided to react...")
         emoji = await generate_reaction(text)
         if emoji:

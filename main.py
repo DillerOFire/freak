@@ -13,8 +13,13 @@ from bot.commands import (
     memories_command,
     update_prompt_command,
     show_prompt_command,
+    set_reply_chance_command,
+    set_reaction_chance_command,
+    set_cooldown_command,
+    settings_command,
 )
 from bot.memory import init_db
+
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +32,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def post_init(application):
     await init_db()
-    logging.info("Database initialized.")
+    logging.info("Database and Logic Config initialized.")
 
 
 def main():
@@ -66,6 +71,14 @@ def main():
     application.add_handler(CommandHandler("memories", memories_command))
     application.add_handler(CommandHandler("update_prompt", update_prompt_command))
     application.add_handler(CommandHandler("show_prompt", show_prompt_command))
+    application.add_handler(
+        CommandHandler("set_reply_chance", set_reply_chance_command)
+    )
+    application.add_handler(
+        CommandHandler("set_reaction_chance", set_reaction_chance_command)
+    )
+    application.add_handler(CommandHandler("set_cooldown", set_cooldown_command))
+    application.add_handler(CommandHandler("settings", settings_command))
 
     logging.info("Bot started polling...")
     application.run_polling()

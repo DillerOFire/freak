@@ -1,5 +1,6 @@
 import os
 import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import COOKIES_DIR, ADMIN_ID
@@ -12,7 +13,14 @@ from bot.memory import (
     get_config,
     set_config,
 )
-from bot.logic import set_paused
+from bot.logic import (
+    set_paused,
+    set_reply_chance,
+    set_reaction_chance,
+    set_cooldown_threshold,
+    get_logic_config,
+    get_paused,
+)
 
 
 async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -277,3 +285,88 @@ async def show_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("No custom prompt set (using default).")
     else:
         await update.message.reply_text(f"Current System Prompt:\n\n{current_prompt}")
+
+
+async def set_reply_chance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /set_reply_chance <0.0-1.0>")
+        return
+
+    try:
+        val = float(args[0])
+        if not (0 <= val <= 1):
+            raise ValueError
+        await set_reply_chance(update.effective_chat.id, val)
+        await update.message.reply_text(f"Reply chance set to {val} for this chat.")
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid value. Must be a float between 0 and 1."
+        )
+
+
+async def set_reaction_chance_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /set_reaction_chance <0.0-1.0>")
+        return
+
+    try:
+        val = float(args[0])
+        if not (0 <= val <= 1):
+            raise ValueError
+        await set_reaction_chance(update.effective_chat.id, val)
+        await update.message.reply_text(f"Reaction chance set to {val} for this chat.")
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid value. Must be a float between 0 and 1."
+        )
+
+
+async def set_cooldown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /set_cooldown <int>")
+        return
+
+    try:
+        val = int(args[0])
+        if val < 0:
+            raise ValueError
+        await set_cooldown_threshold(update.effective_chat.id, val)
+        await update.message.reply_text(
+            f"Cooldown threshold set to {val} for this chat."
+        )
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid value. Must be a non-negative integer."
+        )
+
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    cooldown, reply_chance, reaction_chance = await get_logic_config(
+        update.effective_chat.id
+    )
+
+    msg = (
+        f"Current Settings (Chat {update.effective_chat.id}):\n"
+        f"Reply Chance: {reply_chance}\n"
+        f"Reaction Chance: {reaction_chance}\n"
+        f"Cooldown Threshold: {cooldown}\n"
+        f"Paused: {get_paused()}"
+    )
+    await update.message.reply_text(msg)

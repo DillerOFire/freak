@@ -44,6 +44,14 @@ async def init_db():
                 value TEXT
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS chat_config (
+                chat_id INTEGER,
+                key TEXT,
+                value TEXT,
+                PRIMARY KEY (chat_id, key)
+            )
+        """)
 
         # Migration: Add chat_id to general_memory if not exists
         async with db.execute("PRAGMA table_info(general_memory)") as cursor:
@@ -187,5 +195,29 @@ async def set_config(key: str, value: str):
                 value=excluded.value
             """,
             (key, value),
+        )
+        await db.commit()
+
+
+async def get_chat_config(chat_id: int, key: str) -> str | None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT value FROM chat_config WHERE chat_id = ? AND key = ?",
+            (chat_id, key),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def set_chat_config(chat_id: int, key: str, value: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO chat_config (chat_id, key, value) 
+            VALUES (?, ?, ?) 
+            ON CONFLICT(chat_id, key) DO UPDATE SET 
+                value=excluded.value
+            """,
+            (chat_id, key, value),
         )
         await db.commit()

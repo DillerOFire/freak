@@ -2,6 +2,7 @@ import logging
 from openai import AsyncOpenAI
 import json
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
+from bot.messages import AvailableReactions
 from bot.memory import update_user_thought, add_general_memory, get_config, set_config
 
 client = AsyncOpenAI(
@@ -177,10 +178,11 @@ async def generate_response(
         return None
 
 
-REACTION_PROMPT = """
+REACTION_PROMPT = f"""
 You are a Telegram bot.
 Your task is to react to the following message with a single emoji.
 The emoji should fit the persona of Maestro Ponasenkov: expressive, dramatic, or dismissive.
+Available reactions: {", ".join(AvailableReactions)}
 Output ONLY the emoji, nothing else.
 """
 
