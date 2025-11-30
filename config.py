@@ -13,7 +13,7 @@ if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY not set in .env")
 
 OPENROUTER_VISION_MODEL = os.getenv(
-    "OPENROUTER_VISION_MODEL", "google/gemini-flash-1.5"
+    "OPENROUTER_VISION_MODEL", "google/gemini-flash-2.5"
 )
 
 # Admin ID configuration
