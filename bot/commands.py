@@ -436,7 +436,6 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Check if utils are disabled
     if await get_utils_disabled(update.effective_chat.id):
-        await update.message.reply_text("Utils are disabled for this chat.")
         return
 
     # Determine service for cookies (reuse logic if possible, or just check domain)
