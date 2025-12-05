@@ -73,7 +73,14 @@ async def generate_response(
     for msg in messages_context:
         reply_info = ""
         if msg.get("reply_to_username"):
-            reply_info = f" (replying to {msg['reply_to_username']})"
+            reply_info = f" (replying to {msg['reply_to_username']}"
+            if msg.get("reply_to_text"):
+                # Truncate if too long to avoid cluttering context too much
+                r_text = msg["reply_to_text"]
+                if len(r_text) > 100:
+                    r_text = r_text[:97] + "..."
+                reply_info += f': "{r_text}"'
+            reply_info += ")"
 
         focus_marker = ""
         if focus_message_id and msg["message_id"] == focus_message_id:

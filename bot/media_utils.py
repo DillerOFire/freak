@@ -66,6 +66,82 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> str | None:
         return None
 
 
+def download_audio_ytdlp(url: str, cookies_path: str = None) -> dict | None:
+    """Downloads audio using yt-dlp and returns metadata."""
+
+    # Create a temporary file path pattern
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        temp_path = tmp_file.name
+
+    # We close it because yt-dlp needs to write to it (or replace it)
+    os.remove(temp_path)
+
+    # Output template for yt-dlp
+    base_path = os.path.splitext(temp_path)[0]
+    outtmpl = base_path + ".%(ext)s"
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "max_filesize": 50 * 1024 * 1024,  # 50MB
+        "quiet": True,
+        "noplaylist": True,
+        "writethumbnail": True,  # Download thumbnail
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            },
+            # Embed thumbnail in the audio file if possible (optional, but good)
+            # {'key': 'EmbedThumbnail'},
+            # We will handle thumbnail separately for Telegram
+        ],
+        "remote_components": {"ejs:github"},
+    }
+
+    if cookies_path and os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        # The file should be at base_path + ".mp3"
+        audio_path = base_path + ".mp3"
+        if not os.path.exists(audio_path):
+            # Fallback
+            if os.path.exists(temp_path):
+                audio_path = temp_path
+            else:
+                return None
+
+        # Find thumbnail
+        # yt-dlp writes thumbnail to base_path + .jpg or .webp etc.
+        thumbnail_path = None
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            possible_thumb = base_path + ext
+            if os.path.exists(possible_thumb):
+                thumbnail_path = possible_thumb
+                break
+
+        # If not found locally, maybe we can use the URL from info (but sending URL to telegram might fail if it's not direct)
+        # For now, if no local thumbnail, we just send None.
+
+        return {
+            "audio_path": audio_path,
+            "title": info.get("title", "Unknown Title"),
+            "description": info.get("description", ""),
+            "thumbnail_path": thumbnail_path,
+            "duration": info.get("duration"),
+            "uploader": info.get("uploader"),
+        }
+
+    except Exception as e:
+        logging.error(f"yt-dlp audio download failed for {url}: {e}")
+        return None
+
+
 def extract_frames_from_video(video_path: str, max_frames: int = 5) -> list[bytes]:
     """Extracts representative frames from a video/animation."""
     frames = []

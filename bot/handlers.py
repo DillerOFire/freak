@@ -26,44 +26,46 @@ import re
 chat_history: dict[int, deque] = {}
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
+def add_message_to_history(
+    chat_id: int,
+    message_id: int,
+    sender: str,
+    text: str,
+    user_id: int,
+    reply_to_id: int | None = None,
+    reply_to_username: str | None = None,
+    reply_to_text: str | None = None,
+):
+    # Initialize chat history if needed
+    if chat_id not in chat_history:
+        chat_history[chat_id] = deque(maxlen=20)
 
-    # Check if bot is paused
-    if get_paused():
-        return
+    # Add to history
+    chat_history[chat_id].append(
+        {
+            "message_id": message_id,
+            "sender": sender,
+            "text": text,
+            "user_id": user_id,
+            "reply_to_id": reply_to_id,
+            "reply_to_username": reply_to_username,
+            "reply_to_text": reply_to_text,
+        }
+    )
 
-    user = update.message.from_user
-    chat_id = update.effective_chat.id
 
-    # Access Control: Whitelist Check
-    # Admin is always allowed
-    if user.id != ADMIN_ID:
-        # Check if chat (group or user) is whitelisted
-        # For DMs, effective_chat.id is user_id
-        # For Groups, effective_chat.id is group_id
-        if not await is_whitelisted(chat_id):
-            # If it's a DM, maybe check if the user ID is whitelisted explicitly?
-            # The logic above covers it if we add user_id to whitelist.
-            # But if a user is in a non-whitelisted group, should they be ignored?
-            # Yes, "work only with whitelisted groups".
-
-            # If it's a group, and not whitelisted, ignore.
-            # If it's a DM, and not whitelisted, ignore.
-
-            # Optional: Log ignored attempt
-            # logging.info(f"Ignored message from {user.id} in chat {chat_id} (not whitelisted)")
-            return
-
-    # Determine if message has media
+async def get_message_media_description(message) -> str | None:
+    """
+    Analyzes media in a message and returns a description.
+    Returns None if no media is found or analysis fails/is not applicable.
+    """
     media_description = ""
     file_unique_id = None
 
     # Check for Photo
-    if update.message.photo:
+    if message.photo:
         # Get the largest photo
-        photo = update.message.photo[-1]
+        photo = message.photo[-1]
         file_unique_id = photo.file_unique_id
 
         # Check cache
@@ -88,8 +90,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
 
     # Check for Sticker
-    elif update.message.sticker:
-        sticker = update.message.sticker
+    elif message.sticker:
+        sticker = message.sticker
         file_unique_id = sticker.file_unique_id
 
         # Check cache
@@ -134,8 +136,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(file_path)
 
     # Check for Video/Animation
-    elif update.message.video or update.message.animation:
-        video = update.message.video or update.message.animation
+    elif message.video or message.animation:
+        video = message.video or message.animation
         file_unique_id = video.file_unique_id
 
         # Check cache
@@ -159,9 +161,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
 
     # Check for Document
-    elif update.message.document:
-        doc = update.message.document
+    elif message.document:
+        doc = message.document
         media_description = f"[User sent a document: {doc.file_name} ({doc.mime_type})]"
+
+    return media_description if media_description else None
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    # Check if bot is paused
+    if get_paused():
+        return
+
+    user = update.message.from_user
+    chat_id = update.effective_chat.id
+
+    # Access Control: Whitelist Check
+    # Admin is always allowed
+    if user.id != ADMIN_ID:
+        # Check if chat (group or user) is whitelisted
+        # For DMs, effective_chat.id is user_id
+        # For Groups, effective_chat.id is group_id
+        if not await is_whitelisted(chat_id):
+            # If it's a DM, maybe check if the user ID is whitelisted explicitly?
+            # The logic above covers it if we add user_id to whitelist.
+            # But if a user is in a non-whitelisted group, should they be ignored?
+            # Yes, "work only with whitelisted groups".
+
+            # If it's a group, and not whitelisted, ignore.
+            # If it's a DM, and not whitelisted, ignore.
+
+            # Optional: Log ignored attempt
+            # logging.info(f"Ignored message from {user.id} in chat {chat_id} (not whitelisted)")
+            return
+
+    media_description = await get_message_media_description(update.message)
 
     text = update.message.text or update.message.caption or ""
 
@@ -177,6 +214,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "facebook.com",
         "reddit.com",
         "pinterest.com",
+        "spotify.com",
+        "soundcloud.com",
+        "bandcamp.com",
+        "mixcloud.com",
+        "twitch.tv",
     ]
 
     # Construct regex pattern from domains
@@ -206,6 +248,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cookies_path = os.path.join(COOKIES_DIR, "reddit.txt")
             elif "pinterest.com" in url:
                 cookies_path = os.path.join(COOKIES_DIR, "pinterest.txt")
+            elif "spotify.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "spotify.txt")
+            elif "soundcloud.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "soundcloud.txt")
+            elif "bandcamp.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "bandcamp.txt")
+            elif "mixcloud.com" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
+            elif "twitch.tv" in url:
+                cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
 
             video_path = download_video_ytdlp(url, cookies_path)
             if video_path:
@@ -231,27 +283,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_to_id = None
     reply_to_username = None
+    reply_to_text = None
+
     if update.message.reply_to_message:
-        reply_to_id = update.message.reply_to_message.message_id
+        reply_to_msg = update.message.reply_to_message
+        reply_to_id = reply_to_msg.message_id
         reply_to_username = (
-            update.message.reply_to_message.from_user.username
-            or update.message.reply_to_message.from_user.first_name
+            reply_to_msg.from_user.username or reply_to_msg.from_user.first_name
         )
+        reply_to_text = reply_to_msg.text or reply_to_msg.caption
+        if not reply_to_text:
+            desc = await get_message_media_description(reply_to_msg)
+            reply_to_text = desc if desc else "[Media]"
 
-    # Initialize chat history if needed
-    if chat_id not in chat_history:
-        chat_history[chat_id] = deque(maxlen=20)
-
-    # Add to history
-    chat_history[chat_id].append(
-        {
-            "message_id": message_id,
-            "sender": user.username or user.first_name,
-            "text": text,
-            "user_id": user.id,
-            "reply_to_id": reply_to_id,
-            "reply_to_username": reply_to_username,
-        }
+    add_message_to_history(
+        chat_id,
+        message_id,
+        user.username or user.first_name,
+        text,
+        user.id,
+        reply_to_id,
+        reply_to_username,
+        reply_to_text,
     )
 
     bot_username = context.bot.username
@@ -301,14 +354,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # If the LLM wants to reply to a specific message, try to do so
             # Otherwise just send to chat
             try:
+                sent_msg = None
                 if reply_to:
-                    await context.bot.send_message(
+                    sent_msg = await context.bot.send_message(
                         chat_id=chat_id,
                         text=content,
                         reply_to_message_id=reply_to,
                     )
                 else:
-                    await context.bot.send_message(chat_id=chat_id, text=content)
+                    sent_msg = await context.bot.send_message(
+                        chat_id=chat_id, text=content
+                    )
+
+                if sent_msg:
+                    add_message_to_history(
+                        chat_id,
+                        sent_msg.message_id,
+                        bot_username,
+                        content,
+                        sent_msg.from_user.id,
+                        reply_to_id=reply_to,
+                        reply_to_username=None,  # We could look this up if needed, but it's less critical for bot's own msg
+                        reply_to_text=None,
+                    )
             except Exception as e:
                 logging.error(f"Failed to send message: {e}")
 

@@ -21,6 +21,7 @@ from bot.logic import (
     get_logic_config,
     get_paused,
 )
+from bot.handlers import add_message_to_history
 
 
 async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,9 +59,14 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
         "reddit",
         "pinterest",
         "twitter",
+        "spotify",
+        "soundcloud",
+        "bandcamp",
+        "mixcloud",
+        "twitch",
     ]:
         await update.message.reply_text(
-            "Invalid service. Supported: youtube, instagram, x, tiktok, facebook, reddit, pinterest"
+            "Invalid service. Supported: youtube, instagram, x, tiktok, facebook, reddit, pinterest, spotify, soundcloud, bandcamp, mixcloud, twitch"
         )
         return
 
@@ -221,7 +227,16 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Chat ID: {update.effective_chat.id}\nYour ID: {update.effective_user.id}"
         )
 
-    await update.message.reply_text(msg)
+    sent_msg = await update.message.reply_text(msg)
+    if sent_msg:
+        add_message_to_history(
+            update.effective_chat.id,
+            sent_msg.message_id,
+            context.bot.username or "@Bot",
+            msg,
+            sent_msg.from_user.id,
+            reply_to_id=update.message.message_id,
+        )
 
 
 async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -237,9 +252,18 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         thought = await get_user_thought(target_user_id)
         if thought:
-            await update.message.reply_text(
+            sent_msg = await update.message.reply_text(
                 f"Memories of {target_username}:\n{thought}"
             )
+            if sent_msg:
+                add_message_to_history(
+                    update.effective_chat.id,
+                    sent_msg.message_id,
+                    context.bot.username or "@Bot",
+                    f"Memories of {target_username}:\n{thought}",
+                    sent_msg.from_user.id,
+                    reply_to_id=update.message.message_id,
+                )
         else:
             await update.message.reply_text(f"No memories found for {target_username}.")
     else:
@@ -247,7 +271,16 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memories = await get_general_memories(update.effective_chat.id, limit=10)
         if memories:
             msg = "General Memories:\n\n" + "\n\n".join(memories)
-            await update.message.reply_text(msg)
+            sent_msg = await update.message.reply_text(msg)
+            if sent_msg:
+                add_message_to_history(
+                    update.effective_chat.id,
+                    sent_msg.message_id,
+                    context.bot.username or "@Bot",
+                    msg,
+                    sent_msg.from_user.id,
+                    reply_to_id=update.message.message_id,
+                )
         else:
             await update.message.reply_text("No general memories found.")
 
@@ -370,3 +403,103 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Paused: {get_paused()}"
     )
     await update.message.reply_text(msg)
+
+
+async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /music <url>")
+        return
+
+    url = args[0]
+
+    # Determine service for cookies (reuse logic if possible, or just check domain)
+    cookies_path = None
+    if "youtube.com" in url or "youtu.be" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
+    elif "instagram.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "instagram.txt")
+    elif "x.com" in url or "twitter.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "x.txt")
+    elif "tiktok.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "tiktok.txt")
+    elif "facebook.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "facebook.txt")
+    elif "reddit.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "reddit.txt")
+    elif "pinterest.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "pinterest.txt")
+    elif "spotify.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "spotify.txt")
+    elif "soundcloud.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "soundcloud.txt")
+    elif "bandcamp.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "bandcamp.txt")
+    elif "mixcloud.com" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
+    elif "twitch.tv" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
+
+    # We need to import download_audio_ytdlp here or at top level.
+    # It's in media_utils. Let's import it inside to avoid circular deps if any,
+    # but better to import at top.
+    # Wait, I am editing commands.py, but I added the import to handlers.py in the previous step!
+    # I made a mistake in the previous step. I should have added the import to commands.py if I put the command there.
+    # However, commands.py doesn't import media_utils yet.
+    # Let's add the import to commands.py in a separate step or just do it here if I can.
+    # I can't do two edits in one tool call easily if they are far apart.
+    # I will add the function here, and then add the import at the top.
+
+    from bot.media_utils import download_audio_ytdlp
+
+    result = download_audio_ytdlp(url, cookies_path)
+
+    if result:
+        audio_path = result.get("audio_path")
+        title = result.get("title", "Unknown Title")
+        description = result.get("description", "")
+        thumbnail_path = result.get("thumbnail_path")
+        duration = result.get("duration")
+        uploader = result.get("uploader")
+
+        # Truncate description if too long (Telegram limit is 1024 chars for caption)
+        caption = f"{title}\n\n{description}"
+        if len(caption) > 1000:
+            caption = caption[:997] + "..."
+
+        try:
+            # Prepare thumbnail
+            thumb_file = open(thumbnail_path, "rb") if thumbnail_path else None
+
+            await update.message.reply_audio(
+                audio=open(audio_path, "rb"),
+                title=title,
+                performer=uploader,
+                duration=duration,
+                thumbnail=thumb_file,
+                caption=caption,
+                reply_to_message_id=update.message.message_id,
+            )
+
+            # Cleanup
+            if thumb_file:
+                thumb_file.close()
+
+            os.remove(audio_path)
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                os.remove(thumbnail_path)
+
+        except Exception as e:
+            logging.error(f"Failed to send audio: {e}")
+            await update.message.reply_text("Failed to send audio file.")
+
+            # Cleanup on error
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                os.remove(thumbnail_path)
+    else:
+        await update.message.reply_text("Failed to download audio.")
