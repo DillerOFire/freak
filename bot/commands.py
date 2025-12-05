@@ -20,6 +20,8 @@ from bot.logic import (
     set_cooldown_threshold,
     get_logic_config,
     get_paused,
+    set_utils_disabled,
+    get_utils_disabled,
 )
 from bot.handlers import add_message_to_history
 
@@ -212,6 +214,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     set_paused(False)
     await update.message.reply_text("Bot resumed.")
+
+
+async def stop_utils_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    await set_utils_disabled(update.effective_chat.id, True)
+    await update.message.reply_text(
+        "Utils (video/sound downloading) disabled for this chat."
+    )
+
+
+async def start_utils_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    await set_utils_disabled(update.effective_chat.id, False)
+    await update.message.reply_text("Utils enabled for this chat.")
 
 
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -415,6 +433,11 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = args[0]
+
+    # Check if utils are disabled
+    if await get_utils_disabled(update.effective_chat.id):
+        await update.message.reply_text("Utils are disabled for this chat.")
+        return
 
     # Determine service for cookies (reuse logic if possible, or just check domain)
     cookies_path = None

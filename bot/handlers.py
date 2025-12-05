@@ -2,7 +2,7 @@ import logging
 from collections import deque
 from telegram import Update
 from telegram.ext import ContextTypes
-from bot.logic import should_reply, get_paused, should_react
+from bot.logic import should_reply, get_paused, should_react, get_utils_disabled
 from bot.llm import generate_response, generate_reaction
 from bot.memory import (
     get_user_thought,
@@ -229,50 +229,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     urls = re.findall(url_pattern, text)
 
     if urls:
-        for url in urls:
-            logging.info(f"Detected URL: {url}")
+        # Check if utils are disabled
+        if await get_utils_disabled(chat_id):
+            logging.info(f"Utils disabled in chat {chat_id}, ignoring URLs.")
+        else:
+            for url in urls:
+                logging.info(f"Detected URL: {url}")
 
-            # Determine service for cookies
-            cookies_path = None
-            if "youtube.com" in url or "youtu.be" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
-            elif "instagram.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "instagram.txt")
-            elif "x.com" in url or "twitter.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "x.txt")
-            elif "tiktok.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "tiktok.txt")
-            elif "facebook.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "facebook.txt")
-            elif "reddit.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "reddit.txt")
-            elif "pinterest.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "pinterest.txt")
-            elif "spotify.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "spotify.txt")
-            elif "soundcloud.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "soundcloud.txt")
-            elif "bandcamp.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "bandcamp.txt")
-            elif "mixcloud.com" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
-            elif "twitch.tv" in url:
-                cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
+                # Determine service for cookies
+                cookies_path = None
+                if "youtube.com" in url or "youtu.be" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
+                elif "instagram.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "instagram.txt")
+                elif "x.com" in url or "twitter.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "x.txt")
+                elif "tiktok.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "tiktok.txt")
+                elif "facebook.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "facebook.txt")
+                elif "reddit.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "reddit.txt")
+                elif "pinterest.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "pinterest.txt")
+                elif "spotify.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "spotify.txt")
+                elif "soundcloud.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "soundcloud.txt")
+                elif "bandcamp.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "bandcamp.txt")
+                elif "mixcloud.com" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
+                elif "twitch.tv" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
 
-            video_path = download_video_ytdlp(url, cookies_path)
-            if video_path:
-                try:
-                    await context.bot.send_video(
-                        chat_id=chat_id,
-                        video=open(video_path, "rb"),
-                        reply_to_message_id=update.message.message_id,
-                    )
-                    os.remove(video_path)
-                    return  # Stop processing if we handled a video download
-                except Exception as e:
-                    logging.error(f"Failed to send video: {e}")
-                    if os.path.exists(video_path):
+                video_path = download_video_ytdlp(url, cookies_path)
+                if video_path:
+                    try:
+                        await context.bot.send_video(
+                            chat_id=chat_id,
+                            video=open(video_path, "rb"),
+                            reply_to_message_id=update.message.message_id,
+                        )
                         os.remove(video_path)
+                        return  # Stop processing if we handled a video download
+                    except Exception as e:
+                        logging.error(f"Failed to send video: {e}")
+                        if os.path.exists(video_path):
+                            os.remove(video_path)
 
     if media_description:
         text = f"{media_description}\n{text}".strip()

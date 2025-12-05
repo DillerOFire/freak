@@ -29,6 +29,15 @@ async def set_reaction_chance(chat_id: int, value: float):
     await set_chat_config(chat_id, "reaction_chance", str(value))
 
 
+async def set_utils_disabled(chat_id: int, disabled: bool):
+    await set_chat_config(chat_id, "utils_disabled", "true" if disabled else "false")
+
+
+async def get_utils_disabled(chat_id: int) -> bool:
+    val = await get_chat_config(chat_id, "utils_disabled")
+    return val == "true"
+
+
 def set_paused(value: bool):
     global is_paused
     is_paused = value

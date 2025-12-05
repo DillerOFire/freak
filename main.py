@@ -18,6 +18,8 @@ from bot.commands import (
     set_cooldown_command,
     settings_command,
     music_command,
+    stop_utils_command,
+    start_utils_command,
 )
 from bot.memory import init_db
 
@@ -81,6 +83,8 @@ def main():
     application.add_handler(CommandHandler("set_cooldown", set_cooldown_command))
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("music", music_command))
+    application.add_handler(CommandHandler("stop_utils", stop_utils_command))
+    application.add_handler(CommandHandler("start_utils", start_utils_command))
 
     logging.info("Bot started polling...")
     application.run_polling()
