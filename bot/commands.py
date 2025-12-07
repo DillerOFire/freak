@@ -45,6 +45,13 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     args = context.args
+    if not args and update.message.caption:
+        # If no args but there is a caption (file attached), try to parse from caption
+        # Caption might be "/update_cookies <service>"
+        parts = update.message.caption.split()
+        if len(parts) > 1 and "update_cookies" in parts[0]:
+            args = parts[1:]
+
     if not args:
         await update.message.reply_text(
             "Usage: /update_cookies <service>\nServices: youtube, instagram, x"
