@@ -3,6 +3,7 @@ import tempfile
 import logging
 import os
 import yt_dlp
+import glob
 from telegram import File
 
 
@@ -30,7 +31,7 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> str | None:
     outtmpl = temp_path
 
     ydl_opts = {
-        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
+        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best",
         "outtmpl": outtmpl,
         "max_filesize": 50 * 1024 * 1024,  # 50MB
         "quiet": True,
@@ -51,12 +52,11 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> str | None:
         # it *should* try to use that name. But if merging happens, it might be tricky.
         # Let's check if the file exists, if not check for .mp4 appended
 
-        if os.path.exists(temp_path):
-            return temp_path
-        elif os.path.exists(temp_path + ".mp4"):
-            return temp_path + ".mp4"
-        elif os.path.exists(temp_path + ".mkv"):
-            return temp_path + ".mkv"
+        # yt-dlp might append the extension if not strictly enforced or if merging happens.
+        # We use glob to find the file regardless of extension.
+        possible_files = glob.glob(f"{temp_path}*")
+        if possible_files:
+            return possible_files[0]
 
         # If we are here, maybe it failed or used another extension
         return None
