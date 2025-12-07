@@ -77,8 +77,8 @@ async def generate_response(
             if msg.get("reply_to_text"):
                 # Truncate if too long to avoid cluttering context too much
                 r_text = msg["reply_to_text"]
-                if len(r_text) > 100:
-                    r_text = r_text[:97] + "..."
+                if len(r_text) > 500:
+                    r_text = r_text[:500] + "..."
                 reply_info += f': "{r_text}"'
             reply_info += ")"
 
