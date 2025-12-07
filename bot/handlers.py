@@ -355,34 +355,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_to = response.get("reply_to_message_id")
             content = response.get("content")
 
-            # If the LLM wants to reply to a specific message, try to do so
-            # Otherwise just send to chat
-            try:
-                sent_msg = None
-                if reply_to:
-                    sent_msg = await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=content,
-                        reply_to_message_id=reply_to,
-                    )
-                else:
-                    sent_msg = await context.bot.send_message(
-                        chat_id=chat_id, text=content
-                    )
+            # Split content by |||
+            messages_to_send = [
+                part.strip() for part in content.split("|||") if part.strip()
+            ]
 
-                if sent_msg:
-                    add_message_to_history(
-                        chat_id,
-                        sent_msg.message_id,
-                        bot_username,
-                        content,
-                        sent_msg.from_user.id,
-                        reply_to_id=reply_to,
-                        reply_to_username=None,  # We could look this up if needed, but it's less critical for bot's own msg
-                        reply_to_text=None,
-                    )
-            except Exception as e:
-                logging.error(f"Failed to send message: {e}")
+            for i, msg_text in enumerate(messages_to_send):
+                try:
+                    # Only the first message uses the reply_to_message_id
+                    current_reply_to = reply_to if i == 0 else None
+
+                    sent_msg = None
+                    if current_reply_to:
+                        sent_msg = await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=msg_text,
+                            reply_to_message_id=current_reply_to,
+                        )
+                    else:
+                        sent_msg = await context.bot.send_message(
+                            chat_id=chat_id, text=msg_text
+                        )
+
+                    if sent_msg:
+                        add_message_to_history(
+                            chat_id,
+                            sent_msg.message_id,
+                            bot_username,
+                            msg_text,
+                            sent_msg.from_user.id,
+                            reply_to_id=current_reply_to,
+                            reply_to_username=None,  # We could look this up if needed, but it's less critical for bot's own msg
+                            reply_to_text=None,
+                        )
+                except Exception as e:
+                    logging.error(f"Failed to send message part: {e}")
 
     # Reaction Logic
     if await should_react(chat_id):
