@@ -219,6 +219,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "bandcamp.com",
         "mixcloud.com",
         "twitch.tv",
+        "vk.com",
+        "rutube.ru",
+        "vkvideo.ru",
     ]
 
     # Construct regex pattern from domains
@@ -262,6 +265,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
                 elif "twitch.tv" in url:
                     cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
+                elif "vk.com" in url or "vkvideo.ru" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "vk.txt")
+                elif "rutube.ru" in url:
+                    cookies_path = os.path.join(COOKIES_DIR, "rutube.txt")
 
                 video_path = download_video_ytdlp(url, cookies_path)
                 if video_path:

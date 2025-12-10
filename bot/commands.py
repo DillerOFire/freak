@@ -54,7 +54,7 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
 
     if not args:
         await update.message.reply_text(
-            "Usage: /update_cookies <service>\nServices: youtube, instagram, x"
+            "Usage: /update_cookies <service>\nServices: youtube, instagram, x, vk, rutube"
         )
         return
 
@@ -73,9 +73,11 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
         "bandcamp",
         "mixcloud",
         "twitch",
+        "vk",
+        "rutube",
     ]:
         await update.message.reply_text(
-            "Invalid service. Supported: youtube, instagram, x, tiktok, facebook, reddit, pinterest, spotify, soundcloud, bandcamp, mixcloud, twitch"
+            "Invalid service. Supported: youtube, instagram, x, tiktok, facebook, reddit, pinterest, spotify, soundcloud, bandcamp, mixcloud, twitch, vk, rutube"
         )
         return
 
@@ -471,6 +473,10 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
     elif "twitch.tv" in url:
         cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
+    elif "vk.com" in url or "vkvideo.ru" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "vk.txt")
+    elif "rutube.ru" in url:
+        cookies_path = os.path.join(COOKIES_DIR, "rutube.txt")
 
     # We need to import download_audio_ytdlp here or at top level.
     # It's in media_utils. Let's import it inside to avoid circular deps if any,
