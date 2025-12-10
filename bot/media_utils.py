@@ -4,6 +4,7 @@ import logging
 import os
 import yt_dlp
 import glob
+import uuid
 from telegram import File
 
 
@@ -16,18 +17,27 @@ async def download_file(file: File) -> str:
     return file_path
 
 
+class YtDlpLogger:
+    def debug(self, msg):
+        pass  # Ignore debug messages
+
+    def warning(self, msg):
+        logging.warning(f"yt-dlp: {msg}")
+
+    def error(self, msg):
+        logging.error(f"yt-dlp: {msg}")
+
+
 def download_video_ytdlp(url: str, cookies_path: str = None) -> str | None:
     """Downloads a video using yt-dlp with a 50MB limit."""
 
-    # Create a temporary file path pattern
-    # yt-dlp adds extension automatically, so we'll rename it later or let it be
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-        temp_path = tmp_file.name
-
-    # We close it because yt-dlp needs to write to it (or replace it)
-    os.remove(temp_path)
+    # Create a temporary file path using uuid
+    temp_dir = tempfile.gettempdir()
+    temp_filename = f"{uuid.uuid4()}.mp4"
+    temp_path = os.path.join(temp_dir, temp_filename)
 
     # Output template for yt-dlp
+
     outtmpl = temp_path
 
     ydl_opts = {
@@ -38,6 +48,7 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> str | None:
         "noplaylist": True,
         # Enable remote components to solve n-challenge (requires ejs)
         "remote_components": {"ejs:github"},
+        "logger": YtDlpLogger(),
     }
 
     if cookies_path and os.path.exists(cookies_path):
@@ -69,12 +80,10 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> str | None:
 def download_audio_ytdlp(url: str, cookies_path: str = None) -> dict | None:
     """Downloads audio using yt-dlp and returns metadata."""
 
-    # Create a temporary file path pattern
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
-        temp_path = tmp_file.name
-
-    # We close it because yt-dlp needs to write to it (or replace it)
-    os.remove(temp_path)
+    # Create a temporary file path using uuid
+    temp_dir = tempfile.gettempdir()
+    temp_filename = f"{uuid.uuid4()}.mp3"
+    temp_path = os.path.join(temp_dir, temp_filename)
 
     # Output template for yt-dlp
     base_path = os.path.splitext(temp_path)[0]
@@ -98,6 +107,7 @@ def download_audio_ytdlp(url: str, cookies_path: str = None) -> dict | None:
             # We will handle thumbnail separately for Telegram
         ],
         "remote_components": {"ejs:github"},
+        "logger": YtDlpLogger(),
     }
 
     if cookies_path and os.path.exists(cookies_path):
