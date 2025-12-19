@@ -5,10 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
+*.db
 
 # Virtual environments
 .venv
-
 .env
 
-bot_memory.db
