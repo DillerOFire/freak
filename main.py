@@ -20,7 +20,13 @@ from bot.commands import (
     music_command,
     stop_utils_command,
     start_utils_command,
+    add_daily_msg_command,
+    add_daily_task_command,
+    daily_cancel_msg_command,
+    daily_cancel_task_command,
+    daily_list_command,
 )
+from bot.jobs import load_jobs
 from bot.memory import init_db
 
 
@@ -36,6 +42,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 async def post_init(application):
     await init_db()
     logging.info("Database and Logic Config initialized.")
+    await load_jobs(application)
 
 
 def main():
@@ -85,6 +92,15 @@ def main():
     application.add_handler(CommandHandler("music", music_command))
     application.add_handler(CommandHandler("stop_utils", stop_utils_command))
     application.add_handler(CommandHandler("start_utils", start_utils_command))
+    application.add_handler(CommandHandler("add_daily_msg", add_daily_msg_command))
+    application.add_handler(CommandHandler("add_daily_task", add_daily_task_command))
+    application.add_handler(
+        CommandHandler("daily_cancel_msg", daily_cancel_msg_command)
+    )
+    application.add_handler(
+        CommandHandler("daily_cancel_task", daily_cancel_task_command)
+    )
+    application.add_handler(CommandHandler("daily_list", daily_list_command))
 
     logging.info("Bot started polling...")
     application.run_polling()

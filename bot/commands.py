@@ -1,9 +1,15 @@
 import os
 import logging
 
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import COOKIES_DIR, ADMIN_ID
+from bot.jobs import (
+    schedule_daily_message,
+    schedule_daily_task,
+    remove_job_if_exists,
+)
 from bot.memory import (
     add_whitelist,
     remove_whitelist,
@@ -12,6 +18,12 @@ from bot.memory import (
     get_general_memories,
     get_config,
     set_config,
+    set_daily_message,
+    set_daily_task,
+    remove_daily_message,
+    remove_daily_task,
+    get_daily_message,
+    get_daily_task,
 )
 from bot.logic import (
     set_paused,
@@ -538,3 +550,132 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(thumbnail_path)
     else:
         await update.message.reply_text("Failed to download audio.")
+
+
+async def add_daily_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "Usage: /add_daily_msg <HH:MM> (reply to a message)"
+        )
+        return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text(
+            "You must reply to a message to set it as daily."
+        )
+        return
+
+    time_str = args[0]
+    try:
+        t = datetime.strptime(time_str, "%H:%M").time()
+    except ValueError:
+        await update.message.reply_text("Invalid time format. Use HH:MM.")
+        return
+
+    reply = update.message.reply_to_message
+
+    # Determine type and content
+    message_type = "text"
+    content = reply.text or reply.caption or ""
+    file_id = None
+
+    if reply.photo:
+        message_type = "photo"
+        file_id = reply.photo[-1].file_id
+    elif reply.video:
+        message_type = "video"
+        file_id = reply.video.file_id
+    elif reply.sticker:
+        message_type = "sticker"
+        file_id = reply.sticker.file_id
+    elif reply.animation:
+        message_type = "animation"
+        file_id = reply.animation.file_id
+    elif reply.document:
+        message_type = "document"
+        file_id = reply.document.file_id
+    elif not content:
+        await update.message.reply_text("Unsupported message type or empty content.")
+        return
+
+    chat_id = update.effective_chat.id
+
+    await set_daily_message(chat_id, time_str, message_type, content, file_id)
+    schedule_daily_message(
+        context.application, chat_id, t, message_type, content, file_id
+    )
+
+    await update.message.reply_text(f"Daily message scheduled for {time_str}.")
+
+
+async def add_daily_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /add_daily_task <HH:MM> <task content/prompt>"
+        )
+        return
+
+    time_str = args[0]
+    try:
+        t = datetime.strptime(time_str, "%H:%M").time()
+    except ValueError:
+        await update.message.reply_text("Invalid time format. Use HH:MM.")
+        return
+
+    task_content = " ".join(args[1:])
+    chat_id = update.effective_chat.id
+
+    await set_daily_task(chat_id, time_str, task_content)
+    schedule_daily_task(context.application, chat_id, t, task_content)
+
+    await update.message.reply_text(
+        f"Daily task scheduled for {time_str}: {task_content}"
+    )
+
+
+async def daily_cancel_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    chat_id = update.effective_chat.id
+    await remove_daily_message(chat_id)
+    remove_job_if_exists(f"daily_msg_{chat_id}", context.application)
+    await update.message.reply_text("Daily message cancelled.")
+
+
+async def daily_cancel_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    chat_id = update.effective_chat.id
+    await remove_daily_task(chat_id)
+    remove_job_if_exists(f"daily_task_{chat_id}", context.application)
+    await update.message.reply_text("Daily task cancelled.")
+
+
+async def daily_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    chat_id = update.effective_chat.id
+    msg = await get_daily_message(chat_id)
+    task = await get_daily_task(chat_id)
+
+    response = "Daily Schedules:\n"
+    if msg:
+        response += f"Message: {msg['time']} ({msg['message_type']})\n"
+    else:
+        response += "Message: None\n"
+
+    if task:
+        response += f"Task: {task['time']} - {task['task_content']}\n"
+    else:
+        response += "Task: None\n"
+
+    await update.message.reply_text(response)

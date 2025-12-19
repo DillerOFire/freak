@@ -52,6 +52,22 @@ async def init_db():
                 PRIMARY KEY (chat_id, key)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_messages (
+                chat_id INTEGER PRIMARY KEY,
+                time TEXT,
+                message_type TEXT,
+                content TEXT,
+                file_id TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_tasks (
+                chat_id INTEGER PRIMARY KEY,
+                time TEXT,
+                task_content TEXT
+            )
+        """)
 
         # Migration: Add chat_id to general_memory if not exists
         async with db.execute("PRAGMA table_info(general_memory)") as cursor:
@@ -221,3 +237,81 @@ async def set_chat_config(chat_id: int, key: str, value: str):
             (chat_id, key, value),
         )
         await db.commit()
+
+
+async def get_all_daily_messages():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM daily_messages") as cursor:
+            return await cursor.fetchall()
+
+
+async def set_daily_message(
+    chat_id: int, time: str, message_type: str, content: str, file_id: str = None
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO daily_messages (chat_id, time, message_type, content, file_id)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                time=excluded.time,
+                message_type=excluded.message_type,
+                content=excluded.content,
+                file_id=excluded.file_id
+            """,
+            (chat_id, time, message_type, content, file_id),
+        )
+        await db.commit()
+
+
+async def remove_daily_message(chat_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM daily_messages WHERE chat_id = ?", (chat_id,))
+        await db.commit()
+
+
+async def get_daily_message(chat_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM daily_messages WHERE chat_id = ?", (chat_id,)
+        ) as cursor:
+            return await cursor.fetchone()
+
+
+async def get_all_daily_tasks():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM daily_tasks") as cursor:
+            return await cursor.fetchall()
+
+
+async def set_daily_task(chat_id: int, time: str, task_content: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO daily_tasks (chat_id, time, task_content)
+            VALUES (?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                time=excluded.time,
+                task_content=excluded.task_content
+            """,
+            (chat_id, time, task_content),
+        )
+        await db.commit()
+
+
+async def remove_daily_task(chat_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM daily_tasks WHERE chat_id = ?", (chat_id,))
+        await db.commit()
+
+
+async def get_daily_task(chat_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM daily_tasks WHERE chat_id = ?", (chat_id,)
+        ) as cursor:
+            return await cursor.fetchone()
