@@ -25,6 +25,7 @@ from bot.commands import (
     daily_cancel_msg_command,
     daily_cancel_task_command,
     daily_list_command,
+    help_command,
 )
 from bot.jobs import load_jobs
 from bot.memory import init_db
@@ -101,6 +102,7 @@ def main():
         CommandHandler("daily_cancel_task", daily_cancel_task_command)
     )
     application.add_handler(CommandHandler("daily_list", daily_list_command))
+    application.add_handler(CommandHandler("help", help_command))
 
     logging.info("Bot started polling...")
     application.run_polling()

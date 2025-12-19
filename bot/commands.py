@@ -679,3 +679,41 @@ async def daily_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         response += "Task: None\n"
 
     await update.message.reply_text(response)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+<b>Available Commands:</b>
+
+<b>General:</b>
+/help - Show this message
+/ping - Check some info
+/music &lt;url&gt; - Download music from various services
+/memories - View memories (reply to user to see their specific memories)
+
+<b>Daily Schedules (Every Day):</b>
+/add_daily_msg &lt;HH:MM&gt; - (Reply to a message) Schedule this message to be sent daily
+/add_daily_task &lt;HH:MM&gt; &lt;prompt&gt; - Schedule an LLM task/prompt daily
+/daily_list - List active schedules for this chat
+/daily_cancel_msg - Cancel the daily message
+/daily_cancel_task - Cancel the daily task
+
+<b>Configuration (Admin):</b>
+/settings - Show current settings
+/set_reply_chance &lt;0.0-1.0&gt; - Set chance to reply to random messages
+/set_reaction_chance &lt;0.0-1.0&gt; - Set chance to react to messages
+/set_cooldown &lt;seconds&gt; - Set cooldown between auto-replies
+/update_prompt &lt;text&gt; - Update the system prompt
+/show_prompt - Show current system prompt
+
+<b>Management (Admin):</b>
+/stop - Pause the bot
+/start - Resume the bot
+/stop_utils - Disable media downloading in this chat
+/start_utils - Enable media downloading in this chat
+/update_cookies &lt;service&gt; - Update cookies (attach file or text)
+/whitelist_add &lt;id&gt; &lt;type&gt; - Add user/group to whitelist
+/whitelist_remove &lt;id&gt; - Remove from whitelist
+/whitelist_list - List whitelisted entities
+"""
+    await update.message.reply_text(help_text, parse_mode="HTML")
