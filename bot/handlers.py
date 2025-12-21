@@ -209,6 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "youtu.be",
         "instagram.com",
         "tiktok.com",
+        "vt.tiktok.com",
         "twitter.com",
         "x.com",
         "facebook.com",
