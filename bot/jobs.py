@@ -3,6 +3,8 @@ from datetime import datetime, time
 from telegram.ext import Application, ContextTypes
 from bot.memory import get_all_daily_messages, get_all_daily_tasks, get_general_memories
 from bot.llm import generate_response
+from config import ADMIN_ID
+from bot.system import update_ytdlp_package
 
 
 async def send_daily_message_callback(context: ContextTypes.DEFAULT_TYPE):
@@ -82,6 +84,31 @@ async def execute_daily_task_callback(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Failed to execute daily task for {chat_id}: {e}")
 
 
+async def check_ytdlp_update_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Checks for yt-dlp updates and notifies the admin if updated.
+    """
+    logging.info("Checking for yt-dlp updates...")
+    success, message = await update_ytdlp_package()
+
+    if success and "updated successfully" in message:
+        # Notify admin
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID, text=f"System Update:\n{message}"
+            )
+        except Exception as e:
+            logging.error(f"Failed to notify admin about update: {e}")
+    elif not success:
+        # Notify admin about failure
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID, text=f"System Update Failed:\n{message}"
+            )
+        except Exception as e:
+            logging.error(f"Failed to notify admin about update failure: {e}")
+
+
 def schedule_daily_message(
     application, chat_id, time_obj, message_type, content, file_id=None
 ):
@@ -115,6 +142,30 @@ def schedule_daily_task(application, chat_id, time_obj, task_content):
     )
 
 
+def schedule_ytdlp_update_check(application):
+    """
+    Schedules the yt-dlp update check.
+    Runs once 10 seconds after startup, and then every 24 hours.
+    """
+    # Run once shortly after startup
+    application.job_queue.run_once(
+        check_ytdlp_update_job, when=10, name="ytdlp_update_check_startup"
+    )
+
+    # Run daily
+    # We can pick a fixed time, e.g., 04:00 UTC, or just an interval.
+    # run_repeating is better for interval if we don't care about specific time.
+    # But run_daily is usually preferred for bots. Let's do run_daily at 04:00.
+    # Or just run_repeating every 24 hours.
+    # Let's use run_repeating for simplicity as we don't need a specific time.
+    application.job_queue.run_repeating(
+        check_ytdlp_update_job,
+        interval=86400,
+        first=86400,  # Start the repeating one after 24h, since we run one immediately
+        name="ytdlp_update_check_daily",
+    )
+
+
 def remove_job_if_exists(name: str, application: Application):
     current_jobs = application.job_queue.get_jobs_by_name(name)
     if not current_jobs:
@@ -127,6 +178,9 @@ async def load_jobs(application: Application):
     logging.info("Loading scheduled jobs from database...")
 
     try:
+        # Schedule system jobs
+        schedule_ytdlp_update_check(application)
+
         messages = await get_all_daily_messages()
         for msg in messages:
             chat_id = msg["chat_id"]

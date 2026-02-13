@@ -1,6 +1,6 @@
 import random
 import logging
-from bot.memory import get_chat_config, set_chat_config
+from bot.memory import get_chat_config, set_chat_config, get_config, set_config
 
 # Cooldown state
 # We track the number of messages seen since the last reply per chat
@@ -38,9 +38,19 @@ async def get_utils_disabled(chat_id: int) -> bool:
     return val == "true"
 
 
-def set_paused(value: bool):
+async def init_logic():
+    global is_paused
+    # Load paused state
+    val = await get_config("is_paused")
+    if val:
+        is_paused = val == "true"
+    logging.info(f"Logic initialized. Paused: {is_paused}")
+
+
+async def set_paused(value: bool):
     global is_paused
     is_paused = value
+    await set_config("is_paused", "true" if value else "false")
 
 
 def get_paused() -> bool:

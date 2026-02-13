@@ -10,6 +10,7 @@ from bot.jobs import (
     schedule_daily_task,
     remove_job_if_exists,
 )
+from bot.system import update_ytdlp_package
 from bot.memory import (
     add_whitelist,
     remove_whitelist,
@@ -223,17 +224,26 @@ async def whitelist_list_command(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(msg)
 
 
+async def update_ytdlp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    await update.message.reply_text("Updating yt-dlp... this may take a moment.")
+    success, message = await update_ytdlp_package()
+    await update.message.reply_text(f"Update Result:\n{message}")
+
+
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
-    set_paused(True)
+    await set_paused(True)
     await update.message.reply_text("Bot paused.")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
-    set_paused(False)
+    await set_paused(False)
     await update.message.reply_text("Bot resumed.")
 
 
@@ -715,5 +725,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /whitelist_add &lt;id&gt; &lt;type&gt; - Add user/group to whitelist
 /whitelist_remove &lt;id&gt; - Remove from whitelist
 /whitelist_list - List whitelisted entities
+/update_ytdlp - Update yt-dlp manually
 """
     await update.message.reply_text(help_text, parse_mode="HTML")

@@ -2,7 +2,10 @@ import aiosqlite
 import datetime
 import logging
 
-DB_NAME = "bot_memory.db"
+import os
+
+# Use absolute path for DB to avoid issues with CWD
+DB_NAME = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot_memory.db")
 
 
 async def init_db():

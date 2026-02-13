@@ -25,10 +25,12 @@ from bot.commands import (
     daily_cancel_msg_command,
     daily_cancel_task_command,
     daily_list_command,
+    update_ytdlp_command,
     help_command,
 )
 from bot.jobs import load_jobs
 from bot.memory import init_db
+from bot.logic import init_logic
 
 
 # Configure logging
@@ -42,6 +44,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def post_init(application):
     await init_db()
+    await init_logic()
     logging.info("Database and Logic Config initialized.")
     await load_jobs(application)
 
@@ -102,6 +105,7 @@ def main():
         CommandHandler("daily_cancel_task", daily_cancel_task_command)
     )
     application.add_handler(CommandHandler("daily_list", daily_list_command))
+    application.add_handler(CommandHandler("update_ytdlp", update_ytdlp_command))
     application.add_handler(CommandHandler("help", help_command))
 
     logging.info("Bot started polling...")
