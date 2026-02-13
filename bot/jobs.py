@@ -1,10 +1,15 @@
 import logging
-from datetime import datetime, time
+from datetime import datetime
 from telegram.ext import Application, ContextTypes
 from bot.memory import get_all_daily_messages, get_all_daily_tasks, get_general_memories
 from bot.llm import generate_response
 from config import ADMIN_ID
-from bot.system import update_ytdlp_package
+from bot.system import (
+    update_ytdlp_package,
+    check_for_updates,
+    pull_updates,
+    restart_bot,
+)
 
 
 async def send_daily_message_callback(context: ContextTypes.DEFAULT_TYPE):
@@ -95,10 +100,17 @@ async def check_ytdlp_update_job(context: ContextTypes.DEFAULT_TYPE):
         # Notify admin
         try:
             await context.bot.send_message(
-                chat_id=ADMIN_ID, text=f"System Update:\n{message}"
+                chat_id=ADMIN_ID,
+                text=f"System Update:\n{message}\nRestarting bot to apply changes...",
             )
         except Exception as e:
             logging.error(f"Failed to notify admin about update: {e}")
+
+        # Restart bot to load new yt-dlp version
+        import asyncio
+
+        await asyncio.sleep(2)
+        restart_bot()
     elif not success:
         # Notify admin about failure
         try:
@@ -142,6 +154,47 @@ def schedule_daily_task(application, chat_id, time_obj, task_content):
     )
 
 
+async def check_bot_update_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Checks for bot updates from git, pulls them, and restarts the bot.
+    """
+    logging.info("Checking for bot updates...")
+    if await check_for_updates():
+        logging.info("Updates found. Initiating update process...")
+        # Notify admin
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID, text="Update found. Pulling changes..."
+            )
+        except Exception as e:
+            logging.error(f"Failed to notify admin about update found: {e}")
+
+        success, message = await pull_updates()
+
+        if success:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=f"Updates pulled successfully:\n{message}\nRestarting bot...",
+                )
+            except Exception as e:
+                logging.error(f"Failed to notify admin about pull success: {e}")
+
+            # Allow message to be sent
+            import asyncio
+
+            await asyncio.sleep(2)
+
+            restart_bot()
+        else:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID, text=f"Failed to pull updates:\n{message}"
+                )
+            except Exception as e:
+                logging.error(f"Failed to notify admin about pull failure: {e}")
+
+
 def schedule_ytdlp_update_check(application):
     """
     Schedules the yt-dlp update check.
@@ -166,7 +219,21 @@ def schedule_ytdlp_update_check(application):
     )
 
 
+def schedule_bot_update_check(application):
+    """
+    Schedules the bot update check.
+    Runs every 30 minutes.
+    """
+    application.job_queue.run_repeating(
+        check_bot_update_job,
+        interval=1800,  # 30 minutes
+        first=60,  # Start 1 minute after boot
+        name="bot_update_check",
+    )
+
+
 def remove_job_if_exists(name: str, application: Application):
+
     current_jobs = application.job_queue.get_jobs_by_name(name)
     if not current_jobs:
         return
@@ -180,8 +247,10 @@ async def load_jobs(application: Application):
     try:
         # Schedule system jobs
         schedule_ytdlp_update_check(application)
+        schedule_bot_update_check(application)
 
         messages = await get_all_daily_messages()
+
         for msg in messages:
             chat_id = msg["chat_id"]
             time_str = msg["time"]

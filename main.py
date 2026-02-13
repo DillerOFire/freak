@@ -26,6 +26,7 @@ from bot.commands import (
     daily_cancel_task_command,
     daily_list_command,
     update_ytdlp_command,
+    update_bot_command,
     help_command,
 )
 from bot.jobs import load_jobs
@@ -106,6 +107,7 @@ def main():
     )
     application.add_handler(CommandHandler("daily_list", daily_list_command))
     application.add_handler(CommandHandler("update_ytdlp", update_ytdlp_command))
+    application.add_handler(CommandHandler("update_bot", update_bot_command))
     application.add_handler(CommandHandler("help", help_command))
 
     logging.info("Bot started polling...")

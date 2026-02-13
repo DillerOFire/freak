@@ -9,8 +9,9 @@ from bot.jobs import (
     schedule_daily_message,
     schedule_daily_task,
     remove_job_if_exists,
+    check_bot_update_job,
 )
-from bot.system import update_ytdlp_package
+from bot.system import update_ytdlp_package, restart_bot
 from bot.memory import (
     add_whitelist,
     remove_whitelist,
@@ -232,8 +233,31 @@ async def update_ytdlp_command(update: Update, context: ContextTypes.DEFAULT_TYP
     success, message = await update_ytdlp_package()
     await update.message.reply_text(f"Update Result:\n{message}")
 
+    if success and "updated successfully" in message:
+        await update.message.reply_text("Restarting bot to apply changes...")
+        # Give time for verify message to send
+        import asyncio
+
+        await asyncio.sleep(2)
+        restart_bot()
+
+
+async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    await update.message.reply_text("Checking for bot updates...")
+    # Reuse the job logic
+    # We might want to run it directly.
+    # The job function expects context.
+    # It sends messages to ADMIN_ID.
+    # Since the command user IS ADMIN_ID (checked above), receiving messages is fine.
+
+    await check_bot_update_job(context)
+
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
     await set_paused(True)
@@ -726,5 +750,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /whitelist_remove &lt;id&gt; - Remove from whitelist
 /whitelist_list - List whitelisted entities
 /update_ytdlp - Update yt-dlp manually
+/update_bot - Check for bot updates and restart if found
 """
     await update.message.reply_text(help_text, parse_mode="HTML")
