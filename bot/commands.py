@@ -578,12 +578,20 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delta = int(value.removeprefix("adj_cooldown="))
         new_val = max(0, cooldown + delta)
         await set_cooldown_threshold(chat_id, new_val)
-    elif value != "refresh" and value != "noop":
+    elif value == "noop":
+        await query.answer()
+        return
+    elif value != "refresh":
         await query.answer("Unknown setting.", show_alert=True)
         return
 
     text, keyboard = await _build_settings_panel(chat_id)
-    await query.edit_message_text(text, reply_markup=keyboard)
+    import telegram
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
     await query.answer("Settings updated.")
 
 
