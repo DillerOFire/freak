@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from telegram.ext import Application, ContextTypes
-from bot.memory import get_all_daily_messages, get_all_daily_tasks, get_general_memories
+from bot.memory import get_all_daily_messages, get_all_daily_tasks, get_relevant_general_memories
 from bot.llm import generate_response
 from config import ADMIN_ID
 from bot.system import (
@@ -54,13 +54,10 @@ async def execute_daily_task_callback(context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Executing daily task for {chat_id}: {task_content}")
 
     try:
-        # Fetch general memories for context
-        # We assume 0 is a system user ID or similar for the 'sender'
-        general_memories = await get_general_memories(chat_id, limit=10)
+        # Fetch relevant general memories using task_content
+        general_memories = await get_relevant_general_memories(chat_id, task_content, limit=10)
 
         # Construct a synthetic message context
-        # This makes the LLM treat the task content as a message to respond to
-        # or an instruction.
         messages_context = [
             {
                 "message_id": 0,
@@ -72,7 +69,6 @@ async def execute_daily_task_callback(context: ContextTypes.DEFAULT_TYPE):
             }
         ]
 
-        # We pass empty user_thoughts as we don't have a specific user context here
         response_json = await generate_response(
             messages_context=messages_context,
             user_thoughts={},
@@ -80,10 +76,13 @@ async def execute_daily_task_callback(context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id,
         )
 
-        if response_json and "content" in response_json:
-            await context.bot.send_message(
-                chat_id=chat_id, text=response_json["content"]
-            )
+        if response_json and response_json.get("messages"):
+            for msg_text in response_json["messages"]:
+                msg_text = msg_text.strip()
+                if msg_text:
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=msg_text
+                    )
 
     except Exception as e:
         logging.error(f"Failed to execute daily task for {chat_id}: {e}")
@@ -192,7 +191,7 @@ async def check_bot_update_job(context: ContextTypes.DEFAULT_TYPE):
                     chat_id=ADMIN_ID, text=f"Failed to pull updates:\n{message}"
                 )
             except Exception as e:
-                logging.error(f"Failed to notify admin about pull failure: {e}")
+                logging.error(f"Failed to pull updates:\n{message}")
 
 
 def schedule_ytdlp_update_check(application):
@@ -206,15 +205,10 @@ def schedule_ytdlp_update_check(application):
     )
 
     # Run daily
-    # We can pick a fixed time, e.g., 04:00 UTC, or just an interval.
-    # run_repeating is better for interval if we don't care about specific time.
-    # But run_daily is usually preferred for bots. Let's do run_daily at 04:00.
-    # Or just run_repeating every 24 hours.
-    # Let's use run_repeating for simplicity as we don't need a specific time.
     application.job_queue.run_repeating(
         check_ytdlp_update_job,
         interval=86400,
-        first=86400,  # Start the repeating one after 24h, since we run one immediately
+        first=86400,
         name="ytdlp_update_check_daily",
     )
 
@@ -226,14 +220,13 @@ def schedule_bot_update_check(application):
     """
     application.job_queue.run_repeating(
         check_bot_update_job,
-        interval=1800,  # 30 minutes
-        first=60,  # Start 1 minute after boot
+        interval=1800,
+        first=60,
         name="bot_update_check",
     )
 
 
 def remove_job_if_exists(name: str, application: Application):
-
     current_jobs = application.job_queue.get_jobs_by_name(name)
     if not current_jobs:
         return

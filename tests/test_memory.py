@@ -103,3 +103,42 @@ async def test_chat_config(temp_db_path):
     # Test separation of chats
     chat_id_2 = 222
     assert await memory.get_chat_config(chat_id_2, key) is None
+
+
+@pytest.mark.asyncio
+async def test_relevance_ranked_retrieval(temp_db_path):
+    """Test FTS5 relevance-ranked memory retrieval."""
+    chat_id = 12345
+    # Insert multiple general memories
+    await memory.add_general_memory("Оперный театр", "Маэстро обожает оперу Верди Травиата", chat_id, importance=5)
+    await memory.add_general_memory("Кулинария", "Рецепт блинов от бабушки", chat_id, importance=2)
+    
+    # Retrieval matches opera query
+    results = await memory.get_relevant_general_memories(chat_id, "опера Верди", limit=1)
+    assert len(results) == 1
+    assert "Оперный театр" in results[0]
+    
+    # Fallback to recent on term mismatch
+    fallback = await memory.get_relevant_general_memories(chat_id, "космос", limit=2)
+    assert len(fallback) == 2
+    assert "Оперный театр" in fallback[0] or "Оперный театр" in fallback[1]
+
+
+@pytest.mark.asyncio
+async def test_user_memory_fts_and_target_lookups(temp_db_path):
+    """Test user thought update triggers FTS indexing and supports targeted lookups."""
+    # Update thought
+    await memory.update_user_thought(123, "alice", "Alice likes opera and champagne")
+    
+    # Search
+    search_results = await memory.search_user_memories("opera", limit=5)
+    assert len(search_results) == 1
+    assert search_results[0] == (123, "alice", "Alice likes opera and champagne")
+    
+    # Target username
+    target_uname = await memory.get_user_memory_by_target("@alice")
+    assert target_uname == (123, "alice", "Alice likes opera and champagne")
+    
+    # Target user_id
+    target_uid = await memory.get_user_memory_by_target("123")
+    assert target_uid == (123, "alice", "Alice likes opera and champagne")

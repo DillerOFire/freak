@@ -1,5 +1,6 @@
 import os
 import logging
+import shlex
 
 from datetime import datetime
 from telegram import Update
@@ -26,6 +27,9 @@ from bot.memory import (
     remove_daily_task,
     get_daily_message,
     get_daily_task,
+    get_user_memory_by_target,
+    search_user_memories,
+    search_general_memories,
 )
 from bot.logic import (
     set_paused,
@@ -51,17 +55,11 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
 
     # Admin check
     if update.effective_user.id != ADMIN_ID:
-        # Silently ignore or reply? User asked to restrict.
-        # Let's reply to indicate permission denied if they try to use it.
-        # Or maybe silent is better for security.
-        # "Restrict command using to be used only by user id"
-        # Let's just return.
         return
 
     args = context.args
     if not args and update.message.caption:
         # If no args but there is a caption (file attached), try to parse from caption
-        # Caption might be "/update_cookies <service>"
         parts = update.message.caption.split()
         if len(parts) > 1 and "update_cookies" in parts[0]:
             args = parts[1:]
@@ -119,9 +117,6 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
             return
 
     # Check for text content
-    # We need to extract the content after the service name
-    # The message text is likely "/update_cookies <service> <content>"
-    # We can split by maxsplit=2 to get the content
     parts = update.message.text.split(maxsplit=2)
     if len(parts) >= 3:
         cookie_content = parts[2]
@@ -150,8 +145,6 @@ async def whitelist_add_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     args = context.args
-    # Usage: /whitelist_add <id> <type> OR /whitelist_add (in group)
-
     entity_id = None
     entity_type = None
 
@@ -219,7 +212,6 @@ async def whitelist_list_command(update: Update, context: ContextTypes.DEFAULT_T
 
     msg = "Whitelist:\n"
     for row in rows:
-        # row: entity_id, entity_type, timestamp
         msg += f"{row[0]} ({row[1]}) - {row[2]}\n"
 
     await update.message.reply_text(msg)
@@ -235,7 +227,6 @@ async def update_ytdlp_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if success and "updated successfully" in message:
         await update.message.reply_text("Restarting bot to apply changes...")
-        # Give time for verify message to send
         import asyncio
 
         await asyncio.sleep(2)
@@ -247,17 +238,10 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     await update.message.reply_text("Checking for bot updates...")
-    # Reuse the job logic
-    # We might want to run it directly.
-    # The job function expects context.
-    # It sends messages to ADMIN_ID.
-    # Since the command user IS ADMIN_ID (checked above), receiving messages is fine.
-
     await check_bot_update_job(context)
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
     await set_paused(True)
@@ -312,12 +296,43 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _parse_memory_args(text: str) -> tuple[str | None, str | None]:
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        return None, None
+    remainder = parts[1]
+    tokens = shlex.split(remainder)
+    if not tokens:
+        return None, None
+    
+    if len(tokens) == 1:
+        if tokens[0] == ".":
+            return None, None
+        return tokens[0], None
+        
+    # two or more tokens
+    return tokens[0], " ".join(tokens[1:])
+
+
 async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
 
-    # If replied to a message, get thoughts about that user
-    if update.message.reply_to_message:
+    chat_id = update.effective_chat.id
+    text = update.message.text or ""
+    
+    # Check if there are args provided (not just /memory or /memories command)
+    has_args = len(text.split(maxsplit=1)) > 1
+
+    # Usage routing
+    try:
+        target, query = _parse_memory_args(text)
+    except ValueError:
+        await update.message.reply_text("Usage: /memory [.|@username|user_id|username] [\"query\"]")
+        return
+
+    # Case 1: reply check and no parsed target/query
+    if update.message.reply_to_message and not has_args:
         target_user_id = update.message.reply_to_message.from_user.id
         target_username = (
             update.message.reply_to_message.from_user.username
@@ -325,29 +340,30 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         thought = await get_user_thought(target_user_id)
         if thought:
-            sent_msg = await update.message.reply_text(
-                f"Memories of {target_username}:\n{thought}"
-            )
+            msg = f"Memories of {target_username}:\n{thought}"
+            sent_msg = await update.message.reply_text(msg)
             if sent_msg:
                 add_message_to_history(
-                    update.effective_chat.id,
+                    chat_id,
                     sent_msg.message_id,
                     context.bot.username or "@Bot",
-                    f"Memories of {target_username}:\n{thought}",
+                    msg,
                     sent_msg.from_user.id,
                     reply_to_id=update.message.message_id,
                 )
         else:
             await update.message.reply_text(f"No memories found for {target_username}.")
-    else:
-        # Get general memories
-        memories = await get_general_memories(update.effective_chat.id, limit=10)
+        return
+
+    # Case 2: no parsed target/query and not a reply
+    if not has_args:
+        memories = await get_general_memories(chat_id, limit=10)
         if memories:
             msg = "General Memories:\n\n" + "\n\n".join(memories)
             sent_msg = await update.message.reply_text(msg)
             if sent_msg:
                 add_message_to_history(
-                    update.effective_chat.id,
+                    chat_id,
                     sent_msg.message_id,
                     context.bot.username or "@Bot",
                     msg,
@@ -356,6 +372,61 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             await update.message.reply_text("No general memories found.")
+        return
+
+    # Case 3: query is present, target is None or "."
+    if query and (target is None or target == "."):
+        user_mems = await search_user_memories(query, limit=10)
+        gen_mems = await search_general_memories(chat_id, query, limit=10)
+        
+        if not user_mems and not gen_mems:
+            await update.message.reply_text(f"No memories found for \"{query}\".")
+            return
+            
+        reply_lines = [f"Memory search for \"{query}\":"]
+        if user_mems:
+            reply_lines.append("\nUser Memories:")
+            for uid, uname, thought in user_mems:
+                reply_lines.append(f"- {uname} (ID: {uid}): {thought}")
+        if gen_mems:
+            reply_lines.append("\nGeneral Memories:")
+            for mem in gen_mems:
+                reply_lines.append(f"- {mem}")
+                
+        await update.message.reply_text("\n".join(reply_lines))
+        return
+
+    # Case 4: target is present and query is None
+    if target and not query:
+        row = await get_user_memory_by_target(target)
+        if row:
+            uid, uname, thought = row
+            await update.message.reply_text(f"Memories of {uname} (ID: {uid}):\n{thought}")
+        else:
+            await update.message.reply_text(f"No memories found for {target}.")
+        return
+
+    # Case 5: both target and query are present
+    if target and query:
+        row = await get_user_memory_by_target(target)
+        gen_mems = await search_general_memories(chat_id, f"{target} {query}", limit=10)
+        
+        if not row and not gen_mems:
+            await update.message.reply_text(f"No memories found for {target} / \"{query}\".")
+            return
+            
+        reply_lines = [f"Memory search for {target} / \"{query}\":"]
+        if row:
+            uid, uname, thought = row
+            reply_lines.append("\nUser Memories:")
+            reply_lines.append(f"- {uname} (ID: {uid}): {thought}")
+        if gen_mems:
+            reply_lines.append("\nGeneral Memories:")
+            for mem in gen_mems:
+                reply_lines.append(f"- {mem}")
+                
+        await update.message.reply_text("\n".join(reply_lines))
+        return
 
 
 async def update_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -367,10 +438,6 @@ async def update_prompt_command(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Usage: /update_prompt <new prompt text>")
         return
 
-    # Join all args to form the new prompt
-    # Or better, take the rest of the message text to preserve formatting
-    # The command is /update_prompt <text>
-    # We can split by maxsplit=1
     parts = update.message.text.split(maxsplit=1)
     if len(parts) < 2:
         await update.message.reply_text("Usage: /update_prompt <new prompt text>")
@@ -403,15 +470,15 @@ async def set_reply_chance_command(update: Update, context: ContextTypes.DEFAULT
         return
 
     try:
-        val = float(args[0])
-        if not (0 <= val <= 1):
+        chance = float(args[0])
+        if not (0.0 <= chance <= 1.0):
             raise ValueError
-        await set_reply_chance(update.effective_chat.id, val)
-        await update.message.reply_text(f"Reply chance set to {val} for this chat.")
     except ValueError:
-        await update.message.reply_text(
-            "Invalid value. Must be a float between 0 and 1."
-        )
+        await update.message.reply_text("Chance must be a float between 0.0 and 1.0")
+        return
+
+    await set_reply_chance(update.effective_chat.id, chance)
+    await update.message.reply_text(f"Reply chance set to {chance}")
 
 
 async def set_reaction_chance_command(
@@ -426,15 +493,15 @@ async def set_reaction_chance_command(
         return
 
     try:
-        val = float(args[0])
-        if not (0 <= val <= 1):
+        chance = float(args[0])
+        if not (0.0 <= chance <= 1.0):
             raise ValueError
-        await set_reaction_chance(update.effective_chat.id, val)
-        await update.message.reply_text(f"Reaction chance set to {val} for this chat.")
     except ValueError:
-        await update.message.reply_text(
-            "Invalid value. Must be a float between 0 and 1."
-        )
+        await update.message.reply_text("Chance must be a float between 0.0 and 1.0")
+        return
+
+    await set_reaction_chance(update.effective_chat.id, chance)
+    await update.message.reply_text(f"Reaction chance set to {chance}")
 
 
 async def set_cooldown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -443,43 +510,45 @@ async def set_cooldown_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /set_cooldown <int>")
+        await update.message.reply_text("Usage: /set_cooldown <seconds>")
         return
 
     try:
-        val = int(args[0])
-        if val < 0:
+        cooldown = int(args[0])
+        if cooldown < 0:
             raise ValueError
-        await set_cooldown_threshold(update.effective_chat.id, val)
-        await update.message.reply_text(
-            f"Cooldown threshold set to {val} for this chat."
-        )
     except ValueError:
-        await update.message.reply_text(
-            "Invalid value. Must be a non-negative integer."
-        )
+        await update.message.reply_text("Cooldown must be a non-negative integer")
+        return
+
+    await set_cooldown_threshold(update.effective_chat.id, cooldown)
+    await update.message.reply_text(f"Cooldown threshold set to {cooldown} seconds")
 
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
 
-    cooldown, reply_chance, reaction_chance = await get_logic_config(
-        update.effective_chat.id
-    )
+    chat_id = update.effective_chat.id
+    config = await get_logic_config(chat_id)
 
-    msg = (
-        f"Current Settings (Chat {update.effective_chat.id}):\n"
-        f"Reply Chance: {reply_chance}\n"
-        f"Reaction Chance: {reaction_chance}\n"
-        f"Cooldown Threshold: {cooldown}\n"
-        f"Paused: {get_paused()}"
-    )
+    msg = f"Settings for Chat {chat_id}:\n\n"
+    msg += f"Reply Chance: {config.get('reply_chance', 0.5)}\n"
+    msg += f"Reaction Chance: {config.get('reaction_chance', 0.5)}\n"
+    msg += f"Cooldown Threshold: {config.get('cooldown_threshold', 60)}s\n"
+    msg += f"Bot Paused: {get_paused()}\n"
+    msg += f"Utils Disabled: {await get_utils_disabled(chat_id)}\n"
+
     await update.message.reply_text(msg)
 
 
 async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    if await get_utils_disabled(chat_id):
+        await update.message.reply_text("Utils are disabled in this chat.")
         return
 
     args = context.args
@@ -488,100 +557,50 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = args[0]
+    await update.message.reply_text("Downloading audio... this might take a moment.")
 
-    # Check if utils are disabled
-    if await get_utils_disabled(update.effective_chat.id):
-        return
+    # Import ytdlp helper
+    from bot.media_utils import download_audio_ytdlp
 
-    # Determine service for cookies (reuse logic if possible, or just check domain)
     cookies_path = None
     if "youtube.com" in url or "youtu.be" in url:
         cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
-    elif "instagram.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "instagram.txt")
-    elif "x.com" in url or "twitter.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "x.txt")
-    elif "tiktok.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "tiktok.txt")
-    elif "facebook.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "facebook.txt")
-    elif "reddit.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "reddit.txt")
-    elif "pinterest.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "pinterest.txt")
-    elif "spotify.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "spotify.txt")
-    elif "soundcloud.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "soundcloud.txt")
-    elif "bandcamp.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "bandcamp.txt")
-    elif "mixcloud.com" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
-    elif "twitch.tv" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
-    elif "vk.com" in url or "vkvideo.ru" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "vk.txt")
-    elif "rutube.ru" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "rutube.txt")
 
-    # We need to import download_audio_ytdlp here or at top level.
-    # It's in media_utils. Let's import it inside to avoid circular deps if any,
-    # but better to import at top.
-    # Wait, I am editing commands.py, but I added the import to handlers.py in the previous step!
-    # I made a mistake in the previous step. I should have added the import to commands.py if I put the command there.
-    # However, commands.py doesn't import media_utils yet.
-    # Let's add the import to commands.py in a separate step or just do it here if I can.
-    # I can't do two edits in one tool call easily if they are far apart.
-    # I will add the function here, and then add the import at the top.
-
-    from bot.media_utils import download_audio_ytdlp
-
-    result = download_audio_ytdlp(url, cookies_path)
-
-    if result:
-        audio_path = result.get("audio_path")
-        title = result.get("title", "Unknown Title")
-        description = result.get("description", "")
-        thumbnail_path = result.get("thumbnail_path")
-        duration = result.get("duration")
-        uploader = result.get("uploader")
-
-        # Truncate description if too long (Telegram limit is 1024 chars for caption)
-        caption = f"{title}\n\n{description}"
-        if len(caption) > 1000:
-            caption = caption[:997] + "..."
+    info = download_audio_ytdlp(url, cookies_path)
+    if info:
+        audio_path = info["audio_path"]
+        title = info["title"]
+        uploader = info.get("uploader", "Unknown")
+        duration = info.get("duration")
+        thumbnail_path = info.get("thumbnail_path")
 
         try:
-            # Prepare thumbnail
-            thumb_file = open(thumbnail_path, "rb") if thumbnail_path else None
+            # Send audio
+            # open thumbnail if exists
+            thumb = open(thumbnail_path, "rb") if thumbnail_path else None
 
             await update.message.reply_audio(
                 audio=open(audio_path, "rb"),
                 title=title,
                 performer=uploader,
                 duration=duration,
-                thumbnail=thumb_file,
-                caption=caption,
-                reply_to_message_id=update.message.message_id,
+                thumbnail=thumb,
             )
 
             # Cleanup
-            if thumb_file:
-                thumb_file.close()
-
-            os.remove(audio_path)
-            if thumbnail_path and os.path.exists(thumbnail_path):
+            if thumb:
+                thumb.close()
                 os.remove(thumbnail_path)
+            os.remove(audio_path)
 
         except Exception as e:
-            logging.error(f"Failed to send audio: {e}")
+            logging.error(f"Failed to send audio file: {e}")
             await update.message.reply_text("Failed to send audio file.")
-
-            # Cleanup on error
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
+            # Cleanup on fail
             if thumbnail_path and os.path.exists(thumbnail_path):
                 os.remove(thumbnail_path)
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
     else:
         await update.message.reply_text("Failed to download audio.")
 
@@ -590,17 +609,16 @@ async def add_daily_msg_command(update: Update, context: ContextTypes.DEFAULT_TY
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
 
-    args = context.args
-    if not args:
+    # Check for reply
+    if not update.message.reply_to_message:
         await update.message.reply_text(
-            "Usage: /add_daily_msg <HH:MM> (reply to a message)"
+            "Usage: /add_daily_msg <HH:MM> (Reply to the message you want to schedule)"
         )
         return
 
-    if not update.message.reply_to_message:
-        await update.message.reply_text(
-            "You must reply to a message to set it as daily."
-        )
+    args = context.args
+    if not args or len(args) != 1:
+        await update.message.reply_text("Usage: /add_daily_msg <HH:MM>")
         return
 
     time_str = args[0]
@@ -610,35 +628,34 @@ async def add_daily_msg_command(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Invalid time format. Use HH:MM.")
         return
 
-    reply = update.message.reply_to_message
-
-    # Determine type and content
-    message_type = "text"
-    content = reply.text or reply.caption or ""
-    file_id = None
-
-    if reply.photo:
-        message_type = "photo"
-        file_id = reply.photo[-1].file_id
-    elif reply.video:
-        message_type = "video"
-        file_id = reply.video.file_id
-    elif reply.sticker:
-        message_type = "sticker"
-        file_id = reply.sticker.file_id
-    elif reply.animation:
-        message_type = "animation"
-        file_id = reply.animation.file_id
-    elif reply.document:
-        message_type = "document"
-        file_id = reply.document.file_id
-    elif not content:
-        await update.message.reply_text("Unsupported message type or empty content.")
-        return
-
+    replied_msg = update.message.reply_to_message
     chat_id = update.effective_chat.id
 
+    # Determine message type and content
+    message_type = "text"
+    content = replied_msg.text or replied_msg.caption or ""
+    file_id = None
+
+    if replied_msg.photo:
+        message_type = "photo"
+        file_id = replied_msg.photo[-1].file_id
+    elif replied_msg.video:
+        message_type = "video"
+        file_id = replied_msg.video.file_id
+    elif replied_msg.sticker:
+        message_type = "sticker"
+        file_id = replied_msg.sticker.file_id
+    elif replied_msg.animation:
+        message_type = "animation"
+        file_id = replied_msg.animation.file_id
+    elif replied_msg.document:
+        message_type = "document"
+        file_id = replied_msg.document.file_id
+
+    # Save to db
     await set_daily_message(chat_id, time_str, message_type, content, file_id)
+
+    # Schedule
     schedule_daily_message(
         context.application, chat_id, t, message_type, content, file_id
     )
@@ -650,11 +667,10 @@ async def add_daily_task_command(update: Update, context: ContextTypes.DEFAULT_T
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
 
+    # Usage: /add_daily_task <HH:MM> <task_content>
     args = context.args
-    if len(args) < 2:
-        await update.message.reply_text(
-            "Usage: /add_daily_task <HH:MM> <task content/prompt>"
-        )
+    if not args or len(args) < 2:
+        await update.message.reply_text("Usage: /add_daily_task <HH:MM> <prompt>")
         return
 
     time_str = args[0]
@@ -667,17 +683,19 @@ async def add_daily_task_command(update: Update, context: ContextTypes.DEFAULT_T
     task_content = " ".join(args[1:])
     chat_id = update.effective_chat.id
 
+    # Save to db
     await set_daily_task(chat_id, time_str, task_content)
+
+    # Schedule
     schedule_daily_task(context.application, chat_id, t, task_content)
 
-    await update.message.reply_text(
-        f"Daily task scheduled for {time_str}: {task_content}"
-    )
+    await update.message.reply_text(f"Daily task scheduled for {time_str}.")
 
 
 async def daily_cancel_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
+
     chat_id = update.effective_chat.id
     await remove_daily_message(chat_id)
     remove_job_if_exists(f"daily_msg_{chat_id}", context.application)
@@ -687,6 +705,7 @@ async def daily_cancel_msg_command(update: Update, context: ContextTypes.DEFAULT
 async def daily_cancel_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
+
     chat_id = update.effective_chat.id
     await remove_daily_task(chat_id)
     remove_job_if_exists(f"daily_task_{chat_id}", context.application)
@@ -701,9 +720,11 @@ async def daily_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = await get_daily_message(chat_id)
     task = await get_daily_task(chat_id)
 
-    response = "Daily Schedules:\n"
+    response = "Active schedules for this chat:\n\n"
     if msg:
-        response += f"Message: {msg['time']} ({msg['message_type']})\n"
+        response += (
+            f"Message: {msg['time']} - type: {msg['message_type']} - '{msg['content'][:30]}'\n"
+        )
     else:
         response += "Message: None\n"
 
@@ -723,7 +744,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /help - Show this message
 /ping - Check some info
 /music &lt;url&gt; - Download music from various services
-/memories - View memories (reply to user to see their specific memories)
+/memory [.|@user|user_id|username] ["query"] - Search or inspect memories
+/memories - Alias for /memory
 
 <b>Daily Schedules (Every Day):</b>
 /add_daily_msg &lt;HH:MM&gt; - (Reply to a message) Schedule this message to be sent daily

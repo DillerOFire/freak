@@ -1,7 +1,7 @@
 import aiosqlite
 import datetime
 import logging
-
+import re
 import os
 
 # Use absolute path for DB to avoid issues with CWD
@@ -80,6 +80,48 @@ async def init_db():
                 await db.execute(
                     "ALTER TABLE general_memory ADD COLUMN chat_id INTEGER"
                 )
+            if "importance" not in columns:
+                logging.info("Migrating DB: Adding importance to general_memory")
+                await db.execute(
+                    "ALTER TABLE general_memory ADD COLUMN importance INTEGER DEFAULT 3"
+                )
+            if "access_count" not in columns:
+                logging.info("Migrating DB: Adding access_count to general_memory")
+                await db.execute(
+                    "ALTER TABLE general_memory ADD COLUMN access_count INTEGER DEFAULT 0"
+                )
+            if "last_accessed" not in columns:
+                logging.info("Migrating DB: Adding last_accessed to general_memory")
+                await db.execute(
+                    "ALTER TABLE general_memory ADD COLUMN last_accessed DATETIME"
+                )
+
+        # Create general_memory FTS table
+        await db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS general_memory_fts USING fts5(
+                topic, 
+                summary, 
+                content='general_memory', 
+                content_rowid='id'
+            );
+        """)
+        # Rebuild general_memory FTS
+        await db.execute("INSERT INTO general_memory_fts(general_memory_fts) VALUES('rebuild');")
+
+        # Create users FTS table
+        await db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS users_fts USING fts5(
+                user_id UNINDEXED, 
+                username, 
+                thoughts
+            );
+        """)
+        # Populate users FTS
+        await db.execute("DELETE FROM users_fts;")
+        await db.execute("""
+            INSERT INTO users_fts(user_id, username, thoughts) 
+            SELECT user_id, username, thoughts FROM users;
+        """)
 
         await db.commit()
 
@@ -107,15 +149,18 @@ async def update_user_thought(user_id: int, username: str, thought: str):
         """,
             (user_id, username, thought),
         )
+        # Update users_fts virtual table
+        await db.execute("DELETE FROM users_fts WHERE user_id = ?", (user_id,))
+        await db.execute(
+            "INSERT INTO users_fts(user_id, username, thoughts) VALUES (?, ?, ?)",
+            (user_id, username, thought),
+        )
         await db.commit()
         logging.info("DEBUG: Committed user thought to DB")
 
 
 async def get_general_memories(chat_id: int, limit: int = 5) -> list[str]:
     async with aiosqlite.connect(DB_NAME) as db:
-        # Filter by chat_id. We handle NULL chat_id as global or just ignore?
-        # Plan said: "Existing memories will have NULL. I will update queries to filter by chat_id."
-        # So we only fetch memories for this chat_id.
         async with db.execute(
             "SELECT topic, summary FROM general_memory WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?",
             (chat_id, limit),
@@ -124,13 +169,163 @@ async def get_general_memories(chat_id: int, limit: int = 5) -> list[str]:
             return [f"Topic: {row[0]}, Summary: {row[1]}" for row in rows]
 
 
-async def add_general_memory(topic: str, summary: str, chat_id: int):
+async def add_general_memory(topic: str, summary: str, chat_id: int, importance: int = 3):
+    # Clamp importance into 1..5
+    importance = max(1, min(5, importance))
     async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "INSERT INTO general_memory (topic, summary, chat_id, importance) VALUES (?, ?, ?, ?)",
+            (topic, summary, chat_id, importance),
+        )
+        rowid = cursor.lastrowid
+        # Update FTS table
         await db.execute(
-            "INSERT INTO general_memory (topic, summary, chat_id) VALUES (?, ?, ?)",
-            (topic, summary, chat_id),
+            "INSERT INTO general_memory_fts(rowid, topic, summary) VALUES (?, ?, ?)",
+            (rowid, topic, summary),
         )
         await db.commit()
+
+
+def _memory_query_terms(text: str, max_terms: int = 12) -> str:
+    if not text:
+        return ""
+    # Extract unique tokens matching [A-Za-zА-Яа-яЁё0-9_]{3,}
+    raw_tokens = re.findall(r"[A-Za-zА-Яа-яЁё0-9_]{3,}", text.lower())
+    seen = set()
+    tokens = []
+    for token in raw_tokens:
+        if token not in seen:
+            seen.add(token)
+            tokens.append(token)
+    if not tokens:
+        return ""
+    return " OR ".join(tokens[:max_terms])
+
+
+async def get_relevant_general_memories(chat_id: int, query: str, limit: int = 5) -> list[str]:
+    query_str = _memory_query_terms(query)
+    if not query_str:
+        return await get_general_memories(chat_id, limit)
+
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute(
+                """
+                SELECT gm.id, gm.topic, gm.summary
+                FROM general_memory gm
+                JOIN general_memory_fts fts ON gm.id = fts.rowid
+                WHERE gm.chat_id = ? AND general_memory_fts MATCH ?
+                ORDER BY bm25(general_memory_fts), gm.importance DESC, gm.timestamp DESC
+                LIMIT ?
+                """,
+                (chat_id, query_str, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            
+            if not rows:
+                return await get_general_memories(chat_id, limit)
+            
+            # Increment access count and set last_accessed for matching rows
+            ids = [row[0] for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            await db.execute(
+                f"""
+                UPDATE general_memory 
+                SET access_count = access_count + 1, 
+                    last_accessed = CURRENT_TIMESTAMP 
+                WHERE id IN ({placeholders})
+                """,
+                ids,
+            )
+            await db.commit()
+            
+            return [f"Topic: {row[1]}, Summary: {row[2]}" for row in rows]
+    except aiosqlite.Error as e:
+        logging.error(f"FTS query error in get_relevant_general_memories: {e}")
+        return await get_general_memories(chat_id, limit)
+
+
+async def get_user_memory_by_target(target: str) -> tuple[int, str, str] | None:
+    if not target or target.strip() == ".":
+        return None
+    normalized = target.strip().lstrip("@")
+    async with aiosqlite.connect(DB_NAME) as db:
+        if normalized.isdigit():
+            async with db.execute(
+                "SELECT user_id, username, thoughts FROM users WHERE user_id = ?",
+                (int(normalized),),
+            ) as cursor:
+                row = await cursor.fetchone()
+        else:
+            async with db.execute(
+                "SELECT user_id, username, thoughts FROM users WHERE lower(username) = lower(?)",
+                (normalized,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return row if row else None
+
+
+async def search_user_memories(query: str, limit: int = 10) -> list[tuple[int, str, str]]:
+    query_str = _memory_query_terms(query)
+    if not query_str:
+        return []
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute(
+                """
+                SELECT user_id, username, thoughts
+                FROM users_fts
+                WHERE users_fts MATCH ?
+                ORDER BY bm25(users_fts)
+                LIMIT ?
+                """,
+                (query_str, limit),
+            ) as cursor:
+                return await cursor.fetchall()
+    except aiosqlite.Error as e:
+        logging.error(f"FTS query error in search_user_memories: {e}")
+        return []
+
+
+async def search_general_memories(chat_id: int, query: str, limit: int = 10) -> list[str]:
+    query_str = _memory_query_terms(query)
+    if not query_str:
+        return []
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute(
+                """
+                SELECT gm.id, gm.topic, gm.summary
+                FROM general_memory gm
+                JOIN general_memory_fts fts ON gm.id = fts.rowid
+                WHERE gm.chat_id = ? AND general_memory_fts MATCH ?
+                ORDER BY bm25(general_memory_fts), gm.importance DESC, gm.timestamp DESC
+                LIMIT ?
+                """,
+                (chat_id, query_str, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            
+            if not rows:
+                return []
+            
+            ids = [row[0] for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            await db.execute(
+                f"""
+                UPDATE general_memory 
+                SET access_count = access_count + 1, 
+                    last_accessed = CURRENT_TIMESTAMP 
+                WHERE id IN ({placeholders})
+                """,
+                ids,
+            )
+            await db.commit()
+            
+            return [f"Topic: {row[1]}, Summary: {row[2]}" for row in rows]
+    except aiosqlite.Error as e:
+        logging.error(f"FTS query error in search_general_memories: {e}")
+        return []
 
 
 async def get_media_description(media_unique_id: str) -> str | None:

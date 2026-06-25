@@ -3,6 +3,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from bot import jobs
 
 
+@pytest.fixture
+def mock_context(mock_context):
+    mock_context.bot.send_message = AsyncMock(return_value=MagicMock())
+    mock_context.bot.send_photo = AsyncMock()
+    mock_context.bot.send_video = AsyncMock()
+    mock_context.bot.set_message_reaction = AsyncMock()
+    return mock_context
+
+
 @pytest.mark.asyncio
 async def test_daily_message_callback_text(mock_context):
     """Test daily text message sending."""
@@ -42,14 +51,18 @@ async def test_execute_daily_task_callback(mock_context):
     mock_context.job.data = {"chat_id": 123, "task_content": "Say hello"}
 
     with (
-        patch("bot.jobs.get_general_memories", new_callable=AsyncMock) as mock_memories,
+        patch("bot.jobs.get_relevant_general_memories", new_callable=AsyncMock) as mock_memories,
         patch("bot.jobs.generate_response", new_callable=AsyncMock) as mock_llm,
     ):
         mock_memories.return_value = []
-        mock_llm.return_value = {"content": "Hello there"}
+        mock_llm.return_value = {"messages": ["Hello there", "Second message"]}
 
         await jobs.execute_daily_task_callback(mock_context)
 
-        mock_context.bot.send_message.assert_called_once_with(
+        assert mock_context.bot.send_message.call_count == 2
+        mock_context.bot.send_message.assert_any_call(
             chat_id=123, text="Hello there"
+        )
+        mock_context.bot.send_message.assert_any_call(
+            chat_id=123, text="Second message"
         )

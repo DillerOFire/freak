@@ -43,15 +43,15 @@ async def test_handle_message_reply_logic(temp_db_path, mock_update_handler, moc
     ):
         mock_whitelist.return_value = True
         mock_should_reply.return_value = True
-        mock_llm.return_value = {"content": "Hello human"}
+        mock_llm.return_value = {"messages": ["Hello human", "Second msg"], "reply_to_message_id": None}
         mock_media_desc.return_value = None
 
         await handlers.handle_message(mock_update_handler, mock_context)
 
         mock_llm.assert_called_once()
-        mock_context.bot.send_message.assert_called_once_with(
-            chat_id=12345, text="Hello human"
-        )
+        assert mock_context.bot.send_message.call_count == 2
+        mock_context.bot.send_message.assert_any_call(chat_id=12345, text="Hello human")
+        mock_context.bot.send_message.assert_any_call(chat_id=12345, text="Second msg")
 
 
 @pytest.mark.asyncio
@@ -104,6 +104,3 @@ async def test_handle_message_ignore(temp_db_path, mock_update_handler, mock_con
         await handlers.handle_message(mock_update_handler, mock_context)
 
         mock_context.bot.send_message.assert_not_called()
-
-
-# We can add more tests for media handling, etc. but this covers core logic.

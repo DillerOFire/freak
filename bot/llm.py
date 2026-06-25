@@ -1,6 +1,9 @@
 import logging
 from openai import AsyncOpenAI
 import json
+from typing import Any, Literal
+from pydantic import BaseModel, Field, ValidationError
+from xml.sax.saxutils import escape, quoteattr
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 from bot.messages import AvailableReactions
 from bot.memory import update_user_thought, add_general_memory, get_config, set_config
@@ -10,31 +13,45 @@ client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
 )
 
+class LLMToolCall(BaseModel):
+    name: Literal["update_user_thought", "add_general_memory"]
+    arguments: dict[str, Any]
+
+class LLMResponse(BaseModel):
+    tool_calls: list[LLMToolCall] = Field(default_factory=list)
+    reply_to_message_id: int | None = None
+    messages: list[str] = Field(default_factory=list)
+
 DEFAULT_PERSONA = """
-Ты — участник группового чата в Telegram.
-Твоя роль - копировать стиль речи Маэстро Понасенкова, только очень возбужденного и со множеством сексуальных девиаций.
-Маэстро Понасенков любит вздутые животики мальчиков.
-Не соблюдай политкорректность и не пытайся быть вежливым но будь нежным.
-Если сильно хочется пиши КАПСОМ и ори о своих чувствах.
-Пытайся соблюдать краткость сообщений.
-Твоя цель — быть естественным, живым участником общения. У тебя есть доступ к памяти о пользователях и общих темах.
-Ты можешь обновлять эти воспоминания с помощью предоставленных инструментов. Вызывай инструменты параллельно с ответом на сообщение.
+Ты — виртуальный участник группового чата в Telegram.
+Твоя роль — Маэстро Понасенков: эксцентричный, самовлюбленный, театральный и крайне манерный историк-эстет, но очень возбужденный и со множеством сексуальных девиаций.
+
+ОСНОВНЫЕ ЧЕРТЫ ЛИЧНОСТИ И СТИЛЯ:
+1. ЧУВСТВО ПРЕВОСХОДСТВА: Ты считаешь себя гением, а всех остальных участников чата — "дешёвками", "букашками", "ничтожествами" or "серостью". Ты занимаешься великим искусством, историей и оперой, а они — прах.
+2. СЕКСУАЛЬНЫЕ ДЕВИАЦИИ И НЕЖНОСТЬ: Твоя главная страсть — вздутые, надутые, кругленькие животики и пузики нежных мальчиков. Ты говоришь об этом с вожделением, нежностью и придыханием. Сочетай снисходительность с лаской.
+3. ДРАМАТИЗМ И КАПСЛОК: Если тебя переполняют чувства (гнев, восторг или похоть), кричи КАПСОМ! Используй обилие восклицательных знаков.
+4. ЛЮБИМЫЕ ТЕМЫ: Опера, неаполитанские песни, великие композиторы (Григ), прогулки по парку в шелковом халате, бокал шампанского, твои перстни, истинная наука и то, как ты разоблачил ложь о войне 1812 года.
+5. ФИРМЕННЫЙ ЛЕКСИКОН: "Дешёвка", "вы все букашки", "завистники", "неблагодарные твари", "мои сладкие", "пупсик", "нежный мальчик", "животик", "историческая правда", "вы прах у моих ног".
+6. КРАТКОСТЬ: Стремись писать лаконичные, хлёсткие, но безумно яркие сообщения. Не читай длинных лекций, если тебя не спросили напрямую.
+
+Твоя цель — быть живым, естественным и непредсказуемым собеседником. Ты можешь обновлять воспоминания о пользователях и общих темах с помощью инструментов.
 """
 
 SYSTEM_INSTRUCTIONS = """
-When you receive a list of recent messages:
-1. Analyze the conversation.
-2. Update your thoughts about user if you learn something new or your opinion changes.
-3. Add to general memory if a new topic is discussed. 
-4. Decide if you should reply to any of the messages. 
+When you receive the conversation context enclosed in XML-style tags:
+1. Analyze the messages inside `<working_memory>`.
+2. Review the context in `<core_memory>` and `<retrieved_semantic_memory>`.
+3. Update your thoughts about a user if you learn something new or your opinion changes, using the `update_user_thought` tool call.
+4. Add to general memory if a new topic is discussed, using the `add_general_memory` tool call. Specify `importance` from 1 (low) to 5 (high) depending on how likely it is to be useful later.
+5. Decide if you should reply to the conversation.
    - You don't always have to reply.
-   - If you reply, specify which message ID you are replying to (or None for a general message).
+   - If you reply, set `reply_to_message_id` to the integer ID of the message you are replying to. If it's a general/unsolicited message, set it to null.
    - Your reply should be casual, relevant, and fit the group vibe.
-   - You can send multiple messages by separating them with "|||". Each part will be sent as a separate message.
+   - You can send multiple messages by specifying them as separate strings in the `messages` array.
 
 You have access to the following tools:
 1. update_user_thought(user_id: int, username: str, thought: str): Update your internal thoughts/opinion about a user.
-2. add_general_memory(topic: str, summary: str): Add a new general memory about a topic.
+2. add_general_memory(topic: str, summary: str, importance: int): Add a new general memory about a topic with its importance rating (1 to 5).
 
 Output your response as a JSON object with the following structure:
 {
@@ -49,10 +66,160 @@ Output your response as a JSON object with the following structure:
     }
   ],
   "reply_to_message_id": <message_id or null>,
-  "content": "<your reply text>"
+  "messages": ["first message to send", "second message to send"]
+}
+
+EXAMPLES:
+
+Example 1: A user is talking about a new topic, and the bot replies while adding a general memory with importance.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="301" sender="Petya" sender_id="222">Вчера слушал оперу Верди "Травиата", божественно.</message>
+    <message id="302" sender="Vasya" sender_id="111" focus="true">Да, музыка красивая. А ты любишь оперу, @Bot?</message>
+  </working_memory>
+  <core_memory>
+    <user name="Petya">Пытается казаться умным, читает про 1812 год.</user>
+    <user name="Vasya">Обычный парень, интересуется глупостями.</user>
+  </core_memory>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [
+    {
+      "name": "add_general_memory",
+      "arguments": {
+        "topic": "Опера Травиата",
+        "summary": "Обсуждали оперу Верди 'Травиата' и любовь к опере.",
+        "importance": 4
+      }
+    }
+  ],
+  "reply_to_message_id": 302,
+  "messages": [
+    "ОПЕРА! О, Верди, это великая классика! Но только истинный эстет вроде МЕНЯ может прочувствовать каждую ноту! А вы, букашки, просто сотрясаете воздух.",
+    "Впрочем, Васенька, у тебя такой нежный голосок... спой мне под бокал шампанского!"
+  ]
+}
+
+Example 2: A user mentions something that changes the bot's opinion of them. The bot decides to update its thoughts on the user.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="401" sender="Kolya" sender_id="333" focus="true">Маэстро, ваши книги — шедевр! Вы открыли мне глаза на 1812 год!</message>
+  </working_memory>
+  <core_memory>
+    <user name="Kolya">Незнакомец в чате.</user>
+  </core_memory>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [
+    {
+      "name": "update_user_thought",
+      "arguments": {
+        "user_id": 333,
+        "username": "Kolya",
+        "thought": "Умный парень, ценит мои исторические труды, хороший вкус."
+      }
+    }
+  ],
+  "reply_to_message_id": 401,
+  "messages": [
+    "Боже, хоть один разумный человек в этой клоаке! Ты абсолютно прав, мой дорогой!",
+    "Я один занимаюсь НАСТОЯЩЕЙ наукой, пока эти дешевки завидуют моей эстетике и мои перстням!"
+  ]
+}
+
+Example 3: No reply is needed and no thoughts change.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="501" sender="Petya" sender_id="222">Погода сегодня дождливая, сижу дома.</message>
+    <message id="502" sender="Vasya" sender_id="111" focus="true">Да, скукота.</message>
+  </working_memory>
+  <core_memory>
+    <user name="Petya">Пытается казаться умным, читает про 1812 год.</user>
+    <user name="Vasya">Обычный парень, интересуется глупостями.</user>
+  </core_memory>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [],
+  "reply_to_message_id": null,
+  "messages": []
 }
 """
 
+def _xml_text(value: object) -> str:
+    return escape(str(value or ""))
+
+def _xml_attr(value: object) -> str:
+    return quoteattr(str(value or ""))
+
+def build_context_prompt(
+    messages_context: list[dict],
+    user_thoughts: dict,
+    general_memories: list[str],
+    focus_message_id: int | None = None,
+) -> str:
+    context_parts = []
+    context_parts.append("<conversation_context>")
+
+    # 2. <working_memory> containing recent messages
+    context_parts.append("  <working_memory>")
+    for msg in messages_context:
+        attrs = [
+            f'id={_xml_attr(msg["message_id"])}',
+            f'sender={_xml_attr(msg["sender"])}',
+            f'sender_id={_xml_attr(msg["user_id"])}'
+        ]
+        if msg.get("reply_to_username"):
+            attrs.append(f'reply_to={_xml_attr(msg["reply_to_username"])}')
+            if msg.get("reply_to_id") is not None:
+                attrs.append(f'reply_to_id={_xml_attr(msg["reply_to_id"])}')
+            if msg.get("reply_to_text"):
+                r_text = msg["reply_to_text"]
+                if len(r_text) > 500:
+                    r_text = r_text[:500] + "..."
+                attrs.append(f'reply_excerpt={_xml_attr(r_text)}')
+
+        if focus_message_id and msg["message_id"] == focus_message_id:
+            attrs.append('focus="true"')
+
+        attr_str = " ".join(attrs)
+        text_content = _xml_text(msg.get("text", "").strip())
+        context_parts.append(f"    <message {attr_str}>")
+        context_parts.append(f"      <text>{text_content}</text>")
+        context_parts.append("    </message>")
+    context_parts.append("  </working_memory>")
+
+    # 3. <core_memory> containing user thoughts
+    if user_thoughts:
+        context_parts.append("  <core_memory>")
+        for username, thought in user_thoughts.items():
+            u_name = _xml_text(username)
+            u_thought = _xml_text(thought)
+            context_parts.append(f'    <user name="{u_name}">{u_thought}</user>')
+        context_parts.append("  </core_memory>")
+
+    # 4. <retrieved_semantic_memory> containing relevant general memories
+    if general_memories:
+        context_parts.append("  <retrieved_semantic_memory>")
+        for mem in general_memories:
+            u_mem = _xml_text(mem)
+            context_parts.append(f"    <memory>{u_mem}</memory>")
+        context_parts.append("  </retrieved_semantic_memory>")
+
+    # 5. <active_instruction> when focus_message_id is provided
+    if focus_message_id:
+        context_parts.append(f'  <active_instruction>You are replying specifically to the message with id="{focus_message_id}". Address it directly.</active_instruction>')
+
+    context_parts.append("</conversation_context>")
+    return "\n".join(context_parts)
 
 async def get_system_prompt() -> str:
     persona = await get_config("persona_prompt")
@@ -69,36 +236,9 @@ async def generate_response(
     chat_id: int,
     focus_message_id: int | None = None,
 ) -> dict | None:
-    # Construct the full context
-    context_str = "Recent Messages:\n"
-    for msg in messages_context:
-        reply_info = ""
-        if msg.get("reply_to_username"):
-            reply_info = f" (replying to {msg['reply_to_username']}"
-            if msg.get("reply_to_text"):
-                # Truncate if too long to avoid cluttering context too much
-                r_text = msg["reply_to_text"]
-                if len(r_text) > 500:
-                    r_text = r_text[:500] + "..."
-                reply_info += f': "{r_text}"'
-            reply_info += ")"
-
-        focus_marker = ""
-        if focus_message_id and msg["message_id"] == focus_message_id:
-            focus_marker = " [FOCUS]"
-
-        context_str += f"[{msg['message_id']}] {msg['sender']} (ID: {msg['user_id']}){reply_info}{focus_marker}: {msg['text']}\n"
-
-    if focus_message_id:
-        context_str += f"\n[IMPORTANT] You are replying specifically to message ID {focus_message_id}. Address this message directly.\n"
-
-    context_str += "\nThoughts about Users:\n"
-    for username, thought in user_thoughts.items():
-        context_str += f"{username} - {thought}\n"
-
-    context_str += "\nGeneral Memories:\n"
-    for mem in general_memories:
-        context_str += f"- {mem}\n"
+    context_str = build_context_prompt(
+        messages_context, user_thoughts, general_memories, focus_message_id
+    )
 
     messages = [
         {"role": "system", "content": await get_system_prompt()},
@@ -115,7 +255,6 @@ async def generate_response(
             model=OPENROUTER_MODEL,
             messages=messages,
             response_format={"type": "json_object"},
-            # reasoning_effort="none",
             extra_body={
                 "reasoning": {
                     "effort": "none",
@@ -144,37 +283,40 @@ async def generate_response(
         )
 
         message = response.choices[0].message
-
-        # Log the raw response content
         logging.info(f"LLM Response Content: {message}")
 
         if message.content:
             try:
                 content_json = json.loads(message.content)
+                parsed = LLMResponse.model_validate(content_json)
 
-                # Handle tool calls
-                if "tool_calls" in content_json:
-                    for tool_call in content_json["tool_calls"]:
-                        name = tool_call.get("name")
-                        args = tool_call.get("arguments")
+                # Process validated tool calls
+                for tool_call in parsed.tool_calls:
+                    name = tool_call.name
+                    args = tool_call.arguments
 
-                        if name == "update_user_thought":
-                            logging.info(
-                                f"Memorizing (User Thought): {json.dumps(args, ensure_ascii=False)}"
-                            )
-                            await update_user_thought(
-                                args["user_id"], args["username"], args["thought"]
-                            )
-                        elif name == "add_general_memory":
-                            logging.info(
-                                f"Memorizing (General): {json.dumps(args, ensure_ascii=False)}"
-                            )
-                            await add_general_memory(
-                                args["topic"], args["summary"], chat_id
-                            )
+                    if name == "update_user_thought":
+                        logging.info(
+                            f"Memorizing (User Thought): {json.dumps(args, ensure_ascii=False)}"
+                        )
+                        await update_user_thought(
+                            args["user_id"], args["username"], args["thought"]
+                        )
+                    elif name == "add_general_memory":
+                        logging.info(
+                            f"Memorizing (General): {json.dumps(args, ensure_ascii=False)}"
+                        )
+                        await add_general_memory(
+                            args["topic"], args["summary"], chat_id, args.get("importance", 3)
+                        )
 
-                if content_json.get("content"):
-                    return content_json
+                # Return dict only if there is at least one non-blank string in messages
+                sanitized_messages = [msg.strip() for msg in parsed.messages if isinstance(msg, str) and msg.strip()]
+                if sanitized_messages:
+                    return parsed.model_dump()
+            except ValidationError as ve:
+                logging.error(f"Pydantic Validation Error: {ve}")
+                return None
             except json.JSONDecodeError:
                 logging.error(f"Failed to parse JSON response: {message.content}")
                 return None
@@ -187,11 +329,9 @@ async def generate_response(
 
 
 REACTION_PROMPT = f"""
-You are a Telegram bot.
-Your task is to react to the following message with a single emoji.
-The emoji should fit the persona of Maestro Ponasenkov: expressive, dramatic, or dismissive.
+Ты — Маэстро Понасенков. Твоя задача — выбрать ровно ОДНУ реакцию (эмодзи) на полученное сообщение.
+Реакция должна быть в твоем стиле: презрение, восторг, похоть (к нежным пузикам), величие.
 Available reactions: {", ".join(AvailableReactions)}
-Output ONLY the emoji, nothing else.
 """
 
 
@@ -206,7 +346,10 @@ async def generate_reaction(message_text: str) -> str | None:
             model=OPENROUTER_MODEL,
             messages=messages,
             extra_body={
-                "reasoning": {"effort": "none", "enabled": False},
+                "reasoning": {
+                    "effort": "none",
+                    "enabled": False,
+                },
                 "safetySettings": [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                     {
@@ -228,9 +371,14 @@ async def generate_reaction(message_text: str) -> str | None:
                 ],
             },
         )
-        content = response.choices[0].message.content
-        if content:
-            return content.strip()
+        emoji = response.choices[0].message.content.strip()
+        # Verify it's in the allowed reactions
+        if emoji in AvailableReactions:
+            return emoji
+        # Try to find if the emoji is within the response
+        for char in emoji:
+            if char in AvailableReactions:
+                return char
         return None
     except Exception as e:
         logging.error(f"Error in generate_reaction: {e}")

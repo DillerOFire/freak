@@ -6,7 +6,7 @@ from bot.logic import should_reply, get_paused, should_react, get_utils_disabled
 from bot.llm import generate_response, generate_reaction
 from bot.memory import (
     get_user_thought,
-    get_general_memories,
+    get_relevant_general_memories,
     get_media_description,
     save_media_description,
     is_whitelisted,
@@ -182,20 +182,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Access Control: Whitelist Check
     # Admin is always allowed
     if user.id != ADMIN_ID:
-        # Check if chat (group or user) is whitelisted
-        # For DMs, effective_chat.id is user_id
-        # For Groups, effective_chat.id is group_id
         if not await is_whitelisted(chat_id):
-            # If it's a DM, maybe check if the user ID is whitelisted explicitly?
-            # The logic above covers it if we add user_id to whitelist.
-            # But if a user is in a non-whitelisted group, should they be ignored?
-            # Yes, "work only with whitelisted groups".
-
-            # If it's a group, and not whitelisted, ignore.
-            # If it's a DM, and not whitelisted, ignore.
-
-            # Optional: Log ignored attempt
-            # logging.info(f"Ignored message from {user.id} in chat {chat_id} (not whitelisted)")
             return
 
     media_description = await get_message_media_description(update.message)
@@ -203,7 +190,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or update.message.caption or ""
 
     # Check for Video URLs (YouTube, Instagram, X, etc.)
-    # Expanded list of domains
     target_domains = [
         "youtube.com",
         "youtu.be",
@@ -226,7 +212,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     # Construct regex pattern from domains
-    # Escaping dots and creating a non-capturing group
     domain_pattern = "|".join([re.escape(d) for d in target_domains])
     url_pattern = rf"(https?://(?:www\.)?(?:{domain_pattern})/[^\s]+)"
 
@@ -321,34 +306,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_username = context.bot.username
     if not bot_username:
-        # Fallback if bot username not yet available (shouldn't happen usually)
         bot_username = "@Bot"
 
     if await should_reply(update.message, f"@{bot_username}", chat_id):
         logging.info("Decided to reply...")
 
         # Gather context
-        # 1. Get user thoughts for participants in history
-        # Create a map of user_id -> username from history
-        # uid_to_username = {msg["user_id"]: msg["sender"] for msg in chat_history}
-        # logging.info(f"DEBUG: Active participants in history: {uid_to_username}")
-
-        # Retrieve memory
         user_thoughts = {}
-        # We only need thoughts for users involved in the context
         current_history = chat_history[chat_id]
         involved_user_ids = set(msg["user_id"] for msg in current_history)
         for uid in involved_user_ids:
             thought = await get_user_thought(uid)
             if thought:
-                # Find username for this uid from context
                 username = next(
                     (msg["sender"] for msg in current_history if msg["user_id"] == uid),
                     "Unknown",
                 )
                 user_thoughts[username] = thought
 
-        general_memories = await get_general_memories(chat_id, limit=5)
+        # Relevance queries from real context
+        memory_query = "\n".join(msg.get("text", "") for msg in list(current_history)[-8:])
+        general_memories = await get_relevant_general_memories(chat_id, memory_query, limit=5)
 
         # Generate response
         response = await generate_response(
@@ -359,14 +337,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             focus_message_id=message_id,
         )
 
-        if response and response.get("content"):
+        if response and response.get("messages"):
             reply_to = response.get("reply_to_message_id")
-            content = response.get("content")
-
-            # Split content by |||
-            messages_to_send = [
-                part.strip() for part in content.split("|||") if part.strip()
-            ]
+            messages_to_send = [msg.strip() for msg in response.get("messages", []) if isinstance(msg, str) and msg.strip()]
 
             for i, msg_text in enumerate(messages_to_send):
                 try:
@@ -393,7 +366,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             msg_text,
                             sent_msg.from_user.id,
                             reply_to_id=current_reply_to,
-                            reply_to_username=None,  # We could look this up if needed, but it's less critical for bot's own msg
+                            reply_to_username=None,
                             reply_to_text=None,
                         )
                 except Exception as e:
@@ -405,9 +378,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji = await generate_reaction(text)
         if emoji:
             try:
-                # emoji should be a single character or a list of ReactionType
-                # python-telegram-bot expects 'reaction' argument which can be a string (emoji) or ReactionType
-                # We'll assume the LLM returns a single emoji char.
                 logging.info(f"Reacting with: {emoji}")
                 await context.bot.set_message_reaction(
                     chat_id=chat_id, message_id=message_id, reaction=emoji
