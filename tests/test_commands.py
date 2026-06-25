@@ -54,7 +54,7 @@ async def test_settings_command_shows_inline_panel(mock_admin_update, mock_conte
     text, = mock_admin_update.message.reply_text.call_args.args
     kwargs = mock_admin_update.message.reply_text.call_args.kwargs
     assert "Settings for Chat 12345" in text
-    assert "Reply Chance: 0.05" in text
+    assert "Reply Chance: 5%" in text
     assert kwargs["reply_markup"].inline_keyboard[0][0].text == "Pause bot"
 
 
@@ -80,6 +80,30 @@ async def test_settings_callback_applies_reply_preset(mock_admin_update, mock_co
     mock_set_reply.assert_called_once_with(12345, 0.15)
     query.edit_message_text.assert_called_once_with("updated settings", reply_markup=None)
     query.answer.assert_called_once_with("Settings updated.")
+
+
+@pytest.mark.asyncio
+async def test_settings_callback_adjusts_values(mock_admin_update, mock_context):
+    """Test settings callback adjusts values with step deltas."""
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.message.chat_id = 12345
+    query.data = "settings:adj_reply=0.01"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    mock_admin_update.callback_query = query
+
+    with (
+        patch("bot.commands.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.commands.set_reply_chance", new_callable=AsyncMock) as mock_set_reply,
+        patch("bot.commands._build_settings_panel", new_callable=AsyncMock) as mock_panel,
+    ):
+        mock_config.return_value = (10, 0.05, 0.07)
+        mock_panel.return_value = ("updated settings", None)
+
+        await commands.settings_callback(mock_admin_update, mock_context)
+
+    mock_set_reply.assert_called_once_with(12345, 0.06)
 
 
 @pytest.mark.asyncio

@@ -563,7 +563,22 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_reaction_chance(chat_id, float(value.removeprefix("reaction=")))
     elif value.startswith("cooldown="):
         await set_cooldown_threshold(chat_id, int(value.removeprefix("cooldown=")))
-    elif value != "refresh":
+    elif value.startswith("adj_reply="):
+        cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+        delta = float(value.removeprefix("adj_reply="))
+        new_val = max(0.0, min(1.0, round(reply_chance + delta, 2)))
+        await set_reply_chance(chat_id, new_val)
+    elif value.startswith("adj_reaction="):
+        cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+        delta = float(value.removeprefix("adj_reaction="))
+        new_val = max(0.0, min(1.0, round(reaction_chance + delta, 2)))
+        await set_reaction_chance(chat_id, new_val)
+    elif value.startswith("adj_cooldown="):
+        cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+        delta = int(value.removeprefix("adj_cooldown="))
+        new_val = max(0, cooldown + delta)
+        await set_cooldown_threshold(chat_id, new_val)
+    elif value != "refresh" and value != "noop":
         await query.answer("Unknown setting.", show_alert=True)
         return
 
@@ -579,12 +594,12 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
 
     text = (
         f"Settings for Chat {chat_id}:\n\n"
-        f"Reply Chance: {reply_chance:g}\n"
-        f"Reaction Chance: {reaction_chance:g}\n"
-        f"Cooldown Threshold: {cooldown}s\n"
+        f"Reply Chance: {reply_chance * 100:.0f}%\n"
+        f"Reaction Chance: {reaction_chance * 100:.0f}%\n"
+        f"Cooldown Threshold: {cooldown} messages\n"
         f"Bot Paused: {paused}\n"
         f"Utils Disabled: {utils_disabled}\n\n"
-        "Use buttons for common presets, or commands for exact values."
+        "Use buttons to adjust values, or commands for exact values."
     )
     keyboard = InlineKeyboardMarkup(
         [
@@ -599,27 +614,25 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
                 ),
             ],
             [
-                InlineKeyboardButton("Reply 0%", callback_data="settings:reply=0"),
-                InlineKeyboardButton("Reply 5%", callback_data="settings:reply=0.05"),
-                InlineKeyboardButton("Reply 15%", callback_data="settings:reply=0.15"),
+                InlineKeyboardButton("Reply:", callback_data="settings:noop"),
+                InlineKeyboardButton("-10%", callback_data="settings:adj_reply=-0.1"),
+                InlineKeyboardButton("-1%", callback_data="settings:adj_reply=-0.01"),
+                InlineKeyboardButton("+1%", callback_data="settings:adj_reply=0.01"),
+                InlineKeyboardButton("+10%", callback_data="settings:adj_reply=0.1"),
             ],
             [
-                InlineKeyboardButton("React 0%", callback_data="settings:reaction=0"),
-                InlineKeyboardButton(
-                    "React 7%", callback_data="settings:reaction=0.07"
-                ),
-                InlineKeyboardButton(
-                    "React 20%", callback_data="settings:reaction=0.2"
-                ),
+                InlineKeyboardButton("React:", callback_data="settings:noop"),
+                InlineKeyboardButton("-10%", callback_data="settings:adj_reaction=-0.1"),
+                InlineKeyboardButton("-1%", callback_data="settings:adj_reaction=-0.01"),
+                InlineKeyboardButton("+1%", callback_data="settings:adj_reaction=0.01"),
+                InlineKeyboardButton("+10%", callback_data="settings:adj_reaction=0.1"),
             ],
             [
-                InlineKeyboardButton("Cooldown 0s", callback_data="settings:cooldown=0"),
-                InlineKeyboardButton(
-                    "Cooldown 10s", callback_data="settings:cooldown=10"
-                ),
-                InlineKeyboardButton(
-                    "Cooldown 60s", callback_data="settings:cooldown=60"
-                ),
+                InlineKeyboardButton("Cooldown:", callback_data="settings:noop"),
+                InlineKeyboardButton("-5", callback_data="settings:adj_cooldown=-5"),
+                InlineKeyboardButton("-1", callback_data="settings:adj_cooldown=-1"),
+                InlineKeyboardButton("+1", callback_data="settings:adj_cooldown=1"),
+                InlineKeyboardButton("+5", callback_data="settings:adj_cooldown=5"),
             ],
             [InlineKeyboardButton("Refresh", callback_data="settings:refresh")],
         ]
