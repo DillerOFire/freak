@@ -17,6 +17,9 @@ DEFAULT_REPLY_CHANCE = 0.05
 DEFAULT_REACTION_CHANCE = 0.07
 DEFAULT_MAX_PING_PONG = 2
 
+# Per-chat overrides fall back to this chat_id when unset.
+GLOBAL_SETTINGS_CHAT_ID = 0
+
 
 # Global pause state
 is_paused = False
@@ -28,6 +31,26 @@ def _sender_is_bot(message) -> bool:
 
 def _sender_id(message) -> int | None:
     return getattr(getattr(message, "from_user", None), "id", None)
+
+
+def is_private_chat(chat) -> bool:
+    return getattr(chat, "type", None) == "private"
+
+
+def resolve_settings_chat_id(chat) -> int:
+    if chat is None:
+        return GLOBAL_SETTINGS_CHAT_ID
+    if is_private_chat(chat):
+        return GLOBAL_SETTINGS_CHAT_ID
+    return chat.id
+
+
+async def _get_chat_config_effective(chat_id: int, key: str) -> str | None:
+    if chat_id != GLOBAL_SETTINGS_CHAT_ID:
+        val = await get_chat_config(chat_id, key)
+        if val is not None:
+            return val
+    return await get_chat_config(GLOBAL_SETTINGS_CHAT_ID, key)
 
 
 def _decrement_bot_reply_locks(
@@ -94,7 +117,7 @@ async def set_utils_disabled(chat_id: int, disabled: bool):
 
 
 async def get_utils_disabled(chat_id: int) -> bool:
-    val = await get_chat_config(chat_id, "utils_disabled")
+    val = await _get_chat_config_effective(chat_id, "utils_disabled")
     return val == "true"
 
 
@@ -122,15 +145,15 @@ async def get_logic_config(chat_id: int):
     reply_chance = DEFAULT_REPLY_CHANCE
     reaction_chance = DEFAULT_REACTION_CHANCE
 
-    val = await get_chat_config(chat_id, "cooldown_threshold")
+    val = await _get_chat_config_effective(chat_id, "cooldown_threshold")
     if val:
         cooldown = int(val)
 
-    val = await get_chat_config(chat_id, "reply_chance")
+    val = await _get_chat_config_effective(chat_id, "reply_chance")
     if val:
         reply_chance = float(val)
 
-    val = await get_chat_config(chat_id, "reaction_chance")
+    val = await _get_chat_config_effective(chat_id, "reaction_chance")
     if val:
         reaction_chance = float(val)
 
@@ -138,7 +161,7 @@ async def get_logic_config(chat_id: int):
 
 
 async def get_max_ping_pong(chat_id: int) -> int:
-    val = await get_chat_config(chat_id, "max_ping_pong")
+    val = await _get_chat_config_effective(chat_id, "max_ping_pong")
     if not val:
         return DEFAULT_MAX_PING_PONG
 
@@ -185,6 +208,12 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
         )
         messages_since_last_reply[chat_id] += 1
         return False
+
+    chat_type = getattr(getattr(message, "chat", None), "type", None)
+    if chat_type == "private" and not sender_is_bot:
+        logging.info(f"Trigger: Private chat message in {chat_id}")
+        messages_since_last_reply[chat_id] = 0
+        return True
 
     # Check for direct mention
     if message.text:  # Check for direct mention

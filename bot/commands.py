@@ -32,6 +32,7 @@ from bot.memory import (
     search_general_memories,
 )
 from bot.logic import (
+    GLOBAL_SETTINGS_CHAT_ID,
     set_paused,
     set_reply_chance,
     set_reaction_chance,
@@ -42,6 +43,7 @@ from bot.logic import (
     get_paused,
     set_utils_disabled,
     get_utils_disabled,
+    resolve_settings_chat_id,
 )
 from bot.llm import generate_reaction_prompt
 from bot.handlers import add_message_to_history
@@ -261,17 +263,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_utils_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
-    await set_utils_disabled(update.effective_chat.id, True)
+    chat_id = resolve_settings_chat_id(update.effective_chat)
+    await set_utils_disabled(chat_id, True)
+    scope = "globally" if chat_id == GLOBAL_SETTINGS_CHAT_ID else "for this chat"
     await update.message.reply_text(
-        "Utils (video/sound downloading) disabled for this chat."
+        f"Utils (video/sound downloading) disabled {scope}."
     )
 
 
 async def start_utils_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
-    await set_utils_disabled(update.effective_chat.id, False)
-    await update.message.reply_text("Utils enabled for this chat.")
+    chat_id = resolve_settings_chat_id(update.effective_chat)
+    await set_utils_disabled(chat_id, False)
+    scope = "globally" if chat_id == GLOBAL_SETTINGS_CHAT_ID else "for this chat"
+    await update.message.reply_text(f"Utils enabled {scope}.")
 
 
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -482,7 +488,7 @@ async def set_reply_chance_command(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("Chance must be a float between 0.0 and 1.0")
         return
 
-    await set_reply_chance(update.effective_chat.id, chance)
+    await set_reply_chance(resolve_settings_chat_id(update.effective_chat), chance)
     await update.message.reply_text(f"Reply chance set to {chance}")
 
 
@@ -505,7 +511,7 @@ async def set_reaction_chance_command(
         await update.message.reply_text("Chance must be a float between 0.0 and 1.0")
         return
 
-    await set_reaction_chance(update.effective_chat.id, chance)
+    await set_reaction_chance(resolve_settings_chat_id(update.effective_chat), chance)
     await update.message.reply_text(f"Reaction chance set to {chance}")
 
 
@@ -526,7 +532,7 @@ async def set_cooldown_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Cooldown must be a non-negative integer")
         return
 
-    await set_cooldown_threshold(update.effective_chat.id, cooldown)
+    await set_cooldown_threshold(resolve_settings_chat_id(update.effective_chat), cooldown)
     await update.message.reply_text(f"Cooldown threshold set to {cooldown} seconds")
 
 
@@ -547,7 +553,7 @@ async def set_max_ping_pong_command(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("Maximum ping pong must be a non-negative integer")
         return
 
-    await set_max_ping_pong(update.effective_chat.id, max_ping_pong)
+    await set_max_ping_pong(resolve_settings_chat_id(update.effective_chat), max_ping_pong)
     await update.message.reply_text(f"Maximum ping pong set to {max_ping_pong}")
 
 
@@ -555,7 +561,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
 
-    chat_id = update.effective_chat.id
+    chat_id = resolve_settings_chat_id(update.effective_chat)
     text, keyboard = await _build_settings_panel(chat_id)
     await update.message.reply_text(text, reply_markup=keyboard)
 
@@ -573,7 +579,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    chat_id = query.message.chat_id
+    chat_id = resolve_settings_chat_id(query.message.chat)
     action, _, value = query.data.partition(":")
     if action != "settings":
         await query.answer()
@@ -634,8 +640,15 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
     paused = get_paused()
     utils_disabled = await get_utils_disabled(chat_id)
 
+    if chat_id == GLOBAL_SETTINGS_CHAT_ID:
+        header = (
+            "Global default settings (used by all chats unless overridden):"
+        )
+    else:
+        header = f"Settings for Chat {chat_id}:"
+
     text = (
-        f"Settings for Chat {chat_id}:\n\n"
+        f"{header}\n\n"
         f"Reply Chance: {reply_chance * 100:.0f}%\n"
         f"Reaction Chance: {reaction_chance * 100:.0f}%\n"
         f"Cooldown Threshold: {cooldown} messages\n"

@@ -239,3 +239,31 @@ async def test_should_react(mock_update):
 
         mock_random.return_value = 0.9
         assert await logic.should_react(12345) is False
+
+
+@pytest.mark.asyncio
+async def test_should_reply_private_chat_without_mention(mock_update):
+    """Test that private chat messages reply without mentioning the bot."""
+    mock_update.message.text = "hey there"
+    mock_update.message.reply_to_message = None
+    mock_update.message.chat.type = "private"
+    reset_reply_state()
+    mock_update.message.from_user.is_bot = False
+
+    with patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config:
+        mock_config.return_value = (10, 0.0, 0.0)
+
+        reply = await logic.should_reply(mock_update.message, "@test_bot", 12345)
+
+    assert reply is True
+    assert logic.messages_since_last_reply[12345] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_logic_config_uses_global_defaults(temp_db_path):
+    """Test that chats inherit unset values from global defaults."""
+    from bot.logic import GLOBAL_SETTINGS_CHAT_ID, set_reply_chance, get_logic_config
+
+    await set_reply_chance(GLOBAL_SETTINGS_CHAT_ID, 0.42)
+    _, reply_chance, _ = await get_logic_config(99999)
+    assert reply_chance == 0.42

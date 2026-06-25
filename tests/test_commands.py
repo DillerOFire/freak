@@ -90,6 +90,8 @@ async def test_settings_callback_applies_reply_preset(mock_admin_update, mock_co
     query = MagicMock()
     query.from_user.id = 12345
     query.message.chat_id = 12345
+    query.message.chat.type = "group"
+    query.message.chat.id = 12345
     query.data = "settings:reply=0.15"
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
@@ -114,6 +116,8 @@ async def test_settings_callback_adjusts_max_ping_pong(mock_admin_update, mock_c
     query = MagicMock()
     query.from_user.id = 12345
     query.message.chat_id = 12345
+    query.message.chat.type = "group"
+    query.message.chat.id = 12345
     query.data = "settings:adj_pingpong=1"
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
@@ -153,6 +157,8 @@ async def test_settings_callback_adjusts_values(mock_admin_update, mock_context)
     query = MagicMock()
     query.from_user.id = 12345
     query.message.chat_id = 12345
+    query.message.chat.type = "group"
+    query.message.chat.id = 12345
     query.data = "settings:adj_reply=0.01"
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
@@ -304,3 +310,53 @@ async def test_memory_command_malformed_quotes(mock_update, mock_context):
     mock_update.message.reply_text.assert_called_once_with(
         "Usage: /memory [.|@username|user_id|username] [\"query\"]"
     )
+
+
+@pytest.mark.asyncio
+async def test_settings_command_in_dm_uses_global_config(mock_admin_update, mock_context):
+    """Test /settings in a DM edits global defaults instead of the user chat id."""
+    mock_admin_update.effective_chat.type = "private"
+    mock_admin_update.effective_chat.id = 12345
+    mock_admin_update.message.reply_text = AsyncMock()
+
+    with (
+        patch("bot.commands.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.commands.get_paused") as mock_paused,
+        patch("bot.commands.get_utils_disabled", new_callable=AsyncMock) as mock_utils,
+        patch("bot.commands.get_max_ping_pong", new_callable=AsyncMock) as mock_max_ping_pong,
+    ):
+        mock_config.return_value = (10, 0.05, 0.07)
+        mock_max_ping_pong.return_value = 2
+        mock_paused.return_value = False
+        mock_utils.return_value = False
+
+        await commands.settings_command(mock_admin_update, mock_context)
+
+    text, = mock_admin_update.message.reply_text.call_args.args
+    assert "Global default settings" in text
+    mock_config.assert_called_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_settings_callback_in_dm_uses_global_config(mock_admin_update, mock_context):
+    """Test settings callbacks in a DM write to global defaults."""
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.message.chat_id = 12345
+    query.message.chat.type = "private"
+    query.data = "settings:adj_reply=0.01"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    mock_admin_update.callback_query = query
+
+    with (
+        patch("bot.commands.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.commands.set_reply_chance", new_callable=AsyncMock) as mock_set_reply,
+        patch("bot.commands._build_settings_panel", new_callable=AsyncMock) as mock_panel,
+    ):
+        mock_config.return_value = (10, 0.05, 0.07)
+        mock_panel.return_value = ("updated settings", None)
+
+        await commands.settings_callback(mock_admin_update, mock_context)
+
+    mock_set_reply.assert_called_once_with(0, 0.06)
