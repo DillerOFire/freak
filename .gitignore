@@ -36,10 +36,12 @@ htmlcov/
 .nox/
 
 # Local runtime data
+bot_memory.db
 *.db
 *.sqlite
 *.sqlite3
 *.log
+cookies/
 
 # Editor, OS, and notebook noise
 .DS_Store
