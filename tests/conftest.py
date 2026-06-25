@@ -20,8 +20,10 @@ async def temp_db_path():
     with patch("bot.memory.DB_NAME", db_path):
         # Initialize the database schema
         from bot.memory import init_db
+        from bot.telemetry import init_telemetry_db
 
         await init_db()
+        await init_telemetry_db()
 
         yield db_path
 

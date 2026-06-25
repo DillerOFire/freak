@@ -49,6 +49,9 @@ async def test_handle_message_reply_logic(temp_db_path, mock_update_handler, moc
         await handlers.handle_message(mock_update_handler, mock_context)
 
         mock_llm.assert_called_once()
+        assert mock_llm.call_args.kwargs["source"] == "message"
+        assert mock_llm.call_args.kwargs["memory_query"]
+        assert "Hello bot" in mock_llm.call_args.kwargs["memory_query"]
         assert mock_context.bot.send_message.call_count == 2
         mock_context.bot.send_message.assert_any_call(chat_id=12345, text="Hello human")
         mock_context.bot.send_message.assert_any_call(chat_id=12345, text="Second msg")

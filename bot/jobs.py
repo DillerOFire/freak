@@ -74,6 +74,8 @@ async def execute_daily_task_callback(context: ContextTypes.DEFAULT_TYPE):
             user_thoughts={},
             general_memories=general_memories,
             chat_id=chat_id,
+            source="daily_task",
+            memory_query=task_content,
         )
 
         if response_json and response_json.get("messages"):

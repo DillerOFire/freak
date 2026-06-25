@@ -1,6 +1,6 @@
 import logging
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
-from config import TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_BOT_TOKEN, TELEMETRY_DASHBOARD_ENABLED, TELEMETRY_DASHBOARD_HOST, TELEMETRY_DASHBOARD_PORT, TELEMETRY_DASHBOARD_TOKEN
 from bot.handlers import handle_message
 from bot.commands import (
     update_cookies_command,
@@ -32,6 +32,7 @@ from bot.commands import (
 from bot.jobs import load_jobs
 from bot.memory import init_db
 from bot.logic import init_logic
+from bot.telemetry import init_telemetry_db, start_telemetry_dashboard
 
 
 # Configure logging
@@ -45,9 +46,22 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def post_init(application):
     await init_db()
+    await init_telemetry_db()
     await init_logic()
     logging.info("Database and Logic Config initialized.")
     await load_jobs(application)
+    if TELEMETRY_DASHBOARD_ENABLED:
+        server = start_telemetry_dashboard(
+            host=TELEMETRY_DASHBOARD_HOST,
+            port=TELEMETRY_DASHBOARD_PORT,
+            token=TELEMETRY_DASHBOARD_TOKEN,
+        )
+        application.bot_data["telemetry_dashboard_server"] = server
+        logging.info(
+            "Telemetry dashboard listening on http://%s:%s/telemetry",
+            TELEMETRY_DASHBOARD_HOST,
+            TELEMETRY_DASHBOARD_PORT,
+        )
 
 
 def main():

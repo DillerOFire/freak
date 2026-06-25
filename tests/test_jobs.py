@@ -59,6 +59,8 @@ async def test_execute_daily_task_callback(mock_context):
 
         await jobs.execute_daily_task_callback(mock_context)
 
+        assert mock_llm.call_args.kwargs["source"] == "daily_task"
+        assert mock_llm.call_args.kwargs["memory_query"] == "Say hello"
         assert mock_context.bot.send_message.call_count == 2
         mock_context.bot.send_message.assert_any_call(
             chat_id=123, text="Hello there"

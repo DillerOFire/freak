@@ -39,6 +39,7 @@ async def test_generate_response_success(temp_db_path):
     
     # Mock LLM API response
     mock_response = MagicMock()
+    mock_response.usage = None
     mock_choice = MagicMock()
     mock_message = MagicMock()
     
@@ -110,12 +111,28 @@ async def test_generate_response_success(temp_db_path):
         assert len(saved_memories) == 1
         assert "Topic: Politeness, Summary: People are greeting each other." in saved_memories[0]
 
+        from bot.telemetry import fetch_llm_telemetry
+
+        telemetry_events = await fetch_llm_telemetry(chat_id=chat_id)
+        assert len(telemetry_events) == 1
+        event = telemetry_events[0]
+        assert event["status"] == "success"
+        assert event["source"] == "message"
+        assert event["trigger_messages"][0]["text"] == "Hello bot"
+        assert event["used_user_thoughts"] == mock_user_thoughts
+        assert event["used_general_memories"] == mock_general_memories
+        assert event["tool_call_count"] == 2
+        assert event["memory_write_count"] == 2
+        assert event["failed_memory_write_count"] == 0
+        assert event["response_messages"] == ["Hello, my dear!", "How can I help you today?"]
+
 @pytest.mark.asyncio
 async def test_generate_response_invalid_json(temp_db_path):
     """Test that generate_response returns None if LLM returns invalid JSON."""
     mock_messages_context = []
     
     mock_response = MagicMock()
+    mock_response.usage = None
     mock_choice = MagicMock()
     mock_message = MagicMock()
     mock_message.content = "This is not JSON at all!"
@@ -130,6 +147,15 @@ async def test_generate_response_invalid_json(temp_db_path):
             chat_id=9999
         )
         assert result is None
+
+        from bot.telemetry import fetch_llm_telemetry
+
+        telemetry_events = await fetch_llm_telemetry(chat_id=9999)
+        assert len(telemetry_events) == 1
+        event = telemetry_events[0]
+        assert event["status"] == "invalid_json"
+        assert event["error_type"] == "JSONDecodeError"
+        assert event["raw_response"] == "This is not JSON at all!"
 
 @pytest.mark.asyncio
 async def test_generate_reaction_success():

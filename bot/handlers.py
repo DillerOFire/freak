@@ -335,6 +335,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             general_memories,
             chat_id,
             focus_message_id=message_id,
+            source="message",
+            memory_query=memory_query,
         )
 
         if response and response.get("messages"):

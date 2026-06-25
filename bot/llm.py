@@ -1,4 +1,5 @@
 import logging
+import time
 from openai import AsyncOpenAI
 import json
 from typing import Any, Literal
@@ -7,6 +8,7 @@ from xml.sax.saxutils import escape, quoteattr
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 from bot.messages import AvailableReactions
 from bot.memory import update_user_thought, add_general_memory, get_config, set_config
+from bot.telemetry import record_llm_telemetry
 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -235,15 +237,32 @@ async def generate_response(
     general_memories: list[str],
     chat_id: int,
     focus_message_id: int | None = None,
+    source: str = "message",
+    memory_query: str | None = None,
 ) -> dict | None:
+    system_prompt = await get_system_prompt()
     context_str = build_context_prompt(
         messages_context, user_thoughts, general_memories, focus_message_id
     )
 
     messages = [
-        {"role": "system", "content": await get_system_prompt()},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": context_str},
     ]
+
+    # Telemetry tracking state
+    started_at = time.perf_counter()
+    status = "exception"
+    error_type = None
+    error_message = None
+    raw_response = None
+    prompt_tokens = None
+    completion_tokens = None
+    total_tokens = None
+    tool_calls: list[dict] = []
+    memory_writes: list[dict] = []
+    response_messages: list[str] = []
+    reply_to_message_id = None
 
     try:
         logging.info("Sending prompt to LLM:")
@@ -282,13 +301,26 @@ async def generate_response(
             },
         )
 
+        usage = getattr(response, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+
         message = response.choices[0].message
         logging.info(f"LLM Response Content: {message}")
+
+        raw_response = message.content
 
         if message.content:
             try:
                 content_json = json.loads(message.content)
                 parsed = LLMResponse.model_validate(content_json)
+
+                # Capture validated tool calls for telemetry
+                tool_calls = [
+                    {"name": tc.name, "arguments": tc.arguments}
+                    for tc in parsed.tool_calls
+                ]
 
                 # Process validated tool calls
                 for tool_call in parsed.tool_calls:
@@ -299,33 +331,112 @@ async def generate_response(
                         logging.info(
                             f"Memorizing (User Thought): {json.dumps(args, ensure_ascii=False)}"
                         )
-                        await update_user_thought(
-                            args["user_id"], args["username"], args["thought"]
-                        )
+                        write = {"type": "user_thought", "status": "pending", "arguments": args}
+                        memory_writes.append(write)
+                        try:
+                            await update_user_thought(
+                                args["user_id"], args["username"], args["thought"]
+                            )
+                            write["status"] = "succeeded"
+                        except Exception as mem_error:
+                            write["status"] = "failed"
+                            write["error_type"] = type(mem_error).__name__
+                            write["error_message"] = str(mem_error)[:500]
+                            raise
                     elif name == "add_general_memory":
                         logging.info(
                             f"Memorizing (General): {json.dumps(args, ensure_ascii=False)}"
                         )
-                        await add_general_memory(
-                            args["topic"], args["summary"], chat_id, args.get("importance", 3)
-                        )
+                        write = {
+                            "type": "general_memory",
+                            "status": "pending",
+                            "arguments": {**args, "chat_id": chat_id},
+                        }
+                        memory_writes.append(write)
+                        try:
+                            await add_general_memory(
+                                args["topic"], args["summary"], chat_id, args.get("importance", 3)
+                            )
+                            write["status"] = "succeeded"
+                        except Exception as mem_error:
+                            write["status"] = "failed"
+                            write["error_type"] = type(mem_error).__name__
+                            write["error_message"] = str(mem_error)[:500]
+                            raise
 
                 # Return dict only if there is at least one non-blank string in messages
                 sanitized_messages = [msg.strip() for msg in parsed.messages if isinstance(msg, str) and msg.strip()]
+                reply_to_message_id = parsed.reply_to_message_id
+                response_messages = list(parsed.messages)
                 if sanitized_messages:
+                    status = "success"
                     return parsed.model_dump()
+                else:
+                    status = "no_reply"
+                    return None
             except ValidationError as ve:
                 logging.error(f"Pydantic Validation Error: {ve}")
+                status = "validation_error"
+                error_type = type(ve).__name__
+                error_message = str(ve)[:500]
                 return None
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as je:
                 logging.error(f"Failed to parse JSON response: {message.content}")
+                status = "invalid_json"
+                error_type = type(je).__name__
+                error_message = str(je)[:500]
                 return None
 
+        status = "empty_content"
         return None
 
     except Exception as e:
         logging.error(f"Error in generate_response: {e}")
+        status = "exception"
+        error_type = type(e).__name__
+        error_message = str(e)[:500]
         return None
+    finally:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        try:
+            await record_llm_telemetry(
+                {
+                    "chat_id": chat_id,
+                    "source": source,
+                    "model": OPENROUTER_MODEL,
+                    "focus_message_id": focus_message_id,
+                    "status": status,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "latency_ms": latency_ms,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "context_message_count": len(messages_context),
+                    "context_chars": len(context_str),
+                    "system_prompt_chars": len(system_prompt),
+                    "user_thought_count": len(user_thoughts),
+                    "retrieved_memory_count": len(general_memories),
+                    "memory_query": memory_query,
+                    "trigger_messages": messages_context,
+                    "used_user_thoughts": user_thoughts,
+                    "used_general_memories": general_memories,
+                    "tool_calls": tool_calls,
+                    "memory_writes": memory_writes,
+                    "tool_call_count": len(tool_calls),
+                    "memory_write_count": len([w for w in memory_writes if w.get("status") == "succeeded"]),
+                    "failed_memory_write_count": len([w for w in memory_writes if w.get("status") == "failed"]),
+                    "response_message_count": len(response_messages),
+                    "response_chars": sum(len(msg) for msg in response_messages),
+                    "reply_to_message_id": reply_to_message_id,
+                    "response_messages": response_messages,
+                    "system_prompt": system_prompt,
+                    "context_prompt": context_str,
+                    "raw_response": raw_response,
+                }
+            )
+        except Exception as telemetry_error:
+            logging.error(f"Failed to record LLM telemetry: {telemetry_error}")
 
 
 REACTION_PROMPT = f"""

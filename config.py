@@ -20,6 +20,10 @@ OPENROUTER_VISION_MODEL = os.getenv(
 # Admin ID configuration
 # Default to the user provided ID if not set in env
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+TELEMETRY_DASHBOARD_ENABLED = os.getenv("TELEMETRY_DASHBOARD_ENABLED", "true").lower() not in {"0", "false", "no"}
+TELEMETRY_DASHBOARD_HOST = os.getenv("TELEMETRY_DASHBOARD_HOST", "127.0.0.1")
+TELEMETRY_DASHBOARD_PORT = int(os.getenv("TELEMETRY_DASHBOARD_PORT", "8765"))
+TELEMETRY_DASHBOARD_TOKEN = os.getenv("TELEMETRY_DASHBOARD_TOKEN")
 
 COOKIES_DIR = os.path.join(os.path.dirname(__file__), "cookies")
 if not os.path.exists(COOKIES_DIR):
