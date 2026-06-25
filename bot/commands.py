@@ -823,40 +823,40 @@ async def daily_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
-<b>Available Commands:</b>
+<b>Available commands</b>
 
-<b>General:</b>
-/help - Show this message
-/ping - Check some info
-/music &lt;url&gt; - Download music from various services
-/memory [.|@user|user_id|username] ["query"] - Search or inspect memories
-/memories - Alias for /memory
+<b>General</b>
+- <code>/help</code> - Show this message.
+- <code>/ping</code> - Check bot, chat, and user info.
+- <code>/music &lt;url&gt;</code> - Download audio from supported services.
+- <code>/memory [.|@user|user_id|username] ["query"]</code> - Search or inspect memories.
+- <code>/memories</code> - Alias for <code>/memory</code>.
 
-<b>Daily Schedules (Every Day):</b>
-/add_daily_msg &lt;HH:MM&gt; - (Reply to a message) Schedule this message to be sent daily
-/add_daily_task &lt;HH:MM&gt; &lt;prompt&gt; - Schedule an LLM task/prompt daily
-/daily_list - List active schedules for this chat
-/daily_cancel_msg - Cancel the daily message
-/daily_cancel_task - Cancel the daily task
+<b>Daily schedules</b>
+- <code>/add_daily_msg &lt;HH:MM&gt;</code> - Reply to a message to send it every day.
+- <code>/add_daily_task &lt;HH:MM&gt; &lt;prompt&gt;</code> - Run an LLM prompt every day.
+- <code>/daily_list</code> - List active schedules for this chat.
+- <code>/daily_cancel_msg</code> - Cancel the daily message.
+- <code>/daily_cancel_task</code> - Cancel the daily task.
 
-<b>Configuration (Admin):</b>
-/settings - Show and change settings with buttons
-/set_reply_chance &lt;0.0-1.0&gt; - Set chance to reply to random messages
-/set_reaction_chance &lt;0.0-1.0&gt; - Set chance to react to messages
-/set_cooldown &lt;seconds&gt; - Set cooldown between auto-replies
-/update_prompt &lt;text&gt; - Update the system prompt
-/show_prompt - Show current system prompt
+<b>Admin configuration</b>
+- <code>/settings</code> - Show and change settings with buttons.
+- <code>/set_reply_chance &lt;0.0-1.0&gt;</code> - Set chance to reply to random messages.
+- <code>/set_reaction_chance &lt;0.0-1.0&gt;</code> - Set chance to react to messages.
+- <code>/set_cooldown &lt;seconds&gt;</code> - Set cooldown between auto-replies.
+- <code>/update_prompt &lt;text&gt;</code> - Update the system prompt.
+- <code>/show_prompt</code> - Show the current system prompt.
 
-<b>Management (Admin):</b>
-/stop - Pause the bot
-/start - Resume the bot
-/stop_utils - Disable media downloading in this chat
-/start_utils - Enable media downloading in this chat
-/update_cookies &lt;service&gt; - Update cookies (attach file or text)
-/whitelist_add &lt;id&gt; &lt;type&gt; - Add user/group to whitelist
-/whitelist_remove &lt;id&gt; - Remove from whitelist
-/whitelist_list - List whitelisted entities
-/update_ytdlp - Update yt-dlp manually
-/update_bot - Check for bot updates and restart if found
+<b>Admin management</b>
+- <code>/stop</code> - Pause the bot.
+- <code>/start</code> - Resume the bot.
+- <code>/stop_utils</code> - Disable media downloading in this chat.
+- <code>/start_utils</code> - Enable media downloading in this chat.
+- <code>/update_cookies &lt;service&gt;</code> - Update cookies from an attached file or text.
+- <code>/whitelist_add &lt;id&gt; &lt;type&gt;</code> - Add a user or group to the whitelist.
+- <code>/whitelist_remove &lt;id&gt;</code> - Remove an ID from the whitelist.
+- <code>/whitelist_list</code> - List whitelisted entities.
+- <code>/update_ytdlp</code> - Update yt-dlp manually.
+- <code>/update_bot</code> - Check for bot updates and restart if found.
 """
     await update.message.reply_text(help_text, parse_mode="HTML")

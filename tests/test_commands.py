@@ -88,8 +88,11 @@ async def test_help_command(mock_update, mock_context):
     mock_update.message.reply_text = AsyncMock()
     await commands.help_command(mock_update, mock_context)
     mock_update.message.reply_text.assert_called_once()
-    args, _ = mock_update.message.reply_text.call_args
-    assert "Available Commands" in args[0]
+    args, kwargs = mock_update.message.reply_text.call_args
+    assert "<b>Available commands</b>" in args[0]
+    assert "- <code>/help</code> - Show this message." in args[0]
+    assert "- <code>/start</code> - Resume the bot." in args[0]
+    assert kwargs["parse_mode"] == "HTML"
 
 
 @pytest.mark.asyncio
