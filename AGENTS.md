@@ -4,24 +4,35 @@ This is a Telegram bot built with `python-telegram-bot`, designed to act as a pe
 
 ## 🛠 Development & Testing
 
+### Nix Development Environment
+For NixOS or any system with Nix installed, a development shell is available containing all system and language level dependencies (including `ffmpeg` and dynamic libs needed by packages like OpenCV):
+```bash
+nix-shell
+```
+
 ### Dependency Management
 This project uses `uv` for dependency management.
-- Install dependencies: `uv sync`
-- Add a dependency: `uv add <package>`
-- Add a dev dependency: `uv add --dev <package>`
+* Install dependencies: `uv sync`
+* Add a dependency: `uv add <package>`
+* Add a dev dependency: `uv add --dev <package>`
+
+### Command Runner (`just`)
+A `justfile` is provided for common development tasks. Run these inside the `nix-shell` or on your host:
+* List all available commands: `just`
+* Sync python dependencies: `just sync`
+* Run the bot: `just run`
+* Run the test suite: `just test`
+* Clean up cache and virtual environment: `just clean`
 
 ### Running Tests
 A `pytest` suite is setup in the `tests/` directory.
 
 To run all tests:
 ```bash
-uv run pytest tests/ -v
+just test
 ```
 
 > **Note:** Tests use a temporary file-based SQLite database and mock external API calls (Telegram, OpenRouter, yt-dlp).
-
-### Linting/Formatting
-(Add if applicable, e.g., `ruff check .`)
 
 ## 🏗 Architecture
 

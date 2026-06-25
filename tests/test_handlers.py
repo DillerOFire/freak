@@ -20,7 +20,7 @@ def mock_update_handler(mock_update):
 
 
 @pytest.mark.asyncio
-async def test_handle_message_paused(mock_update_handler, mock_context):
+async def test_handle_message_paused(temp_db_path, mock_update_handler, mock_context):
     """Test that suspended bot ignores messages."""
     with patch("bot.handlers.get_paused", return_value=True):
         await handlers.handle_message(mock_update_handler, mock_context)
@@ -28,7 +28,7 @@ async def test_handle_message_paused(mock_update_handler, mock_context):
 
 
 @pytest.mark.asyncio
-async def test_handle_message_reply_logic(mock_update_handler, mock_context):
+async def test_handle_message_reply_logic(temp_db_path, mock_update_handler, mock_context):
     """Test that bot replies when should_reply is True."""
     mock_update_handler.message.text = "Hello bot"
 
@@ -55,7 +55,7 @@ async def test_handle_message_reply_logic(mock_update_handler, mock_context):
 
 
 @pytest.mark.asyncio
-async def test_handle_message_reaction(mock_update_handler, mock_context):
+async def test_handle_message_reaction(temp_db_path, mock_update_handler, mock_context):
     """Test reaction logic."""
     mock_update_handler.message.text = "Funny joke"
 
@@ -85,7 +85,7 @@ async def test_handle_message_reaction(mock_update_handler, mock_context):
 
 
 @pytest.mark.asyncio
-async def test_handle_message_ignore(mock_update_handler, mock_context):
+async def test_handle_message_ignore(temp_db_path, mock_update_handler, mock_context):
     """Test that bot ignores when should_reply is False."""
     mock_update_handler.message.text = "Just talking"
 
