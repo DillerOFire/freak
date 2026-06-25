@@ -16,6 +16,7 @@ from bot.commands import (
     set_reply_chance_command,
     set_reaction_chance_command,
     set_cooldown_command,
+    set_max_ping_pong_command,
     settings_command,
     settings_callback,
     music_command,
@@ -109,6 +110,9 @@ def main():
         CommandHandler("set_reaction_chance", set_reaction_chance_command)
     )
     application.add_handler(CommandHandler("set_cooldown", set_cooldown_command))
+    application.add_handler(
+        CommandHandler("set_max_ping_pong", set_max_ping_pong_command)
+    )
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CallbackQueryHandler(settings_callback, pattern="^settings:"))
     application.add_handler(CommandHandler("music", music_command))

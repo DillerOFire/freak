@@ -35,8 +35,10 @@ from bot.logic import (
     set_paused,
     set_reply_chance,
     set_reaction_chance,
+    set_max_ping_pong,
     set_cooldown_threshold,
     get_logic_config,
+    get_max_ping_pong,
     get_paused,
     set_utils_disabled,
     get_utils_disabled,
@@ -528,6 +530,27 @@ async def set_cooldown_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Cooldown threshold set to {cooldown} seconds")
 
 
+async def set_max_ping_pong_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /set_max_ping_pong <count>")
+        return
+
+    try:
+        max_ping_pong = int(args[0])
+        if max_ping_pong < 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("Maximum ping pong must be a non-negative integer")
+        return
+
+    await set_max_ping_pong(update.effective_chat.id, max_ping_pong)
+    await update.message.reply_text(f"Maximum ping pong set to {max_ping_pong}")
+
+
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
@@ -566,6 +589,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_reaction_chance(chat_id, float(value.removeprefix("reaction=")))
     elif value.startswith("cooldown="):
         await set_cooldown_threshold(chat_id, int(value.removeprefix("cooldown=")))
+    elif value.startswith("pingpong="):
+        await set_max_ping_pong(chat_id, int(value.removeprefix("pingpong=")))
     elif value.startswith("adj_reply="):
         cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
         delta = float(value.removeprefix("adj_reply="))
@@ -581,6 +606,11 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delta = int(value.removeprefix("adj_cooldown="))
         new_val = max(0, cooldown + delta)
         await set_cooldown_threshold(chat_id, new_val)
+    elif value.startswith("adj_pingpong="):
+        max_ping_pong = await get_max_ping_pong(chat_id)
+        delta = int(value.removeprefix("adj_pingpong="))
+        new_val = max(0, max_ping_pong + delta)
+        await set_max_ping_pong(chat_id, new_val)
     elif value == "noop":
         await query.answer()
         return
@@ -600,6 +630,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
     cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+    max_ping_pong = await get_max_ping_pong(chat_id)
     paused = get_paused()
     utils_disabled = await get_utils_disabled(chat_id)
 
@@ -608,6 +639,7 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
         f"Reply Chance: {reply_chance * 100:.0f}%\n"
         f"Reaction Chance: {reaction_chance * 100:.0f}%\n"
         f"Cooldown Threshold: {cooldown} messages\n"
+        f"Max Ping Pong: {max_ping_pong} replies\n"
         f"Bot Paused: {paused}\n"
         f"Utils Disabled: {utils_disabled}\n\n"
         "Use buttons to adjust values, or commands for exact values."
@@ -644,6 +676,11 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
                 InlineKeyboardButton("-1", callback_data="settings:adj_cooldown=-1"),
                 InlineKeyboardButton("+1", callback_data="settings:adj_cooldown=1"),
                 InlineKeyboardButton("+5", callback_data="settings:adj_cooldown=5"),
+            ],
+            [
+                InlineKeyboardButton("Ping pong:", callback_data="settings:noop"),
+                InlineKeyboardButton("-1", callback_data="settings:adj_pingpong=-1"),
+                InlineKeyboardButton("+1", callback_data="settings:adj_pingpong=1"),
             ],
             [InlineKeyboardButton("Refresh", callback_data="settings:refresh")],
         ]
@@ -868,6 +905,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - <code>/set_reply_chance &lt;0.0-1.0&gt;</code> - Set chance to reply to random messages.
 - <code>/set_reaction_chance &lt;0.0-1.0&gt;</code> - Set chance to react to messages.
 - <code>/set_cooldown &lt;seconds&gt;</code> - Set cooldown between auto-replies.
+- <code>/set_max_ping_pong &lt;count&gt;</code> - Cap bot-to-bot reply chains.
 - <code>/update_prompt &lt;text&gt;</code> - Update the system prompt.
 - <code>/show_prompt</code> - Show the current system prompt.
 

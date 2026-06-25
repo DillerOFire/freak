@@ -7,6 +7,7 @@ from bot import logic
 def reset_reply_state(chat_id=12345):
     logic.messages_since_last_reply.pop(chat_id, None)
     logic.bot_reply_locks.pop(chat_id, None)
+    logic.bot_ping_pong_counts.pop(chat_id, None)
 
 @pytest.mark.asyncio
 async def test_should_reply_direct_mention(mock_update):
@@ -34,14 +35,66 @@ async def test_should_reply_bot_mention_creates_lock(mock_update):
     mock_update.message.from_user.is_bot = True
     mock_update.message.from_user.id = 777
 
-    with patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config:
+    with (
+        patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.logic.get_max_ping_pong", new_callable=AsyncMock) as mock_max_ping_pong,
+    ):
         mock_config.return_value = (10, 0.0, 0.0)
+        mock_max_ping_pong.return_value = 2
 
         reply = await logic.should_reply(mock_update.message, "@test_bot", 12345)
 
     assert reply is True
     assert logic.messages_since_last_reply[12345] == 0
     assert logic.bot_reply_locks[12345][777] == logic.BOT_REPLY_LOCK_TTL_MESSAGES
+    assert logic.bot_ping_pong_counts[12345][777] == 1
+
+
+@pytest.mark.asyncio
+async def test_should_reply_bot_mention_respects_max_ping_pong(mock_update):
+    """Test that bot-to-bot replies stop after the configured ping-pong cap."""
+    reset_reply_state()
+    mock_update.message.text = "@test_bot still there?"
+    mock_update.message.from_user.is_bot = True
+    mock_update.message.from_user.id = 777
+    logic.messages_since_last_reply[12345] = 0
+    logic.bot_ping_pong_counts[12345] = {777: 2}
+
+    with (
+        patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.logic.get_max_ping_pong", new_callable=AsyncMock) as mock_max_ping_pong,
+    ):
+        mock_config.return_value = (10, 0.0, 0.0)
+        mock_max_ping_pong.return_value = 2
+
+        reply = await logic.should_reply(mock_update.message, "@test_bot", 12345)
+
+    assert reply is False
+    assert logic.messages_since_last_reply[12345] == 1
+    assert logic.bot_ping_pong_counts[12345][777] == 2
+
+
+@pytest.mark.asyncio
+async def test_should_reply_human_message_resets_ping_pong(mock_update):
+    """Test that human messages start a fresh bot-to-bot conversation window."""
+    reset_reply_state()
+    mock_update.message.text = "human interjection"
+    mock_update.message.reply_to_message = None
+    mock_update.message.from_user.is_bot = False
+    logic.messages_since_last_reply[12345] = 0
+    logic.bot_ping_pong_counts[12345] = {777: 2}
+
+    with (
+        patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.logic.get_max_ping_pong", new_callable=AsyncMock) as mock_max_ping_pong,
+    ):
+        mock_config.return_value = (10, 0.0, 0.0)
+        mock_max_ping_pong.return_value = 2
+
+        reply = await logic.should_reply(mock_update.message, "@test_bot", 12345)
+
+    assert reply is False
+    assert 12345 not in logic.bot_ping_pong_counts
 
 
 @pytest.mark.asyncio
@@ -54,8 +107,12 @@ async def test_should_reply_bot_mention_ignored_while_locked(mock_update):
     logic.messages_since_last_reply[12345] = 0
     logic.bot_reply_locks[12345] = {777: logic.BOT_REPLY_LOCK_TTL_MESSAGES}
 
-    with patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config:
+    with (
+        patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.logic.get_max_ping_pong", new_callable=AsyncMock) as mock_max_ping_pong,
+    ):
         mock_config.return_value = (10, 0.0, 0.0)
+        mock_max_ping_pong.return_value = 2
 
         reply = await logic.should_reply(mock_update.message, "@test_bot", 12345)
 
@@ -93,9 +150,11 @@ async def test_should_reply_bot_sender_skips_random_chance(mock_update):
 
     with (
         patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.logic.get_max_ping_pong", new_callable=AsyncMock) as mock_max_ping_pong,
         patch("random.random") as mock_random,
     ):
         mock_config.return_value = (0, 0.5, 0.0)
+        mock_max_ping_pong.return_value = 2
         mock_random.return_value = 0.1
 
         reply = await logic.should_reply(mock_update.message, "@test_bot", 12345)

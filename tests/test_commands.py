@@ -66,8 +66,10 @@ async def test_settings_command_shows_inline_panel(mock_admin_update, mock_conte
         patch("bot.commands.get_logic_config", new_callable=AsyncMock) as mock_config,
         patch("bot.commands.get_paused") as mock_paused,
         patch("bot.commands.get_utils_disabled", new_callable=AsyncMock) as mock_utils,
+        patch("bot.commands.get_max_ping_pong", new_callable=AsyncMock) as mock_max_ping_pong,
     ):
         mock_config.return_value = (10, 0.05, 0.07)
+        mock_max_ping_pong.return_value = 2
         mock_paused.return_value = False
         mock_utils.return_value = False
 
@@ -78,6 +80,7 @@ async def test_settings_command_shows_inline_panel(mock_admin_update, mock_conte
     kwargs = mock_admin_update.message.reply_text.call_args.kwargs
     assert "Settings for Chat 12345" in text
     assert "Reply Chance: 5%" in text
+    assert "Max Ping Pong: 2 replies" in text
     assert kwargs["reply_markup"].inline_keyboard[0][0].text == "Pause bot"
 
 
@@ -103,6 +106,45 @@ async def test_settings_callback_applies_reply_preset(mock_admin_update, mock_co
     mock_set_reply.assert_called_once_with(12345, 0.15)
     query.edit_message_text.assert_called_once_with("updated settings", reply_markup=None)
     query.answer.assert_called_once_with("Settings updated.")
+
+
+@pytest.mark.asyncio
+async def test_settings_callback_adjusts_max_ping_pong(mock_admin_update, mock_context):
+    """Test settings callback adjusts the max ping-pong value."""
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.message.chat_id = 12345
+    query.data = "settings:adj_pingpong=1"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    mock_admin_update.callback_query = query
+
+    with (
+        patch("bot.commands.get_max_ping_pong", new_callable=AsyncMock) as mock_get_max,
+        patch("bot.commands.set_max_ping_pong", new_callable=AsyncMock) as mock_set_max,
+        patch("bot.commands._build_settings_panel", new_callable=AsyncMock) as mock_panel,
+    ):
+        mock_get_max.return_value = 2
+        mock_panel.return_value = ("updated settings", None)
+
+        await commands.settings_callback(mock_admin_update, mock_context)
+
+    mock_set_max.assert_called_once_with(12345, 3)
+
+
+@pytest.mark.asyncio
+async def test_set_max_ping_pong_command(mock_admin_update, mock_context):
+    """Test /set_max_ping_pong exact value command."""
+    mock_context.args = ["4"]
+    mock_admin_update.message.reply_text = AsyncMock()
+
+    with patch("bot.commands.set_max_ping_pong", new_callable=AsyncMock) as mock_set_max:
+        await commands.set_max_ping_pong_command(mock_admin_update, mock_context)
+
+    mock_set_max.assert_called_once_with(12345, 4)
+    mock_admin_update.message.reply_text.assert_called_once_with(
+        "Maximum ping pong set to 4"
+    )
 
 
 @pytest.mark.asyncio

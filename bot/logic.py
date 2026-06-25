@@ -9,11 +9,13 @@ messages_since_last_reply: dict[int, int] = {}
 
 BOT_REPLY_LOCK_TTL_MESSAGES = 3
 bot_reply_locks: dict[int, dict[int, int]] = {}
+bot_ping_pong_counts: dict[int, dict[int, int]] = {}
 
 # Default values
 DEFAULT_COOLDOWN_THRESHOLD = 10
 DEFAULT_REPLY_CHANCE = 0.05
 DEFAULT_REACTION_CHANCE = 0.07
+DEFAULT_MAX_PING_PONG = 2
 
 
 # Global pause state
@@ -56,6 +58,19 @@ def _mark_bot_replied(chat_id: int, sender_id: int | None) -> None:
         return
 
     bot_reply_locks.setdefault(chat_id, {})[sender_id] = BOT_REPLY_LOCK_TTL_MESSAGES
+    counts = bot_ping_pong_counts.setdefault(chat_id, {})
+    counts[sender_id] = counts.get(sender_id, 0) + 1
+
+
+def _reset_bot_ping_pong(chat_id: int) -> None:
+    bot_ping_pong_counts.pop(chat_id, None)
+
+
+def _bot_ping_pong_count(chat_id: int, sender_id: int | None) -> int:
+    if sender_id is None:
+        return 0
+
+    return bot_ping_pong_counts.get(chat_id, {}).get(sender_id, 0)
 
 
 async def set_cooldown_threshold(chat_id: int, value: int):
@@ -68,6 +83,10 @@ async def set_reply_chance(chat_id: int, value: float):
 
 async def set_reaction_chance(chat_id: int, value: float):
     await set_chat_config(chat_id, "reaction_chance", str(value))
+
+
+async def set_max_ping_pong(chat_id: int, value: int):
+    await set_chat_config(chat_id, "max_ping_pong", str(value))
 
 
 async def set_utils_disabled(chat_id: int, disabled: bool):
@@ -118,6 +137,17 @@ async def get_logic_config(chat_id: int):
     return cooldown, reply_chance, reaction_chance
 
 
+async def get_max_ping_pong(chat_id: int) -> int:
+    val = await get_chat_config(chat_id, "max_ping_pong")
+    if not val:
+        return DEFAULT_MAX_PING_PONG
+
+    try:
+        return max(0, int(val))
+    except ValueError:
+        return DEFAULT_MAX_PING_PONG
+
+
 async def should_reply(message, bot_username: str, chat_id: int) -> bool:
     global messages_since_last_reply
 
@@ -129,7 +159,10 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
 
     sender_is_bot = _sender_is_bot(message)
     sender_id = _sender_id(message)
+    max_ping_pong = await get_max_ping_pong(chat_id) if sender_is_bot else 0
     _decrement_bot_reply_locks(chat_id, active_sender_id=sender_id)
+    if not sender_is_bot:
+        _reset_bot_ping_pong(chat_id)
 
     logging.info(
         f"Checking if should reply in {chat_id}: {messages_since_last_reply[chat_id]}"
@@ -138,6 +171,17 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
     if sender_is_bot and sender_id in bot_reply_locks.get(chat_id, {}):
         logging.info(
             f"Ignoring bot message from {sender_id} in chat {chat_id}: reply lock active"
+        )
+        messages_since_last_reply[chat_id] += 1
+        return False
+
+    if (
+        sender_is_bot
+        and sender_id is not None
+        and _bot_ping_pong_count(chat_id, sender_id) >= max_ping_pong
+    ):
+        logging.info(
+            f"Ignoring bot message from {sender_id} in chat {chat_id}: max ping pong reached"
         )
         messages_since_last_reply[chat_id] += 1
         return False
