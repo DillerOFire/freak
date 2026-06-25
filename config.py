@@ -17,6 +17,10 @@ OPENROUTER_VISION_MODEL = os.getenv(
     "OPENROUTER_VISION_MODEL", "google/gemini-flash-2.5"
 )
 
+# OpenRouter app attribution headers
+OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://github.com/DillerOFire/freak")
+OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "Freaky tg bot")
+
 # Admin ID configuration
 # Default to the user provided ID if not set in env
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))

@@ -1,11 +1,15 @@
 import base64
 import logging
 from openai import AsyncOpenAI
-from config import OPENROUTER_API_KEY, OPENROUTER_VISION_MODEL
+from config import OPENROUTER_API_KEY, OPENROUTER_VISION_MODEL, OPENROUTER_REFERER, OPENROUTER_TITLE
 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": OPENROUTER_REFERER,
+        "X-Title": OPENROUTER_TITLE,
+    },
 )
 
 

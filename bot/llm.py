@@ -5,7 +5,7 @@ import json
 from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 from xml.sax.saxutils import escape, quoteattr
-from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
+from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_REFERER, OPENROUTER_TITLE
 from bot.messages import AvailableReactions
 from bot.memory import update_user_thought, add_general_memory, get_config, set_config
 from bot.telemetry import record_llm_telemetry
@@ -13,6 +13,10 @@ from bot.telemetry import record_llm_telemetry
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": OPENROUTER_REFERER,
+        "X-Title": OPENROUTER_TITLE,
+    },
 )
 
 class LLMToolCall(BaseModel):
