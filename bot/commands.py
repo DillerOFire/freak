@@ -3,7 +3,7 @@ import logging
 import shlex
 
 from datetime import datetime
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from config import COOKIES_DIR, ADMIN_ID
 from bot.jobs import (
@@ -530,16 +530,101 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    config = await get_logic_config(chat_id)
+    text, keyboard = await _build_settings_panel(chat_id)
+    await update.message.reply_text(text, reply_markup=keyboard)
 
-    msg = f"Settings for Chat {chat_id}:\n\n"
-    msg += f"Reply Chance: {config.get('reply_chance', 0.5)}\n"
-    msg += f"Reaction Chance: {config.get('reaction_chance', 0.5)}\n"
-    msg += f"Cooldown Threshold: {config.get('cooldown_threshold', 60)}s\n"
-    msg += f"Bot Paused: {get_paused()}\n"
-    msg += f"Utils Disabled: {await get_utils_disabled(chat_id)}\n"
 
-    await update.message.reply_text(msg)
+async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Admin only.", show_alert=True)
+        return
+
+    if not query.message or not query.data:
+        await query.answer()
+        return
+
+    chat_id = query.message.chat_id
+    action, _, value = query.data.partition(":")
+    if action != "settings":
+        await query.answer()
+        return
+
+    if value == "toggle_pause":
+        await set_paused(not get_paused())
+    elif value == "toggle_utils":
+        await set_utils_disabled(chat_id, not await get_utils_disabled(chat_id))
+    elif value.startswith("reply="):
+        await set_reply_chance(chat_id, float(value.removeprefix("reply=")))
+    elif value.startswith("reaction="):
+        await set_reaction_chance(chat_id, float(value.removeprefix("reaction=")))
+    elif value.startswith("cooldown="):
+        await set_cooldown_threshold(chat_id, int(value.removeprefix("cooldown=")))
+    elif value != "refresh":
+        await query.answer("Unknown setting.", show_alert=True)
+        return
+
+    text, keyboard = await _build_settings_panel(chat_id)
+    await query.edit_message_text(text, reply_markup=keyboard)
+    await query.answer("Settings updated.")
+
+
+async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+    paused = get_paused()
+    utils_disabled = await get_utils_disabled(chat_id)
+
+    text = (
+        f"Settings for Chat {chat_id}:\n\n"
+        f"Reply Chance: {reply_chance:g}\n"
+        f"Reaction Chance: {reaction_chance:g}\n"
+        f"Cooldown Threshold: {cooldown}s\n"
+        f"Bot Paused: {paused}\n"
+        f"Utils Disabled: {utils_disabled}\n\n"
+        "Use buttons for common presets, or commands for exact values."
+    )
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Resume bot" if paused else "Pause bot",
+                    callback_data="settings:toggle_pause",
+                ),
+                InlineKeyboardButton(
+                    "Enable utils" if utils_disabled else "Disable utils",
+                    callback_data="settings:toggle_utils",
+                ),
+            ],
+            [
+                InlineKeyboardButton("Reply 0%", callback_data="settings:reply=0"),
+                InlineKeyboardButton("Reply 5%", callback_data="settings:reply=0.05"),
+                InlineKeyboardButton("Reply 15%", callback_data="settings:reply=0.15"),
+            ],
+            [
+                InlineKeyboardButton("React 0%", callback_data="settings:reaction=0"),
+                InlineKeyboardButton(
+                    "React 7%", callback_data="settings:reaction=0.07"
+                ),
+                InlineKeyboardButton(
+                    "React 20%", callback_data="settings:reaction=0.2"
+                ),
+            ],
+            [
+                InlineKeyboardButton("Cooldown 0s", callback_data="settings:cooldown=0"),
+                InlineKeyboardButton(
+                    "Cooldown 10s", callback_data="settings:cooldown=10"
+                ),
+                InlineKeyboardButton(
+                    "Cooldown 60s", callback_data="settings:cooldown=60"
+                ),
+            ],
+            [InlineKeyboardButton("Refresh", callback_data="settings:refresh")],
+        ]
+    )
+    return text, keyboard
 
 
 async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -755,7 +840,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /daily_cancel_task - Cancel the daily task
 
 <b>Configuration (Admin):</b>
-/settings - Show current settings
+/settings - Show and change settings with buttons
 /set_reply_chance &lt;0.0-1.0&gt; - Set chance to reply to random messages
 /set_reaction_chance &lt;0.0-1.0&gt; - Set chance to react to messages
 /set_cooldown &lt;seconds&gt; - Set cooldown between auto-replies

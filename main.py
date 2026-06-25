@@ -1,5 +1,5 @@
 import logging
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 from config import TELEGRAM_BOT_TOKEN, TELEMETRY_DASHBOARD_ENABLED, TELEMETRY_DASHBOARD_HOST, TELEMETRY_DASHBOARD_PORT, TELEMETRY_DASHBOARD_TOKEN
 from bot.handlers import handle_message
 from bot.commands import (
@@ -17,6 +17,7 @@ from bot.commands import (
     set_reaction_chance_command,
     set_cooldown_command,
     settings_command,
+    settings_callback,
     music_command,
     stop_utils_command,
     start_utils_command,
@@ -109,6 +110,7 @@ def main():
     )
     application.add_handler(CommandHandler("set_cooldown", set_cooldown_command))
     application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CallbackQueryHandler(settings_callback, pattern="^settings:"))
     application.add_handler(CommandHandler("music", music_command))
     application.add_handler(CommandHandler("stop_utils", stop_utils_command))
     application.add_handler(CommandHandler("start_utils", start_utils_command))

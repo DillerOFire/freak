@@ -35,6 +35,54 @@ async def test_stop_command(mock_admin_update, mock_context):
 
 
 @pytest.mark.asyncio
+async def test_settings_command_shows_inline_panel(mock_admin_update, mock_context):
+    """Test /settings renders current values with inline controls."""
+    mock_admin_update.message.reply_text = AsyncMock()
+
+    with (
+        patch("bot.commands.get_logic_config", new_callable=AsyncMock) as mock_config,
+        patch("bot.commands.get_paused") as mock_paused,
+        patch("bot.commands.get_utils_disabled", new_callable=AsyncMock) as mock_utils,
+    ):
+        mock_config.return_value = (10, 0.05, 0.07)
+        mock_paused.return_value = False
+        mock_utils.return_value = False
+
+        await commands.settings_command(mock_admin_update, mock_context)
+
+    mock_admin_update.message.reply_text.assert_called_once()
+    text, = mock_admin_update.message.reply_text.call_args.args
+    kwargs = mock_admin_update.message.reply_text.call_args.kwargs
+    assert "Settings for Chat 12345" in text
+    assert "Reply Chance: 0.05" in text
+    assert kwargs["reply_markup"].inline_keyboard[0][0].text == "Pause bot"
+
+
+@pytest.mark.asyncio
+async def test_settings_callback_applies_reply_preset(mock_admin_update, mock_context):
+    """Test settings callback applies a preset and refreshes the panel."""
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.message.chat_id = 12345
+    query.data = "settings:reply=0.15"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    mock_admin_update.callback_query = query
+
+    with (
+        patch("bot.commands.set_reply_chance", new_callable=AsyncMock) as mock_set_reply,
+        patch("bot.commands._build_settings_panel", new_callable=AsyncMock) as mock_panel,
+    ):
+        mock_panel.return_value = ("updated settings", None)
+
+        await commands.settings_callback(mock_admin_update, mock_context)
+
+    mock_set_reply.assert_called_once_with(12345, 0.15)
+    query.edit_message_text.assert_called_once_with("updated settings", reply_markup=None)
+    query.answer.assert_called_once_with("Settings updated.")
+
+
+@pytest.mark.asyncio
 async def test_help_command(mock_update, mock_context):
     """Test /help command."""
     mock_update.message.reply_text = AsyncMock()
