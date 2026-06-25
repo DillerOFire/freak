@@ -41,6 +41,7 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
         "failed_memory_write_count": 0,
         "response_message_count": 1,
         "response_chars": 8,
+        "response_media": {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some image"},
     }
     await record_llm_telemetry(event)
 
@@ -54,6 +55,7 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
     assert row["used_general_memories"] == ["Topic: Greeting, Summary: hello"]
     assert row["memory_writes"][0]["status"] == "succeeded"
     assert row["response_messages"] == ["Hi there!"]
+    assert row["response_media"] == {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some image"}
 
     chats = await get_telemetry_chats()
     assert chats == [111]

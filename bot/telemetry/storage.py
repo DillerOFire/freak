@@ -16,6 +16,7 @@ _JSON_COLUMNS = {
     "tool_calls": "tool_calls_json",
     "memory_writes": "memory_writes_json",
     "response_messages": "response_messages_json",
+    "response_media": "response_media_json",
 }
 
 
@@ -75,10 +76,20 @@ async def init_telemetry_db() -> None:
                 response_messages_json TEXT NOT NULL DEFAULT '[]',
                 system_prompt TEXT,
                 context_prompt TEXT,
-                raw_response TEXT
+                raw_response TEXT,
+                response_media_json TEXT NOT NULL DEFAULT '{}'
             )
             """
         )
+        # Migration: Add response_media_json if missing
+        async with db.execute("PRAGMA table_info(llm_telemetry)") as cursor:
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "response_media_json" not in columns:
+                logging.info("Migrating DB: Adding response_media_json to llm_telemetry")
+                await db.execute(
+                    "ALTER TABLE llm_telemetry ADD COLUMN response_media_json TEXT NOT NULL DEFAULT '{}'"
+                )
+
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_llm_telemetry_chat_timestamp "
             "ON llm_telemetry(chat_id, timestamp)"
@@ -134,8 +145,9 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 used_general_memories_json, tool_calls_json, memory_writes_json,
                 tool_call_count, memory_write_count, failed_memory_write_count,
                 response_message_count, response_chars, reply_to_message_id,
-                response_messages_json, system_prompt, context_prompt, raw_response
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                response_messages_json, system_prompt, context_prompt, raw_response,
+                response_media_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(event["chat_id"]),
@@ -170,6 +182,7 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 _opt("system_prompt"),
                 _opt("context_prompt"),
                 _opt("raw_response"),
+                _dict("response_media"),
             ),
         )
         await db.commit()

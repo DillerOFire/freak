@@ -7,7 +7,10 @@ from bot import handlers
 def mock_context(mock_context):
     mock_context.bot.send_message = AsyncMock(return_value=MagicMock())
     mock_context.bot.send_video = AsyncMock()
+    mock_context.bot.send_poll = AsyncMock(return_value=MagicMock(message_id=777, from_user=MagicMock(id=999)))
     mock_context.bot.set_message_reaction = AsyncMock()
+    mock_context.bot.send_photo = AsyncMock(return_value=MagicMock(message_id=888, from_user=MagicMock(id=999)))
+    mock_context.bot.send_sticker = AsyncMock(return_value=MagicMock(message_id=889, from_user=MagicMock(id=999)))
     return mock_context
 
 
@@ -107,3 +110,200 @@ async def test_handle_message_ignore(temp_db_path, mock_update_handler, mock_con
         await handlers.handle_message(mock_update_handler, mock_context)
 
         mock_context.bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_bot_sender_history_label(temp_db_path, mock_update_handler, mock_context):
+    """Test that incoming bot senders are labeled explicitly in history."""
+    handlers.chat_history.clear()
+    mock_update_handler.message.text = "Just talking"
+    mock_update_handler.message.from_user.is_bot = True
+
+    with (
+        patch("bot.handlers.get_paused", return_value=False),
+        patch("bot.handlers.is_whitelisted", new_callable=AsyncMock) as mock_whitelist,
+        patch("bot.handlers.should_reply", new_callable=AsyncMock) as mock_should_reply,
+        patch("bot.handlers.should_react", new_callable=AsyncMock) as mock_should_react,
+        patch(
+            "bot.handlers.get_message_media_description", new_callable=AsyncMock
+        ) as mock_media_desc,
+    ):
+        mock_whitelist.return_value = True
+        mock_should_reply.return_value = False
+        mock_should_react.return_value = False
+        mock_media_desc.return_value = None
+
+        await handlers.handle_message(mock_update_handler, mock_context)
+
+    assert handlers.chat_history[12345][-1]["sender"] == "bot:test_user"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_sends_poll_response(temp_db_path, mock_update_handler, mock_context):
+    """Test that poll-only LLM responses send Telegram polls."""
+    handlers.chat_history.clear()
+    mock_update_handler.message.text = "Lunch?"
+
+    with (
+        patch("bot.handlers.get_paused", return_value=False),
+        patch("bot.handlers.is_whitelisted", new_callable=AsyncMock) as mock_whitelist,
+        patch("bot.handlers.should_reply", new_callable=AsyncMock) as mock_should_reply,
+        patch("bot.handlers.should_react", new_callable=AsyncMock) as mock_should_react,
+        patch("bot.handlers.generate_response", new_callable=AsyncMock) as mock_llm,
+        patch(
+            "bot.handlers.get_message_media_description", new_callable=AsyncMock
+        ) as mock_media_desc,
+    ):
+        mock_whitelist.return_value = True
+        mock_should_reply.return_value = True
+        mock_should_react.return_value = False
+        mock_media_desc.return_value = None
+        mock_llm.return_value = {
+            "messages": [],
+            "reply_to_message_id": None,
+            "polls": [{
+                "question": "Lunch?",
+                "options": ["Pizza", "Sushi"],
+                "is_anonymous": True,
+                "allows_multiple_answers": False,
+            }],
+        }
+
+        await handlers.handle_message(mock_update_handler, mock_context)
+
+    mock_context.bot.send_poll.assert_called_once_with(
+        chat_id=12345,
+        question="Lunch?",
+        options=["Pizza", "Sushi"],
+        is_anonymous=True,
+        allows_multiple_answers=False,
+    )
+    mock_context.bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_sends_saved_photo_reply(temp_db_path, mock_update_handler, mock_context):
+    # Setup message fields to avoid MagicMock media triggers
+    mock_update_handler.message.photo = None
+    mock_update_handler.message.sticker = None
+    mock_update_handler.message.video = None
+    mock_update_handler.message.animation = None
+    mock_update_handler.message.document = None
+    # Setup whitelisting
+    from bot import memory
+    await memory.add_whitelist(12345, "group", 999)
+    
+    # Save a media option in DB
+    await memory.save_reusable_media(
+        chat_id=12345,
+        media_unique_id="photo_u1",
+        file_id="photo_f1",
+        media_type="photo",
+        description="lovely portrait",
+    )
+    
+    # Patch generate_response to return media-only response
+    with patch("bot.handlers.should_reply", AsyncMock(return_value=True)), \
+         patch("bot.handlers.should_react", AsyncMock(return_value=False)), \
+         patch("bot.handlers.generate_response", AsyncMock(return_value={
+             "tool_calls": [],
+             "reply_to_message_id": 999,
+             "messages": [],
+             "polls": [],
+             "media_reply_unique_id": "photo_u1",
+         })):
+         
+        await handlers.handle_message(mock_update_handler, mock_context)
+        
+        # Assert send_photo was called
+        mock_context.bot.send_photo.assert_called_once_with(
+            chat_id=12345,
+            photo="photo_f1",
+            reply_to_message_id=999
+        )
+        
+        # Assert send_message was NOT called (no text messages)
+        mock_context.bot.send_message.assert_not_called()
+        
+        # Verify usage count updated
+        saved = await memory.get_saved_media_by_unique_id(12345, "photo_u1")
+        assert saved["use_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_message_sends_sticker_then_text(temp_db_path, mock_update_handler, mock_context):
+    # Setup message fields to avoid MagicMock media triggers
+    mock_update_handler.message.photo = None
+    mock_update_handler.message.sticker = None
+    mock_update_handler.message.video = None
+    mock_update_handler.message.animation = None
+    mock_update_handler.message.document = None
+    from bot import memory
+    await memory.add_whitelist(12345, "group", 999)
+    
+    await memory.save_reusable_media(
+        chat_id=12345,
+        media_unique_id="sticker_u1",
+        file_id="sticker_f1",
+        media_type="sticker",
+        description="funny sticker",
+    )
+    
+    with patch("bot.handlers.should_reply", AsyncMock(return_value=True)), \
+         patch("bot.handlers.should_react", AsyncMock(return_value=False)), \
+         patch("bot.handlers.generate_response", AsyncMock(return_value={
+             "tool_calls": [],
+             "reply_to_message_id": 999,
+             "messages": ["perfect"],
+             "polls": [],
+             "media_reply_unique_id": "sticker_u1",
+         })):
+         
+        await handlers.handle_message(mock_update_handler, mock_context)
+        
+        # Assert send_sticker was called with the reply target
+        mock_context.bot.send_sticker.assert_called_once_with(
+            chat_id=12345,
+            sticker="sticker_f1",
+            reply_to_message_id=999
+        )
+        
+        # Assert send_message was called but WITHOUT reply target (consumed by media)
+        mock_context.bot.send_message.assert_called_once_with(
+            chat_id=12345,
+            text="perfect"
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_message_media_description_saves_photo_metadata(temp_db_path):
+    mock_photo = MagicMock()
+    mock_photo.file_unique_id = "photo_u1"
+    mock_photo.file_id = "photo_f1"
+    mock_photo.get_file = AsyncMock()
+    
+    mock_msg = MagicMock()
+    mock_msg.photo = [mock_photo]
+    mock_msg.sticker = None
+    mock_msg.video = None
+    mock_msg.animation = None
+    mock_msg.document = None
+    
+    with patch("bot.handlers.get_media_description", AsyncMock(return_value=None)), \
+         patch("bot.handlers.download_file", AsyncMock(return_value="dummy_path.jpg")), \
+         patch("bot.handlers.analyze_image", AsyncMock(return_value="a saved portrait")), \
+         patch("bot.handlers.save_reusable_media", AsyncMock()) as mock_save_reusable, \
+         patch("builtins.open", MagicMock()), \
+         patch("os.remove", MagicMock()):
+         
+        desc = await handlers.get_message_media_description(
+            mock_msg,
+            chat_id=12345,
+            sender_user_id=67890,
+            save_reusable=True
+        )
+        
+        assert desc == "[User sent a photo: a saved portrait]"
+        mock_save_reusable.assert_called_once_with(
+            12345, "photo_u1", "photo_f1", "photo", "a saved portrait", 67890
+        )

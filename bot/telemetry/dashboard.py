@@ -209,6 +209,8 @@ def _event_details(event: dict) -> str:
                 <h4>Response</h4>
                 <p>Reply to: {_esc(reply_to)}</p>
                 <pre>{response_html}</pre>
+                <h5>Media</h5>
+                <pre>{_pre_json(event.get("response_media") or {})}</pre>
             </div>
             <div class="detail-section">
                 <h4>Memorized</h4>

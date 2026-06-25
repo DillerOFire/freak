@@ -3,7 +3,7 @@ import time
 from openai import AsyncOpenAI
 import json
 from typing import Any, Literal
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from xml.sax.saxutils import escape, quoteattr
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_REFERER, OPENROUTER_TITLE
 from bot.messages import AvailableReactions
@@ -23,10 +23,41 @@ class LLMToolCall(BaseModel):
     name: Literal["update_user_thought", "add_general_memory"]
     arguments: dict[str, Any]
 
+
+class LLMPoll(BaseModel):
+    question: str
+    options: list[str]
+    is_anonymous: bool = True
+    allows_multiple_answers: bool = False
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value: str) -> str:
+        value = value.strip()
+        if not 1 <= len(value) <= 300:
+            raise ValueError("Poll question must be 1-300 characters.")
+        return value
+
+    @field_validator("options")
+    @classmethod
+    def validate_options(cls, value: list[str]) -> list[str]:
+        options = [
+            option.strip()
+            for option in value
+            if isinstance(option, str) and option.strip()
+        ]
+        if not 2 <= len(options) <= 10:
+            raise ValueError("Polls need 2-10 non-empty options.")
+        if any(len(option) > 100 for option in options):
+            raise ValueError("Poll options must be 1-100 characters each.")
+        return options
+
 class LLMResponse(BaseModel):
     tool_calls: list[LLMToolCall] = Field(default_factory=list)
     reply_to_message_id: int | None = None
     messages: list[str] = Field(default_factory=list)
+    polls: list[LLMPoll] = Field(default_factory=list, max_length=1)
+    media_reply_unique_id: str | None = None
 
 DEFAULT_PERSONA = """
 Ты — виртуальный участник группового чата в Telegram.
@@ -54,12 +85,15 @@ When you receive the conversation context enclosed in XML-style tags:
    - If you reply, set `reply_to_message_id` to the integer ID of the message you are replying to. If it's a general/unsolicited message, set it to null.
    - Your reply should be casual, relevant, and fit the group vibe.
    - You can send multiple messages by specifying them as separate strings in the `messages` array.
+   - You may create a Telegram poll only when it naturally fits the conversation. Set `polls` to an empty array, or to one poll object with `question`, `options`, `is_anonymous`, and `allows_multiple_answers`.
+   - Polls are for choices, votes, preferences, or playful group decisions. Do not create a poll just because you were triggered.
+   - Regular polls must have a 1-300 character question, 2-10 non-empty options, and options of 1-100 characters. Default to anonymous single-answer polls; set `allows_multiple_answers` to true only when multiple selections make sense.
 
 You have access to the following tools:
 1. update_user_thought(user_id: int, username: str, thought: str): Update your internal thoughts/opinion about a user.
 2. add_general_memory(topic: str, summary: str, importance: int): Add a new general memory about a topic with its importance rating (1 to 5).
 
-Output your response as a JSON object with the following structure:
+Output your response as a JSON object with exactly these top-level fields, in this order:
 {
   "tool_calls": [
     {
@@ -72,8 +106,16 @@ Output your response as a JSON object with the following structure:
     }
   ],
   "reply_to_message_id": <message_id or null>,
-  "messages": ["first message to send", "second message to send"]
+  "messages": ["first message to send", "second message to send"],
+  "polls": [{"question": "Question?", "options": ["Option 1", "Option 2"], "is_anonymous": true, "allows_multiple_answers": false}],
+  "media_reply_unique_id": <saved media unique id or null>
 }
+
+RULES FOR MEDIA REACTIONS:
+- You can send one saved photo/sticker by setting "media_reply_unique_id" to an exact ID string from `<saved_media>`.
+- Set "media_reply_unique_id" to null when no saved media fits, or when you do not want to react with saved media.
+- NEVER invent IDs or output Telegram file_id values. Use only the exact `id` attribute from the `<saved_media>` options.
+- Media-only replies are valid when `messages` is empty and `media_reply_unique_id` is set.
 
 EXAMPLES:
 
@@ -106,7 +148,9 @@ Output:
   "messages": [
     "ОПЕРА! О, Верди, это великая классика! Но только истинный эстет вроде МЕНЯ может прочувствовать каждую ноту! А вы, букашки, просто сотрясаете воздух.",
     "Впрочем, Васенька, у тебя такой нежный голосок... спой мне под бокал шампанского!"
-  ]
+  ],
+  "polls": [],
+  "media_reply_unique_id": null
 }
 
 Example 2: A user mentions something that changes the bot's opinion of them. The bot decides to update its thoughts on the user.
@@ -136,7 +180,9 @@ Output:
   "messages": [
     "Боже, хоть один разумный человек в этой клоаке! Ты абсолютно прав, мой дорогой!",
     "Я один занимаюсь НАСТОЯЩЕЙ наукой, пока эти дешевки завидуют моей эстетике и мои перстням!"
-  ]
+  ],
+  "polls": [],
+  "media_reply_unique_id": null
 }
 
 Example 3: No reply is needed and no thoughts change.
@@ -156,7 +202,46 @@ Output:
 {
   "tool_calls": [],
   "reply_to_message_id": null,
-  "messages": []
+  "messages": [],
+  "polls": [],
+  "media_reply_unique_id": null
+}
+
+
+Example 5: The bot decides to reply to a user with a saved photo from history.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="701" sender="Petya" sender_id="222" focus="true">Маэстро, оцените моё новое пальто.</message>
+  </working_memory>
+  <saved_media>
+    <media id="photo_u1" type="photo" use_count="0">dramatic portrait</media>
+  </saved_media>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [],
+  "reply_to_message_id": 701,
+  "messages": ["Моё лицо, когда я вижу твой дешёвый вкус."],
+  "polls": [],
+  "media_reply_unique_id": "photo_u1"
+}
+
+Example 4: A user asks the group to choose dinner, and a poll naturally fits.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="601" sender="Vasya" sender_id="111" focus="true">Маэстро, давайте выберем ужин: пицца, суши или шаурма?</message>
+  </working_memory>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [],
+  "reply_to_message_id": 601,
+  "messages": ["Сейчас я устрою голосование, мои нерешительные букашки."],
+  "polls": [{"question": "Что выбираем на ужин?", "options": ["Пицца", "Суши", "Шаурма"], "is_anonymous": true, "allows_multiple_answers": false}]
 }
 """
 
@@ -171,6 +256,7 @@ def build_context_prompt(
     user_thoughts: dict,
     general_memories: list[str],
     focus_message_id: int | None = None,
+    saved_media_options: list[dict] | None = None,
 ) -> str:
     context_parts = []
     context_parts.append("<conversation_context>")
@@ -220,6 +306,20 @@ def build_context_prompt(
             context_parts.append(f"    <memory>{u_mem}</memory>")
         context_parts.append("  </retrieved_semantic_memory>")
 
+    # Saved media options block
+    if saved_media_options:
+        context_parts.append("  <saved_media>")
+        for option in saved_media_options:
+            m_id = _xml_attr(option["media_unique_id"])
+            m_type = _xml_attr(option["media_type"])
+            m_use = _xml_attr(option["use_count"])
+            desc = option["description"]
+            if len(desc) > 300:
+                desc = desc[:300] + "..."
+            m_desc = _xml_text(desc)
+            context_parts.append(f'    <media id={m_id} type={m_type} use_count={m_use}>{m_desc}</media>')
+        context_parts.append("  </saved_media>")
+
     # 5. <active_instruction> when focus_message_id is provided
     if focus_message_id:
         context_parts.append(f'  <active_instruction>You are replying specifically to the message with id="{focus_message_id}". Address it directly.</active_instruction>')
@@ -243,10 +343,11 @@ async def generate_response(
     focus_message_id: int | None = None,
     source: str = "message",
     memory_query: str | None = None,
+    saved_media_options: list[dict] | None = None,
 ) -> dict | None:
     system_prompt = await get_system_prompt()
     context_str = build_context_prompt(
-        messages_context, user_thoughts, general_memories, focus_message_id
+        messages_context, user_thoughts, general_memories, focus_message_id, saved_media_options
     )
 
     messages = [
@@ -267,6 +368,7 @@ async def generate_response(
     memory_writes: list[dict] = []
     response_messages: list[str] = []
     reply_to_message_id = None
+    response_media = None
 
     try:
         logging.info("Sending prompt to LLM:")
@@ -368,11 +470,34 @@ async def generate_response(
                             write["error_message"] = str(mem_error)[:500]
                             raise
 
-                # Return dict only if there is at least one non-blank string in messages
+                # Validate media_reply_unique_id
+                media_id = parsed.media_reply_unique_id
+                if media_id:
+                    media_id = media_id.strip()
+                    selected_option = None
+                    if saved_media_options and media_id:
+                        selected_option = next(
+                            (opt for opt in saved_media_options if opt["media_unique_id"] == media_id),
+                            None
+                        )
+                    if selected_option:
+                        parsed.media_reply_unique_id = media_id
+                        response_media = {
+                            "media_unique_id": media_id,
+                            "media_type": selected_option["media_type"],
+                            "description": selected_option["description"],
+                        }
+                    else:
+                        parsed.media_reply_unique_id = None
+                else:
+                    parsed.media_reply_unique_id = None
+
                 sanitized_messages = [msg.strip() for msg in parsed.messages if isinstance(msg, str) and msg.strip()]
                 reply_to_message_id = parsed.reply_to_message_id
                 response_messages = list(parsed.messages)
-                if sanitized_messages:
+                
+                # Treat response as success if text messages, polls, or a valid media_reply_unique_id exist
+                if sanitized_messages or parsed.polls or parsed.media_reply_unique_id:
                     status = "success"
                     return parsed.model_dump()
                 else:
@@ -421,22 +546,25 @@ async def generate_response(
                     "system_prompt_chars": len(system_prompt),
                     "user_thought_count": len(user_thoughts),
                     "retrieved_memory_count": len(general_memories),
-                    "memory_query": memory_query,
                     "trigger_messages": messages_context,
                     "used_user_thoughts": user_thoughts,
                     "used_general_memories": general_memories,
-                    "tool_calls": tool_calls,
-                    "memory_writes": memory_writes,
+                    "retrieved_memory_access_count": sum(
+                        m.get("access_count", 0) if isinstance(m, dict) else 0
+                        for m in general_memories
+                    ),
+                    "raw_request": json.dumps(messages, ensure_ascii=False),
+                    "raw_response": raw_response or "",
+                    "response_messages": response_messages,
+                    "reply_to_message_id": reply_to_message_id,
+                    "tool_calls": json.dumps(tool_calls, ensure_ascii=False),
+                    "memory_writes": json.dumps(memory_writes, ensure_ascii=False),
                     "tool_call_count": len(tool_calls),
-                    "memory_write_count": len([w for w in memory_writes if w.get("status") == "succeeded"]),
+                    "memory_write_count": len(memory_writes),
                     "failed_memory_write_count": len([w for w in memory_writes if w.get("status") == "failed"]),
                     "response_message_count": len(response_messages),
-                    "response_chars": sum(len(msg) for msg in response_messages),
-                    "reply_to_message_id": reply_to_message_id,
-                    "response_messages": response_messages,
-                    "system_prompt": system_prompt,
-                    "context_prompt": context_str,
-                    "raw_response": raw_response,
+                    "response_chars": sum(len(m) for m in response_messages),
+                    "response_media": response_media,
                 }
             )
         except Exception as telemetry_error:

@@ -24,6 +24,7 @@ async def test_telemetry_dashboard_routes(temp_db_path):
             "tool_calls": [],
             "memory_writes": [],
             "response_messages": ["hello"],
+            "response_media": {"media_unique_id": "photo_u1", "media_type": "photo", "description": "web test photo"},
         }
     )
 
@@ -48,6 +49,7 @@ async def test_telemetry_dashboard_routes(temp_db_path):
             assert r.status == 200
             data = json.loads(r.read().decode("utf-8"))
             assert data["generated_for"] == "llm_context_engineering_review"
+            assert data["events"][0]["response_media"] == {"media_unique_id": "photo_u1", "media_type": "photo", "description": "web test photo"}
 
         # /telemetry/event/<id>.json with token
         with urllib.request.urlopen(

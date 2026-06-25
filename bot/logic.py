@@ -7,6 +7,9 @@ from bot.memory import get_chat_config, set_chat_config, get_config, set_config
 # Map: chat_id -> count
 messages_since_last_reply: dict[int, int] = {}
 
+BOT_REPLY_LOCK_TTL_MESSAGES = 3
+bot_reply_locks: dict[int, dict[int, int]] = {}
+
 # Default values
 DEFAULT_COOLDOWN_THRESHOLD = 10
 DEFAULT_REPLY_CHANCE = 0.05
@@ -15,6 +18,44 @@ DEFAULT_REACTION_CHANCE = 0.07
 
 # Global pause state
 is_paused = False
+
+
+def _sender_is_bot(message) -> bool:
+    return bool(getattr(getattr(message, "from_user", None), "is_bot", False))
+
+
+def _sender_id(message) -> int | None:
+    return getattr(getattr(message, "from_user", None), "id", None)
+
+
+def _decrement_bot_reply_locks(
+    chat_id: int, active_sender_id: int | None = None
+) -> None:
+    locks = bot_reply_locks.get(chat_id, {})
+    expired_sender_ids = []
+
+    for sender_id, remaining in locks.items():
+        if sender_id == active_sender_id or remaining <= 0:
+            continue
+
+        remaining -= 1
+        if remaining <= 0:
+            expired_sender_ids.append(sender_id)
+        else:
+            locks[sender_id] = remaining
+
+    for sender_id in expired_sender_ids:
+        del locks[sender_id]
+
+    if not locks and chat_id in bot_reply_locks:
+        del bot_reply_locks[chat_id]
+
+
+def _mark_bot_replied(chat_id: int, sender_id: int | None) -> None:
+    if sender_id is None:
+        return
+
+    bot_reply_locks.setdefault(chat_id, {})[sender_id] = BOT_REPLY_LOCK_TTL_MESSAGES
 
 
 async def set_cooldown_threshold(chat_id: int, value: int):
@@ -85,25 +126,47 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
     # Initialize if not present
     if chat_id not in messages_since_last_reply:
         messages_since_last_reply[chat_id] = 0
+
+    sender_is_bot = _sender_is_bot(message)
+    sender_id = _sender_id(message)
+    _decrement_bot_reply_locks(chat_id, active_sender_id=sender_id)
+
     logging.info(
         f"Checking if should reply in {chat_id}: {messages_since_last_reply[chat_id]}"
     )
+
+    if sender_is_bot and sender_id in bot_reply_locks.get(chat_id, {}):
+        logging.info(
+            f"Ignoring bot message from {sender_id} in chat {chat_id}: reply lock active"
+        )
+        messages_since_last_reply[chat_id] += 1
+        return False
 
     # Check for direct mention
     if message.text:  # Check for direct mention
         if bot_username in message.text:
             logging.info(f"Trigger: Mentioned in chat {chat_id}")
             messages_since_last_reply[chat_id] = 0
+            if sender_is_bot:
+                _mark_bot_replied(chat_id, sender_id)
             return True
 
     # Check for reply to bot's message
+    reply_to_message = getattr(message, "reply_to_message", None)
+    reply_to_user = getattr(reply_to_message, "from_user", None)
     if (
-        message.reply_to_message
-        and message.reply_to_message.from_user.username == bot_username.replace("@", "")
+        reply_to_message
+        and getattr(reply_to_user, "username", None) == bot_username.replace("@", "")
     ):
         logging.info(f"Trigger: Replied to in chat {chat_id}")
         messages_since_last_reply[chat_id] = 0
+        if sender_is_bot:
+            _mark_bot_replied(chat_id, sender_id)
         return True
+
+    if sender_is_bot:
+        messages_since_last_reply[chat_id] += 1
+        return False
 
     # Check cooldown
     if messages_since_last_reply[chat_id] < cooldown:
@@ -111,8 +174,9 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
         return False
 
     # Random chance
-    logging.info(f"Random chance in chat {random.random()} < {reply_chance}")
-    if random.random() < reply_chance:
+    random_value = random.random()
+    logging.info(f"Random chance in chat {random_value} < {reply_chance}")
+    if random_value < reply_chance:
         logging.info(f"Trigger: Random chance in chat {chat_id}")
         messages_since_last_reply[chat_id] = 0
         return True

@@ -93,7 +93,9 @@ async def test_generate_response_success(temp_db_path):
             }
         ],
         "reply_to_message_id": 1,
-        "messages": ["Hello, my dear!", "How can I help you today?"]
+        "messages": ["Hello, my dear!", "How can I help you today?"],
+        "polls": [],
+        "media_reply_unique_id": None
     })
     
     mock_choice.message = mock_message
@@ -115,6 +117,8 @@ async def test_generate_response_success(temp_db_path):
         assert result is not None
         assert result["reply_to_message_id"] == 1
         assert result["messages"] == ["Hello, my dear!", "How can I help you today?"]
+        assert result["polls"] == []
+        assert result["media_reply_unique_id"] is None
         
         # Verify user prompt format contains XML tags
         call_args = async_create_mock.call_args
@@ -155,6 +159,99 @@ async def test_generate_response_success(temp_db_path):
         assert event["memory_write_count"] == 2
         assert event["failed_memory_write_count"] == 0
         assert event["response_messages"] == ["Hello, my dear!", "How can I help you today?"]
+
+
+
+@pytest.mark.asyncio
+async def test_generate_response_poll_only_success(temp_db_path):
+    """Test successful LLM response with only a poll."""
+    mock_messages_context = [
+        {"message_id": 1, "sender": "Alice", "user_id": 123, "text": "Lunch?", "reply_to_username": None, "reply_to_text": None}
+    ]
+    chat_id = 9999
+
+    mock_response = MagicMock()
+    mock_response.usage = None
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "tool_calls": [],
+        "reply_to_message_id": None,
+        "messages": [],
+        "polls": [{
+            "question": "Lunch?",
+            "options": ["Pizza", "Sushi"],
+            "is_anonymous": True,
+            "allows_multiple_answers": False,
+        }],
+    })
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+
+    with patch.object(llm.client.chat.completions, "create", AsyncMock(return_value=mock_response)):
+        result = await llm.generate_response(
+            messages_context=mock_messages_context,
+            user_thoughts={},
+            general_memories=[],
+            chat_id=chat_id,
+            focus_message_id=1,
+        )
+
+    assert result is not None
+    assert result["polls"] == [{
+        "question": "Lunch?",
+        "options": ["Pizza", "Sushi"],
+        "is_anonymous": True,
+        "allows_multiple_answers": False,
+    }]
+
+    from bot.telemetry import fetch_llm_telemetry
+
+    telemetry_events = await fetch_llm_telemetry(chat_id=chat_id)
+    assert len(telemetry_events) == 1
+    event = telemetry_events[0]
+    assert event["status"] == "success"
+    assert event["response_message_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_response_invalid_poll_validation_error(temp_db_path):
+    """Test that invalid poll payloads fail Pydantic validation."""
+    chat_id = 9999
+    mock_response = MagicMock()
+    mock_response.usage = None
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "tool_calls": [],
+        "reply_to_message_id": None,
+        "messages": [],
+        "polls": [{
+            "question": "Lunch?",
+            "options": ["Pizza"],
+            "is_anonymous": True,
+            "allows_multiple_answers": False,
+        }],
+    })
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+
+    with patch.object(llm.client.chat.completions, "create", AsyncMock(return_value=mock_response)):
+        result = await llm.generate_response(
+            messages_context=[],
+            user_thoughts={},
+            general_memories=[],
+            chat_id=chat_id,
+        )
+
+    assert result is None
+
+    from bot.telemetry import fetch_llm_telemetry
+
+    telemetry_events = await fetch_llm_telemetry(chat_id=chat_id)
+    assert len(telemetry_events) == 1
+    assert telemetry_events[0]["status"] == "validation_error"
+
 
 @pytest.mark.asyncio
 async def test_generate_response_invalid_json(temp_db_path):
@@ -230,3 +327,87 @@ async def test_build_context_prompt_escaping():
     assert "2 &lt; 3 &amp; \"quoted\"" in prompt
     assert "C&amp;D" in prompt
     assert "hello &quot;quotes&quot;" in prompt or "hello &amp;quot;quotes&amp;quot;" in prompt or "hello \"quotes\"" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_response_media_only_success(temp_db_path):
+    mock_messages_context = [
+        {"message_id": 1, "sender": "Alice", "user_id": 123, "text": "Hello bot"}
+    ]
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "tool_calls": [],
+        "reply_to_message_id": 1,
+        "messages": [],
+        "polls": [],
+        "media_reply_unique_id": "photo_u1"
+    })
+    mock_choice.message = mock_message
+    mock_response = MagicMock()
+    mock_response.usage = None
+    mock_response.choices = [mock_choice]
+    
+    async_create_mock = AsyncMock(return_value=mock_response)
+    
+    with patch.object(llm.client.chat.completions, "create", async_create_mock):
+        result = await llm.generate_response(
+            messages_context=mock_messages_context,
+            user_thoughts={},
+            general_memories=[],
+            chat_id=9999,
+            focus_message_id=1,
+            saved_media_options=[
+                {"media_unique_id": "photo_u1", "media_type": "photo", "description": "dramatic portrait", "use_count": 0}
+            ]
+        )
+        
+        assert result is not None
+        assert result["messages"] == []
+        assert result["media_reply_unique_id"] == "photo_u1"
+        
+        from bot.telemetry import fetch_llm_telemetry
+        events = await fetch_llm_telemetry(chat_id=9999)
+        assert len(events) == 1
+        assert events[0]["status"] == "success"
+        assert events[0]["response_media"]["media_unique_id"] == "photo_u1"
+
+
+@pytest.mark.asyncio
+async def test_generate_response_unknown_media_id_is_ignored(temp_db_path):
+    mock_messages_context = [
+        {"message_id": 1, "sender": "Alice", "user_id": 123, "text": "Hello bot"}
+    ]
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "tool_calls": [],
+        "reply_to_message_id": 1,
+        "messages": [],
+        "polls": [],
+        "media_reply_unique_id": "not_allowed"
+    })
+    mock_choice.message = mock_message
+    mock_response = MagicMock()
+    mock_response.usage = None
+    mock_response.choices = [mock_choice]
+    
+    async_create_mock = AsyncMock(return_value=mock_response)
+    
+    with patch.object(llm.client.chat.completions, "create", async_create_mock):
+        result = await llm.generate_response(
+            messages_context=mock_messages_context,
+            user_thoughts={},
+            general_memories=[],
+            chat_id=9999,
+            focus_message_id=1,
+            saved_media_options=[
+                {"media_unique_id": "photo_u1", "media_type": "photo", "description": "dramatic portrait", "use_count": 0}
+            ]
+        )
+        
+        assert result is None
+        from bot.telemetry import fetch_llm_telemetry
+        events = await fetch_llm_telemetry(chat_id=9999)
+        assert len(events) == 1
+        assert events[0]["status"] == "no_reply"

@@ -142,3 +142,75 @@ async def test_user_memory_fts_and_target_lookups(temp_db_path):
     # Target user_id
     target_uid = await memory.get_user_memory_by_target("123")
     assert target_uid == (123, "alice", "Alice likes opera and champagne")
+
+@pytest.mark.asyncio
+async def test_saved_media_crud_and_limits(temp_db_path):
+    # Save first media
+    await memory.save_reusable_media(
+        chat_id=12345,
+        media_unique_id="photo_u1",
+        file_id="photo_f1",
+        media_type="photo",
+        description="first photo",
+        sender_user_id=111,
+        per_chat_limit=3,
+        global_limit=10,
+    )
+    
+    # Assert get_saved_media_options returns one row
+    options = await memory.get_saved_media_options(12345)
+    assert len(options) == 1
+    assert options[0]["media_unique_id"] == "photo_u1"
+    assert options[0]["media_type"] == "photo"
+    assert options[0]["file_id"] == "photo_f1"
+    assert options[0]["use_count"] == 0
+    assert options[0]["description"] == "first photo"
+    
+    # Upsert the same media
+    await memory.save_reusable_media(
+        chat_id=12345,
+        media_unique_id="photo_u1",
+        file_id="photo_f2",
+        media_type="photo",
+        description="updated photo",
+        sender_user_id=111,
+        per_chat_limit=3,
+        global_limit=10,
+    )
+    
+    options = await memory.get_saved_media_options(12345)
+    assert len(options) == 1
+    assert options[0]["file_id"] == "photo_f2"
+    assert options[0]["description"] == "updated photo"
+    
+    # Save up to limit
+    await memory.save_reusable_media(12345, "photo_u2", "photo_f3", "photo", "photo 2", 111, per_chat_limit=3)
+    await memory.save_reusable_media(12345, "photo_u3", "photo_f4", "photo", "photo 3", 111, per_chat_limit=3)
+    await memory.save_reusable_media(12345, "photo_u4", "photo_f5", "photo", "photo 4", 111, per_chat_limit=3)
+    
+    # Assert only 3 rows remain and photo_u1 is pruned (newest by last_seen_at DESC)
+    options = await memory.get_saved_media_options(12345)
+    assert len(options) == 3
+    media_ids = [opt["media_unique_id"] for opt in options]
+    assert "photo_u1" not in media_ids
+    assert "photo_u4" in media_ids
+    
+    # Mark used
+    await memory.mark_saved_media_used(12345, "photo_u4")
+    val = await memory.get_saved_media_by_unique_id(12345, "photo_u4")
+    assert val is not None
+    assert val["use_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_saved_media_global_limit(temp_db_path):
+    # Save four rows across two chats with per_chat_limit=10, global_limit=3
+    await memory.save_reusable_media(11, "m1", "f1", "photo", "desc", 111, per_chat_limit=10, global_limit=3)
+    await memory.save_reusable_media(11, "m2", "f2", "photo", "desc", 111, per_chat_limit=10, global_limit=3)
+    await memory.save_reusable_media(22, "m3", "f3", "photo", "desc", 111, per_chat_limit=10, global_limit=3)
+    await memory.save_reusable_media(22, "m4", "f4", "photo", "desc", 111, per_chat_limit=10, global_limit=3)
+    
+    async with aiosqlite.connect(memory.DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM saved_media") as cursor:
+            row = await cursor.fetchone()
+            assert row[0] == 3

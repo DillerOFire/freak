@@ -1,4 +1,5 @@
 import aiosqlite
+from typing import Literal
 import datetime
 import logging
 import re
@@ -6,6 +7,10 @@ import os
 
 # Use absolute path for DB to avoid issues with CWD
 DB_NAME = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot_memory.db")
+
+SAVED_MEDIA_PER_CHAT_LIMIT = 50
+SAVED_MEDIA_GLOBAL_LIMIT = 500
+SAVED_MEDIA_PROMPT_LIMIT = 12
 
 
 async def init_db():
@@ -31,6 +36,30 @@ async def init_db():
                 description TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS saved_media (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                media_unique_id TEXT NOT NULL,
+                media_type TEXT NOT NULL CHECK(media_type IN ('photo', 'sticker')),
+                file_id TEXT NOT NULL,
+                description TEXT NOT NULL,
+                sender_user_id INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_used_at DATETIME,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(chat_id, media_unique_id)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_saved_media_chat_seen 
+            ON saved_media(chat_id, last_seen_at DESC, id DESC)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_saved_media_chat_used 
+            ON saved_media(chat_id, last_used_at DESC, use_count ASC)
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS whitelist (
@@ -348,6 +377,120 @@ async def save_media_description(media_unique_id: str, description: str):
                 description=excluded.description
             """,
             (media_unique_id, description),
+        )
+        await db.commit()
+async def _prune_saved_media(db, chat_id: int, per_chat_limit: int, global_limit: int) -> None:
+    per_chat_limit = max(1, per_chat_limit)
+    global_limit = max(1, global_limit)
+    
+    # Prune per chat (keep newest per_chat_limit by last_seen_at DESC, id DESC)
+    await db.execute(
+        """
+        DELETE FROM saved_media
+        WHERE chat_id = ? AND id NOT IN (
+            SELECT id FROM saved_media
+            WHERE chat_id = ?
+            ORDER BY last_seen_at DESC, id DESC
+            LIMIT ?
+        )
+        """,
+        (chat_id, chat_id, per_chat_limit)
+    )
+    
+    # Prune globally (keep newest global_limit across all chats by last_seen_at DESC, id DESC)
+    await db.execute(
+        """
+        DELETE FROM saved_media
+        WHERE id NOT IN (
+            SELECT id FROM saved_media
+            ORDER BY last_seen_at DESC, id DESC
+            LIMIT ?
+        )
+        """,
+        (global_limit,)
+    )
+
+
+async def save_reusable_media(
+    chat_id: int,
+    media_unique_id: str,
+    file_id: str,
+    media_type: Literal["photo", "sticker"],
+    description: str,
+    sender_user_id: int | None = None,
+    per_chat_limit: int = SAVED_MEDIA_PER_CHAT_LIMIT,
+    global_limit: int = SAVED_MEDIA_GLOBAL_LIMIT,
+) -> None:
+    if not media_unique_id or not file_id or not description.strip():
+        return
+        
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO saved_media (
+                chat_id, media_unique_id, media_type, file_id, description, sender_user_id, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(chat_id, media_unique_id) DO UPDATE SET
+                file_id = excluded.file_id,
+                media_type = excluded.media_type,
+                description = excluded.description,
+                sender_user_id = excluded.sender_user_id,
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            (chat_id, media_unique_id, media_type, file_id, description.strip(), sender_user_id)
+        )
+        await _prune_saved_media(db, chat_id, per_chat_limit, global_limit)
+        await db.commit()
+
+
+async def get_saved_media_options(
+    chat_id: int,
+    limit: int = SAVED_MEDIA_PROMPT_LIMIT,
+) -> list[dict]:
+    # Clamp limit to 1..SAVED_MEDIA_PROMPT_LIMIT
+    limit = max(1, min(SAVED_MEDIA_PROMPT_LIMIT, limit))
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT media_unique_id, media_type, file_id, description, use_count, last_seen_at, last_used_at
+            FROM saved_media
+            WHERE chat_id = ?
+            ORDER BY last_seen_at DESC, id DESC
+            LIMIT ?
+            """,
+            (chat_id, limit)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def get_saved_media_by_unique_id(chat_id: int, media_unique_id: str) -> dict | None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, media_unique_id, media_type, file_id, description, use_count, last_seen_at, last_used_at
+            FROM saved_media
+            WHERE chat_id = ? AND media_unique_id = ?
+            """,
+            (chat_id, media_unique_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def mark_saved_media_used(chat_id: int, media_unique_id: str) -> None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            UPDATE saved_media
+            SET last_used_at = CURRENT_TIMESTAMP,
+                use_count = use_count + 1
+            WHERE chat_id = ? AND media_unique_id = ?
+            """,
+            (chat_id, media_unique_id)
         )
         await db.commit()
 

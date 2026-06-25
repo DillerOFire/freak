@@ -47,6 +47,7 @@ def build_llm_telemetry_export(
                 "system_prompt": event.get("system_prompt"),
                 "context_prompt": event.get("context_prompt"),
                 "raw_response": event.get("raw_response"),
+                "response_media": event.get("response_media", {}),
             }
         )
 

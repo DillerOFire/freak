@@ -40,6 +40,7 @@ def _sample_event():
         "failed_memory_write_count": 0,
         "tool_call_count": 1,
         "reply_to_message_id": 1,
+        "response_media": {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some photo description"},
     }
 
 
@@ -52,6 +53,8 @@ def test_render_dashboard_html_with_event():
     assert "Memories used" in html
     assert "Response" in html
     assert "Memorized" in html
+    assert "photo_u1" in html
+    assert "some photo description" in html
     # dynamic text is escaped
     assert "Hello &lt;bot&gt; &amp; friends" in html
 
