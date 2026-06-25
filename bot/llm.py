@@ -439,16 +439,83 @@ async def generate_response(
             logging.error(f"Failed to record LLM telemetry: {telemetry_error}")
 
 
-REACTION_PROMPT = f"""
-Ты — Маэстро Понасенков. Твоя задача — выбрать ровно ОДНУ реакцию (эмодзи) на полученное сообщение.
-Реакция должна быть в твоем стиле: презрение, восторг, похоть (к нежным пузикам), величие.
-Available reactions: {", ".join(AvailableReactions)}
-"""
+ALLOWED_REACTIONS_TEXT = ", ".join(AvailableReactions)
+
+
+def build_reaction_prompt(persona_prompt: str) -> str:
+    return f"""
+You are choosing Telegram message reactions for this bot persona:
+
+{persona_prompt}
+
+Choose exactly one emoji reaction for each incoming message.
+Return only the emoji, with no explanation or extra text.
+You must only use one of these Telegram bot reactions: {ALLOWED_REACTIONS_TEXT}
+""".strip()
+
+
+async def generate_reaction_prompt(persona_prompt: str) -> str:
+    fallback_prompt = build_reaction_prompt(persona_prompt)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Generate a concise system prompt for a Telegram bot reaction picker. "
+                "It must preserve the supplied persona, instruct the picker to return "
+                "exactly one emoji and no explanation, and restrict choices to the "
+                "provided Telegram bot reactions."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Persona prompt:\n{persona_prompt}\n\n"
+                f"Allowed Telegram bot reactions:\n{ALLOWED_REACTIONS_TEXT}"
+            ),
+        },
+    ]
+
+    try:
+        response = await client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=messages,
+            extra_body={
+                "reasoning": {
+                    "effort": "none",
+                    "enabled": False,
+                },
+            },
+        )
+        generated_prompt = response.choices[0].message.content.strip()
+        if not generated_prompt:
+            return fallback_prompt
+        return (
+            f"{generated_prompt}\n\n"
+            f"Hard constraint: return only one emoji from this Telegram bot reaction list: "
+            f"{ALLOWED_REACTIONS_TEXT}"
+        )
+    except Exception as e:
+        logging.error(f"Error generating reaction prompt: {e}")
+        return fallback_prompt
+
+
+async def get_reaction_prompt() -> str:
+    reaction_prompt = await get_config("reaction_prompt")
+    if reaction_prompt:
+        return reaction_prompt
+
+    persona_prompt = await get_config("persona_prompt")
+    if not persona_prompt:
+        persona_prompt = DEFAULT_PERSONA
+
+    reaction_prompt = build_reaction_prompt(persona_prompt)
+    await set_config("reaction_prompt", reaction_prompt)
+    return reaction_prompt
 
 
 async def generate_reaction(message_text: str) -> str | None:
     messages = [
-        {"role": "system", "content": REACTION_PROMPT},
+        {"role": "system", "content": await get_reaction_prompt()},
         {"role": "user", "content": message_text},
     ]
 
@@ -486,10 +553,10 @@ async def generate_reaction(message_text: str) -> str | None:
         # Verify it's in the allowed reactions
         if emoji in AvailableReactions:
             return emoji
-        # Try to find if the emoji is within the response
-        for char in emoji:
-            if char in AvailableReactions:
-                return char
+        # Try to find an allowed Telegram reaction inside a longer model response.
+        for reaction in AvailableReactions:
+            if reaction in emoji:
+                return reaction
         return None
     except Exception as e:
         logging.error(f"Error in generate_reaction: {e}")

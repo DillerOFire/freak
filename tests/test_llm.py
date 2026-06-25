@@ -28,6 +28,36 @@ async def test_get_system_prompt_custom(temp_db_path):
     assert llm.DEFAULT_PERSONA not in prompt
 
 @pytest.mark.asyncio
+async def test_get_reaction_prompt_default(temp_db_path):
+    """Test that get_reaction_prompt builds and saves a persona-based fallback."""
+    from bot.memory import get_config
+
+    prompt = await llm.get_reaction_prompt()
+
+    assert llm.DEFAULT_PERSONA in prompt
+    assert llm.ALLOWED_REACTIONS_TEXT in prompt
+    assert await get_config("reaction_prompt") == prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_reaction_prompt_appends_allowed_reactions():
+    """Test generated reaction prompts are constrained to Telegram bot reactions."""
+    mock_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = "React in this persona voice."
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+
+    with patch.object(llm.client.chat.completions, "create", AsyncMock(return_value=mock_response)):
+        prompt = await llm.generate_reaction_prompt("Persona text")
+
+    assert "React in this persona voice." in prompt
+    assert llm.ALLOWED_REACTIONS_TEXT in prompt
+    assert "Hard constraint" in prompt
+
+
+@pytest.mark.asyncio
 async def test_generate_response_success(temp_db_path):
     """Test successful LLM response with tool calls and content."""
     mock_messages_context = [
@@ -158,7 +188,7 @@ async def test_generate_response_invalid_json(temp_db_path):
         assert event["raw_response"] == "This is not JSON at all!"
 
 @pytest.mark.asyncio
-async def test_generate_reaction_success():
+async def test_generate_reaction_success(temp_db_path):
     """Test successful reaction generation."""
     mock_response = MagicMock()
     mock_choice = MagicMock()
@@ -172,7 +202,7 @@ async def test_generate_reaction_success():
         assert reaction == "🔥"
 
 @pytest.mark.asyncio
-async def test_generate_reaction_error():
+async def test_generate_reaction_error(temp_db_path):
     """Test reaction generation error handling."""
     with patch.object(llm.client.chat.completions, "create", AsyncMock(side_effect=Exception("API Error"))):
         reaction = await llm.generate_reaction("Wow, amazing!")

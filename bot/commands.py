@@ -41,6 +41,7 @@ from bot.logic import (
     set_utils_disabled,
     get_utils_disabled,
 )
+from bot.llm import generate_reaction_prompt
 from bot.handlers import add_message_to_history
 
 
@@ -445,7 +446,9 @@ async def update_prompt_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     new_prompt = parts[1]
     await set_config("persona_prompt", new_prompt)
-    await update.message.reply_text("System prompt updated successfully.")
+    reaction_prompt = await generate_reaction_prompt(new_prompt)
+    await set_config("reaction_prompt", reaction_prompt)
+    await update.message.reply_text("System and reaction prompts updated successfully.")
     logging.info(f"System prompt updated by {update.effective_user.id}")
 
 

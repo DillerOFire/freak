@@ -35,6 +35,29 @@ async def test_stop_command(mock_admin_update, mock_context):
 
 
 @pytest.mark.asyncio
+async def test_update_prompt_command_generates_reaction_prompt(mock_admin_update, mock_context):
+    """Test /update_prompt also refreshes the stored reaction prompt."""
+    mock_admin_update.message.text = "/update_prompt New persona"
+    mock_admin_update.message.reply_text = AsyncMock()
+    mock_context.args = ["New", "persona"]
+
+    with (
+        patch("bot.commands.set_config", new_callable=AsyncMock) as mock_set_config,
+        patch("bot.commands.generate_reaction_prompt", new_callable=AsyncMock) as mock_generate,
+    ):
+        mock_generate.return_value = "generated reaction prompt"
+
+        await commands.update_prompt_command(mock_admin_update, mock_context)
+
+    mock_generate.assert_called_once_with("New persona")
+    mock_set_config.assert_any_call("persona_prompt", "New persona")
+    mock_set_config.assert_any_call("reaction_prompt", "generated reaction prompt")
+    mock_admin_update.message.reply_text.assert_called_once_with(
+        "System and reaction prompts updated successfully."
+    )
+
+
+@pytest.mark.asyncio
 async def test_settings_command_shows_inline_panel(mock_admin_update, mock_context):
     """Test /settings renders current values with inline controls."""
     mock_admin_update.message.reply_text = AsyncMock()
