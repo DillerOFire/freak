@@ -185,6 +185,7 @@ def _event_details(event: dict) -> str:
         f'<td>{_status_badge(w.get("status", "pending"))}</td>'
         f"<td><pre>{_pre_json(w.get('arguments'))}</pre></td></tr>"
         for w in memory_writes
+        if isinstance(w, dict)
     ) or '<tr><td colspan="3" class="muted">No memory writes.</td></tr>'
 
     return f"""

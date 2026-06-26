@@ -143,6 +143,9 @@ def summarize_telemetry(events: list[dict]) -> dict:
     topic_counts: dict[str, int] = {}
     for event in events:
         for write in event.get("memory_writes") or []:
+            # Older rows may store plain strings instead of dicts; skip those.
+            if not isinstance(write, dict):
+                continue
             if write.get("status") != "succeeded":
                 continue
             if write.get("type") != "general_memory":
