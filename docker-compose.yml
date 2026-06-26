@@ -3,16 +3,16 @@
 # port for the telemetry dashboard. Each instance runs from the same image.
 services:
   bot:
-    image: ghcr.io/dillerofire/freak:latest
+    build: .
+    # Or pull a published image, e.g. ghcr.io/your-org/freak:latest
     container_name: freak
     restart: unless-stopped
     env_file: .env
     environment:
       RUN_MODE: docker
       ENV_FILE: /data/.env
+      TELEMETRY_DASHBOARD_HOST: "0.0.0.0"
     volumes:
       - ./data:/data
-    # Telemetry dashboard. Bind to localhost only; expose via reverse proxy
-    # or SSH tunnel if remote access is needed.
     ports:
       - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}:${TELEMETRY_DASHBOARD_PORT:-8765}"

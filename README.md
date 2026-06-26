@@ -1,6 +1,6 @@
 # Freak 🎭
 
-A persona-driven Telegram bot that hangs out in your chats, replies when it feels like it, reacts to messages with emoji, remembers things about people, and can download music or video on demand. Powered by LLMs through [OpenRouter](https://openrouter.ai), with a sandboxed research agent that can browse the web before answering.
+A persona-driven Telegram bot that hangs out in your chats, replies when it feels like it, reacts to messages with emoji, remembers things about people, and can download music or video on demand. Powered by any OpenAI-compatible LLM gateway (defaults to [OpenRouter](https://openrouter.ai)), with a sandboxed research agent that can browse the web before answering.
 
 Think of it as a moody, opinionated chat member with memory — not a question-answering assistant.
 
@@ -26,10 +26,10 @@ Think of it as a moody, opinionated chat member with memory — not a question-a
 | Piece | Tool |
 |-------|------|
 | Telegram API | `python-telegram-bot` |
-| LLM gateway | OpenRouter (OpenAI-compatible client) |
+| LLM gateway | OpenAI-compatible API (default: OpenRouter) |
 | Database | SQLite via `aiosqlite` |
 | Media download | `yt-dlp` |
-| Vision | OpenCV (headless) + OpenRouter vision model |
+| Vision | OpenCV (headless) + vision LLM |
 | Scheduler | APScheduler |
 | Deps / runner | `uv` + `just` |
 
@@ -42,7 +42,7 @@ Python **3.11+** is required.
 ### 1. Get the tokens you'll need
 
 - **Telegram bot token** — talk to [@BotFather](https://t.me/BotFather), create a bot, copy the token.
-- **OpenRouter API key** — sign up at [openrouter.ai](https://openrouter.ai), create a key.
+- **LLM API key** — sign up at [openrouter.ai](https://openrouter.ai) (or any compatible provider) and create a key.
 - **Your Telegram user ID** — forward a message to [@userinfobot](https://t.me/userinfobot) or use `/ping` after first run. This becomes `ADMIN_ID`.
 
 ### 2. Install dependencies
@@ -65,7 +65,7 @@ Edit `.env` and fill in at minimum:
 
 ```ini
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-OPENROUTER_API_KEY=sk-or-...
+LLM_API_KEY=sk-or-...
 ADMIN_ID=123456789
 ```
 
@@ -73,9 +73,10 @@ The model defaults are sensible; override them only if you want different ones:
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `OPENROUTER_MODEL` | Main persona / chat LLM | `google/gemini-flash-2.5` |
-| `OPENROUTER_PONDER_MODEL` | Research agent | `deepseek/deepseek-v4-flash` |
-| `OPENROUTER_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
+| `LLM_BASE_URL` | OpenAI-compatible API base URL | `https://openrouter.ai/api/v1` |
+| `LLM_MODEL` | Main persona / chat LLM | `google/gemini-flash-2.5` |
+| `LLM_PONDER_MODEL` | Research agent | `deepseek/deepseek-v4-flash` |
+| `LLM_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
 
 Docker-only overrides (set in `docker-compose.yml` or `.env`):
 
@@ -118,7 +119,7 @@ By default the bot only responds to the admin and whitelisted chats. In the chat
 just test
 ```
 
-Tests use a temporary SQLite DB and mock Telegram / OpenRouter / yt-dlp calls.
+Tests use a temporary SQLite DB and mock Telegram / LLM / yt-dlp calls.
 
 ---
 
@@ -126,15 +127,15 @@ Tests use a temporary SQLite DB and mock Telegram / OpenRouter / yt-dlp calls.
 
 ### Option A — Docker + GHCR + Watchtower (recommended)
 
-Every push to `master` (and every tag, plus a daily 04:00 UTC rebuild for yt-dlp freshness) builds a multi-arch image and publishes it to GHCR:
+CI builds a multi-arch image on every push to `master`, on version tags, and on a daily schedule (keeps yt-dlp fresh). Publish to your own registry, for example:
 
 ```
-ghcr.io/dillerofire/freak:master      # branch tag, what Watchtower tracks
-ghcr.io/dillerofire/freak:sha-<sha>   # per-commit pin
-ghcr.io/dillerofire/freak:v1.2.3      # semver tags
+ghcr.io/your-org/freak:master      # branch tag, what Watchtower tracks
+ghcr.io/your-org/freak:sha-<sha>   # per-commit pin
+ghcr.io/your-org/freak:v1.2.3      # semver tags
 ```
 
-The image is public, so no registry login is needed on the host.
+The included `docker-compose.yml` builds locally by default. Swap `build: .` for `image: ghcr.io/your-org/freak:master` once you publish.
 
 #### 1. Create a deploy directory on the server
 
@@ -152,7 +153,7 @@ cp /old/freak/cookies/*.txt data/cookies/ 2>/dev/null || true
 ```yaml
 services:
   bot:
-    image: ghcr.io/dillerofire/freak:master
+    image: ghcr.io/your-org/freak:master
     container_name: freak
     restart: unless-stopped
     env_file: .env
@@ -221,7 +222,7 @@ services:
       DOCKER_API_VERSION: "1.41"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 300 --cleanup freak personfreak
+    command: --interval 300 --cleanup freak
 ```
 
 ```bash
@@ -307,7 +308,7 @@ bot/
   handlers.py      Message pipeline: logic → media → LLM → (ponder) → reply
   logic.py         Reply/react decision logic (cooldowns, chances, ping-pong)
   memory.py        SQLite access (users, general memory, whitelist, config)
-  llm.py           OpenRouter calls + tool-call routing to ponder
+  llm.py           LLM calls + tool-call routing to ponder
   agent.py         Sandboxed ponder ReAct agent (web_search, fetch, recall)
   media_utils.py   yt-dlp download + video frame extraction
   vision.py        Image / frame analysis via vision model
@@ -332,4 +333,4 @@ Under Docker, cookies live in `data/cookies/` (mounted at `/data/cookies` inside
 
 ## 📄 License
 
-See repository for details. Built by [@DillerOFire](https://github.com/DillerOFire).
+MIT — see [LICENSE](LICENSE).

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 # Mock environment variables if needed
 os.environ["TELEGRAM_BOT_TOKEN"] = "test_token"
-os.environ["OPENROUTER_API_KEY"] = "test_key"
+os.environ["LLM_API_KEY"] = "test_key"
 
 
 @pytest_asyncio.fixture

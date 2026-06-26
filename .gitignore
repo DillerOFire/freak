@@ -17,11 +17,13 @@ venv/
 env/
 ENV/
 
-# Environment and local configuration
+# Local runtime data (never commit)
 .env
 .env.*
 !.env.example
 !.env.sample
+cookies/
+*.cookies.txt
 
 # Test, coverage, and type-checker caches
 .pytest_cache/
@@ -42,7 +44,6 @@ bot_memory.db
 *.sqlite
 *.sqlite3
 *.log
-cookies/
 
 # Editor, OS, and notebook noise
 .DS_Store

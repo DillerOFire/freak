@@ -1,5 +1,5 @@
-# Watchtower monitors the two bot containers and pulls new images when the
-# GHCR tag is updated. Runs every 5 minutes; one-shot semantics per container.
+# Watchtower monitors bot containers and pulls new images when the registry
+# tag is updated. Runs every 5 minutes; one-shot semantics per container.
 services:
   watchtower:
     image: containrrr/watchtower
@@ -7,4 +7,4 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 300 --cleanup freak personfreak
+    command: --interval 300 --cleanup freak

@@ -11,7 +11,7 @@ import aiohttp
 
 from bot.llm import client
 from bot.memory import search_general_memories, search_user_memories
-from config import OPENROUTER_PONDER_MODEL
+from config import LLM_PONDER_MODEL
 
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
 _USER_AGENT = "Mozilla/5.0 (compatible; FreakBot/1.0; +https://github.com/)"
@@ -164,7 +164,7 @@ async def run_ponder_agent(query: str, chat_id: int, max_steps: int = 6) -> str:
 
         for _ in range(max_steps):
             response = await client.chat.completions.create(
-                model=OPENROUTER_PONDER_MODEL,
+                model=LLM_PONDER_MODEL,
                 messages=messages,
                 response_format={"type": "json_object"},
             )

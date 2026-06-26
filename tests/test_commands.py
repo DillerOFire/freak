@@ -378,19 +378,19 @@ async def test_version_command(mock_update, mock_context):
 
 @pytest.mark.asyncio
 async def test_set_env_command_updates_value(mock_admin_update, mock_context):
-    mock_admin_update.message.text = "/set_env OPENROUTER_MODEL google/gemini-flash-2.5"
+    mock_admin_update.message.text = "/set_env LLM_MODEL google/gemini-flash-2.5"
     mock_admin_update.message.reply_text = AsyncMock()
     mock_admin_update.effective_chat.type = "private"
 
-    with patch("bot.commands.set_env_value", return_value=(False, "Updated OPENROUTER_MODEL.")):
+    with patch("bot.commands.set_env_value", return_value=(False, "Updated LLM_MODEL.")):
         await commands.set_env_command(mock_admin_update, mock_context)
 
-    mock_admin_update.message.reply_text.assert_called_once_with("Updated OPENROUTER_MODEL.")
+    mock_admin_update.message.reply_text.assert_called_once_with("Updated LLM_MODEL.")
 
 
 @pytest.mark.asyncio
 async def test_set_env_command_rejects_group_chat(mock_admin_update, mock_context):
-    mock_admin_update.message.text = "/set_env OPENROUTER_MODEL google/gemini-flash-2.5"
+    mock_admin_update.message.text = "/set_env LLM_MODEL google/gemini-flash-2.5"
     mock_admin_update.message.reply_text = AsyncMock()
     mock_admin_update.effective_chat.type = "group"
 

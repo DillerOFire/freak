@@ -1,7 +1,7 @@
 [project]
 name = "freak"
 version = "0.1.0"
-description = "Add your description here"
+description = "Persona-driven Telegram bot with memory, media tools, and an LLM research agent"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

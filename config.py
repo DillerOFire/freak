@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
 
 def _default_env_file_path() -> Path:
     explicit = os.getenv("ENV_FILE", "").strip()
@@ -39,28 +41,22 @@ def _default_ytdlp_package_dir() -> str:
     return os.path.join(os.path.dirname(__file__), "data", "python-packages")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-flash-2.5")
-OPENROUTER_PONDER_MODEL = os.getenv(
-    "OPENROUTER_PONDER_MODEL", "deepseek/deepseek-v4-flash"
-)
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-flash-2.5")
+LLM_PONDER_MODEL = os.getenv("LLM_PONDER_MODEL", "deepseek/deepseek-v4-flash")
 REACTION_CHANCE = 0.05
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
-if not OPENROUTER_API_KEY:
-    raise ValueError("OPENROUTER_API_KEY not set in .env")
+if not LLM_API_KEY:
+    raise ValueError("LLM_API_KEY not set in .env")
 
-OPENROUTER_VISION_MODEL = os.getenv(
-    "OPENROUTER_VISION_MODEL", "google/gemini-flash-2.5"
-)
+LLM_VISION_MODEL = os.getenv("LLM_VISION_MODEL", "google/gemini-flash-2.5")
 
-# OpenRouter app attribution headers
-OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://github.com/DillerOFire/freak")
-OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "Freaky tg bot")
+# Optional attribution headers for OpenRouter (and compatible gateways).
+LLM_REFERER = os.getenv("LLM_REFERER", "https://github.com/your-org/freak")
+LLM_TITLE = os.getenv("LLM_TITLE", "Freak Telegram Bot")
 
-# Admin ID configuration
-# Default to the user provided ID if not set in env
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 TELEMETRY_DASHBOARD_ENABLED = os.getenv("TELEMETRY_DASHBOARD_ENABLED", "true").lower() not in {"0", "false", "no"}
 TELEMETRY_DASHBOARD_HOST = os.getenv("TELEMETRY_DASHBOARD_HOST", "127.0.0.1")

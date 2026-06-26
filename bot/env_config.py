@@ -17,13 +17,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
     {
         "TELEGRAM_BOT_TOKEN",
-        "OPENROUTER_API_KEY",
+        "LLM_API_KEY",
         "ADMIN_ID",
-        "OPENROUTER_MODEL",
-        "OPENROUTER_PONDER_MODEL",
-        "OPENROUTER_VISION_MODEL",
-        "OPENROUTER_REFERER",
-        "OPENROUTER_TITLE",
+        "LLM_MODEL",
+        "LLM_PONDER_MODEL",
+        "LLM_VISION_MODEL",
+        "LLM_REFERER",
+        "LLM_TITLE",
         "TELEMETRY_DASHBOARD_ENABLED",
         "TELEMETRY_DASHBOARD_HOST",
         "TELEMETRY_DASHBOARD_PORT",
@@ -46,7 +46,7 @@ PROTECTED_ENV_KEYS: frozenset[str] = frozenset(
 SECRET_ENV_KEYS: frozenset[str] = frozenset(
     {
         "TELEGRAM_BOT_TOKEN",
-        "OPENROUTER_API_KEY",
+        "LLM_API_KEY",
         "TELEMETRY_DASHBOARD_TOKEN",
     }
 )
@@ -277,37 +277,37 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
 
     import config
 
-    if key == "OPENROUTER_MODEL":
-        config.OPENROUTER_MODEL = value
+    if key == "LLM_MODEL":
+        config.LLM_MODEL = value
         import bot.llm as llm
 
-        llm.OPENROUTER_MODEL = value
-    elif key == "OPENROUTER_PONDER_MODEL":
-        config.OPENROUTER_PONDER_MODEL = value
+        llm.LLM_MODEL = value
+    elif key == "LLM_PONDER_MODEL":
+        config.LLM_PONDER_MODEL = value
         import bot.agent as agent
 
-        agent.OPENROUTER_PONDER_MODEL = value
-    elif key == "OPENROUTER_VISION_MODEL":
-        config.OPENROUTER_VISION_MODEL = value
+        agent.LLM_PONDER_MODEL = value
+    elif key == "LLM_VISION_MODEL":
+        config.LLM_VISION_MODEL = value
         import bot.vision as vision
 
-        vision.OPENROUTER_VISION_MODEL = value
-    elif key == "OPENROUTER_API_KEY":
-        config.OPENROUTER_API_KEY = value
+        vision.LLM_VISION_MODEL = value
+    elif key == "LLM_API_KEY":
+        config.LLM_API_KEY = value
         import bot.llm as llm
         import bot.vision as vision
 
         llm.client.api_key = value
         vision.client.api_key = value
-    elif key == "OPENROUTER_REFERER":
-        config.OPENROUTER_REFERER = value
+    elif key == "LLM_REFERER":
+        config.LLM_REFERER = value
         import bot.llm as llm
         import bot.vision as vision
 
         llm.client.default_headers["HTTP-Referer"] = value
         vision.client.default_headers["HTTP-Referer"] = value
-    elif key == "OPENROUTER_TITLE":
-        config.OPENROUTER_TITLE = value
+    elif key == "LLM_TITLE":
+        config.LLM_TITLE = value
         import bot.llm as llm
         import bot.vision as vision
 

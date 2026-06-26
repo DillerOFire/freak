@@ -6,7 +6,7 @@ from typing import Any, Literal
 import html
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from xml.sax.saxutils import escape, quoteattr
-from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_REFERER, OPENROUTER_TITLE
+from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_REFERER, LLM_TITLE
 from bot.messages import AvailableReactions
 from bot.memory import (
     update_user_thought,
@@ -23,11 +23,11 @@ from bot.memory import (
 from bot.telemetry import record_llm_telemetry
 
 client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
+    base_url=LLM_BASE_URL,
+    api_key=LLM_API_KEY,
     default_headers={
-        "HTTP-Referer": OPENROUTER_REFERER,
-        "X-Title": OPENROUTER_TITLE,
+        "HTTP-Referer": LLM_REFERER,
+        "X-Title": LLM_TITLE,
     },
 )
 
@@ -523,7 +523,7 @@ async def generate_response(
             logging.info(f"Content:\n{msg['content']}")
             logging.info("-" * 20)
         response = await client.chat.completions.create(
-            model=OPENROUTER_MODEL,
+            model=LLM_MODEL,
             messages=messages,
             response_format={"type": "json_object"},
             extra_body={
@@ -683,7 +683,7 @@ async def generate_response(
                 {
                     "chat_id": chat_id,
                     "source": source,
-                    "model": OPENROUTER_MODEL,
+                    "model": LLM_MODEL,
                     "focus_message_id": focus_message_id,
                     "status": status,
                     "error_type": error_type,
@@ -761,7 +761,7 @@ async def generate_reaction_prompt(persona_prompt: str) -> str:
 
     try:
         response = await client.chat.completions.create(
-            model=OPENROUTER_MODEL,
+            model=LLM_MODEL,
             messages=messages,
             extra_body={
                 "reasoning": {
@@ -805,7 +805,7 @@ async def generate_reaction(message_text: str) -> str | None:
 
     try:
         response = await client.chat.completions.create(
-            model=OPENROUTER_MODEL,
+            model=LLM_MODEL,
             messages=messages,
             extra_body={
                 "reasoning": {

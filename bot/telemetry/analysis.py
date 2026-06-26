@@ -1,6 +1,6 @@
 """Pure summary and context-engineering suggestion logic for telemetry.
 
-This module must not import Telegram, OpenRouter, aiosqlite, or http.server.
+This module must not import Telegram, the LLM client, aiosqlite, or http.server.
 """
 
 from typing import Any

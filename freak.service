@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=sfire
-WorkingDirectory=/home/sfire/PythonProjects/freak
-ExecStart=/home/sfire/PythonProjects/freak/.venv/bin/python main.py
+User=you
+WorkingDirectory=/home/you/freak
+ExecStart=/home/you/freak/.venv/bin/python main.py
 Restart=always
 RestartSec=10
 

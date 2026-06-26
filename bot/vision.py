@@ -1,14 +1,14 @@
 import base64
 import logging
 from openai import AsyncOpenAI
-from config import OPENROUTER_API_KEY, OPENROUTER_VISION_MODEL, OPENROUTER_REFERER, OPENROUTER_TITLE
+from config import LLM_API_KEY, LLM_BASE_URL, LLM_REFERER, LLM_TITLE, LLM_VISION_MODEL
 
 client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
+    base_url=LLM_BASE_URL,
+    api_key=LLM_API_KEY,
     default_headers={
-        "HTTP-Referer": OPENROUTER_REFERER,
-        "X-Title": OPENROUTER_TITLE,
+        "HTTP-Referer": LLM_REFERER,
+        "X-Title": LLM_TITLE,
     },
 )
 
@@ -51,7 +51,7 @@ async def analyze_image(image_bytes: bytes) -> str:
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
         response = await client.chat.completions.create(
-            model=OPENROUTER_VISION_MODEL,
+            model=LLM_VISION_MODEL,
             max_tokens=500,
             messages=[
                 {
@@ -104,7 +104,7 @@ async def analyze_frames(frame_bytes_list: list[bytes]) -> str:
             )
 
         response = await client.chat.completions.create(
-            model=OPENROUTER_VISION_MODEL,
+            model=LLM_VISION_MODEL,
             max_tokens=500,
             messages=[
                 {
