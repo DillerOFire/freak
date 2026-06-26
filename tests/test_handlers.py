@@ -384,3 +384,37 @@ async def test_handle_message_sends_saved_gif_reply(temp_db_path, mock_update_ha
 
         saved = await memory.get_saved_media_by_unique_id(12345, "gif_u1")
         assert saved["use_count"] == 1
+
+
+def test_llm_promised_research_without_ponder_detects_deferral():
+    response = {
+        "tool_calls": [],
+        "messages": ["щас всё гляну, мой гигачад! ня!"],
+    }
+    assert handlers._llm_promised_research_without_ponder(response) is True
+
+
+def test_llm_promised_research_without_ponder_ignores_when_ponder_present():
+    response = {
+        "tool_calls": [{"name": "ponder", "arguments": {"query": "news"}}],
+        "messages": ["щас всё гляну"],
+    }
+    assert handlers._llm_promised_research_without_ponder(response) is False
+
+
+def test_llm_promised_research_without_ponder_ignores_normal_reply():
+    response = {
+        "tool_calls": [],
+        "messages": ["Сейчас я устрою голосование, мои нерешительные букашки."],
+    }
+    assert handlers._llm_promised_research_without_ponder(response) is False
+
+
+def test_derive_ponder_query_news_russian():
+    q = handlers._derive_ponder_query("Маэстро, что сейчас в мире происходит?")
+    assert q == "latest world news today major events"
+
+
+def test_derive_ponder_query_passes_through_other_questions():
+    q = handlers._derive_ponder_query("Who invented the telephone?")
+    assert "telephone" in q

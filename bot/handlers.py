@@ -32,6 +32,120 @@ from xml.sax.saxutils import escape as xml_escape
 chat_history: dict[int, deque] = {}
 
 
+
+_PONDER_DEFERRAL_MARKERS = (
+    "гляну",
+    "проверю",
+    "поищу",
+    "узнаю",
+    "освежить",
+    "погуглю",
+    "look up",
+    "checking",
+    "check the",
+    "search for",
+    "find out",
+    "research",
+    "one moment",
+    "минутку",
+    "щас ",
+    "ща ",
+)
+
+_REALTIME_TOPIC_MARKERS = (
+    "новост",
+    "news",
+    "что в мире",
+    "what's happening",
+    "current events",
+    "происходит",
+    "сегодня",
+    "today",
+    "в мире",
+    "world",
+)
+
+
+def _has_ponder_tool_call(response: dict) -> bool:
+    return any(tc.get("name") == "ponder" for tc in response.get("tool_calls", []))
+
+
+def _llm_promised_research_without_ponder(response: dict) -> bool:
+    """Detect wait-for-research messages when the model forgot the ponder tool_call."""
+    if _has_ponder_tool_call(response):
+        return False
+    messages = response.get("messages", [])
+    if not messages:
+        return False
+    combined = " ".join(m.lower() for m in messages if isinstance(m, str))
+    return any(marker in combined for marker in _PONDER_DEFERRAL_MARKERS)
+
+
+def _derive_ponder_query(user_text: str, memory_query: str | None = None) -> str:
+    source = (user_text or memory_query or "").strip()
+    if not source:
+        return "general information request"
+    lower = source.lower()
+    if any(marker in lower for marker in _REALTIME_TOPIC_MARKERS):
+        return "latest world news today major events"
+    return source[:500]
+
+
+async def _complete_ponder_followup(
+    *,
+    ponder_query: str,
+    chat_id: int,
+    message_id: int,
+    current_history: list,
+    user_thoughts: dict,
+    general_memories: list,
+    memory_query: str,
+    saved_media_options: list,
+    bot_username: str,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    ponder_result = await run_ponder_agent(ponder_query, chat_id)
+
+    extra_context = (
+        f'\n<ponder_result query="{xml_escape(ponder_query)}">'
+        f"\n{xml_escape(ponder_result)}"
+        f"\n</ponder_result>"
+        f"\n<instruction>You previously requested research via ponder."
+        f" The results are in <ponder_result>. Use them to compose your reply."
+        f" Do NOT call ponder again.</instruction>"
+    )
+
+    response2 = await generate_response(
+        list(current_history),
+        user_thoughts,
+        general_memories,
+        chat_id,
+        focus_message_id=message_id,
+        source="ponder",
+        memory_query=memory_query,
+        saved_media_options=saved_media_options,
+        extra_context=extra_context,
+    )
+
+    if response2:
+        await _send_llm_response(response2, chat_id, bot_username, context)
+        return
+
+    logging.error(
+        "Ponder follow-up LLM returned no reply (query=%r, result=%r)",
+        ponder_query,
+        ponder_result[:200],
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Хм, исследование завершилось, но я не смог собрать ответ — спросите иначе, букашки.",
+            reply_to_message_id=message_id,
+        )
+    except Exception as e:
+        logging.error(f"Failed to send ponder fallback message: {e}")
+
+
 def add_message_to_history(
     chat_id: int,
     message_id: int,
@@ -578,37 +692,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if tc["name"] == "ponder"
             ]
 
+            ponder_query: str | None = None
+
             if ponder_calls:
                 await _send_llm_response(response, chat_id, bot_username, context)
-
                 ponder_query = ponder_calls[0]["arguments"].get("query", "")
-                ponder_result = await run_ponder_agent(ponder_query, chat_id)
-
-                extra_context = (
-                    f'\n<ponder_result query="{xml_escape(ponder_query)}">'
-                    f"\n{xml_escape(ponder_result)}"
-                    f"\n</ponder_result>"
-                    f"\n<instruction>You previously requested research via ponder."
-                    f" The results are in <ponder_result>. Use them to compose your reply."
-                    f" Do NOT call ponder again.</instruction>"
+            elif _llm_promised_research_without_ponder(response):
+                logging.warning(
+                    "LLM promised research without ponder tool_call; running fallback ponder"
                 )
-
-                response2 = await generate_response(
-                    list(current_history),
-                    user_thoughts,
-                    general_memories,
-                    chat_id,
-                    focus_message_id=message_id,
-                    source="ponder",
-                    memory_query=memory_query,
-                    saved_media_options=saved_media_options,
-                    extra_context=extra_context,
-                )
-
-                if response2:
-                    await _send_llm_response(response2, chat_id, bot_username, context)
+                await _send_llm_response(response, chat_id, bot_username, context)
+                ponder_query = _derive_ponder_query(text, memory_query)
             else:
                 await _send_llm_response(response, chat_id, bot_username, context)
+
+            if ponder_query:
+                await _complete_ponder_followup(
+                    ponder_query=ponder_query,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    current_history=list(current_history),
+                    user_thoughts=user_thoughts,
+                    general_memories=general_memories,
+                    memory_query=memory_query,
+                    saved_media_options=saved_media_options,
+                    bot_username=bot_username,
+                    context=context,
+                )
 
     # Reaction Logic
     if await should_react(chat_id):
