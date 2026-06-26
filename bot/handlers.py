@@ -169,12 +169,46 @@ async def get_message_media_description(
         else:
             logging.info("Sticker lacks file_unique_id, skipping analysis/saving.")
 
-    # Check for Video/Animation
-    elif message.video or message.animation:
-        video = message.video or message.animation
+    # Check for GIF (Telegram animation)
+    elif message.animation:
+        animation = message.animation
+        file_unique_id = getattr(animation, "file_unique_id", None)
+        file_id = getattr(animation, "file_id", None)
+
+        if file_unique_id:
+            cached_desc = await get_media_description(file_unique_id)
+            if cached_desc:
+                media_description = f"[User sent a gif: {cached_desc}]"
+                description = cached_desc
+            else:
+                logging.info("Analyzing new gif...")
+                file = await animation.get_file()
+                file_path = await download_file(file)
+
+                frames = extract_frames_from_video(file_path)
+                if frames:
+                    description = await analyze_frames(frames)
+                    if not description.startswith("Error"):
+                        await save_media_description(file_unique_id, description)
+                    media_description = f"[User sent a gif: {description}]"
+                else:
+                    description = None
+                    media_description = "[User sent a gif (could not analyze)]"
+
+                os.remove(file_path)
+
+            if save_reusable and chat_id is not None and file_id and description and not description.startswith("Error"):
+                await save_reusable_media(
+                    chat_id, file_unique_id, file_id, "animation", description, sender_user_id
+                )
+        else:
+            logging.info("Gif lacks file_unique_id, skipping analysis/saving.")
+
+    # Check for Video
+    elif message.video:
+        video = message.video
         file_unique_id = video.file_unique_id
 
-        # Check cache
         cached_desc = await get_media_description(file_unique_id)
         if cached_desc:
             media_description = f"[User sent a video: {cached_desc}]"
@@ -193,6 +227,41 @@ async def get_message_media_description(
                 media_description = "[User sent a video (could not analyze)]"
 
             os.remove(file_path)
+
+    # Check for GIF sent as a document
+    elif message.document and getattr(message.document, "mime_type", None) == "image/gif":
+        doc = message.document
+        file_unique_id = getattr(doc, "file_unique_id", None)
+        file_id = getattr(doc, "file_id", None)
+
+        if file_unique_id:
+            cached_desc = await get_media_description(file_unique_id)
+            if cached_desc:
+                media_description = f"[User sent a gif: {cached_desc}]"
+                description = cached_desc
+            else:
+                logging.info("Analyzing gif document...")
+                file = await doc.get_file()
+                file_path = await download_file(file)
+
+                frames = extract_frames_from_video(file_path)
+                if frames:
+                    description = await analyze_frames(frames)
+                    if not description.startswith("Error"):
+                        await save_media_description(file_unique_id, description)
+                    media_description = f"[User sent a gif: {description}]"
+                else:
+                    description = None
+                    media_description = "[User sent a gif (could not analyze)]"
+
+                os.remove(file_path)
+
+            if save_reusable and chat_id is not None and file_id and description and not description.startswith("Error"):
+                await save_reusable_media(
+                    chat_id, file_unique_id, file_id, "animation", description, sender_user_id
+                )
+        else:
+            logging.info("Gif document lacks file_unique_id, skipping analysis/saving.")
 
     # Check for Document
     elif message.document:
@@ -216,6 +285,10 @@ async def send_saved_media_reply(
     elif media["media_type"] == "sticker":
         return await context.bot.send_sticker(
             chat_id=chat_id, sticker=media["file_id"], reply_to_message_id=reply_to_message_id
+        )
+    elif media["media_type"] == "animation":
+        return await context.bot.send_animation(
+            chat_id=chat_id, animation=media["file_id"], reply_to_message_id=reply_to_message_id
         )
     else:
         logging.error(f"Unknown media type: {media.get('media_type')}")

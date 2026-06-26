@@ -3,6 +3,7 @@ import time
 from openai import AsyncOpenAI
 import json
 from typing import Any, Literal
+import html
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from xml.sax.saxutils import escape, quoteattr
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_REFERER, OPENROUTER_TITLE
@@ -33,7 +34,7 @@ class LLMPoll(BaseModel):
     @field_validator("question")
     @classmethod
     def validate_question(cls, value: str) -> str:
-        value = value.strip()
+        value = html.unescape(value).strip()
         if not 1 <= len(value) <= 300:
             raise ValueError("Poll question must be 1-300 characters.")
         return value
@@ -42,7 +43,7 @@ class LLMPoll(BaseModel):
     @classmethod
     def validate_options(cls, value: list[str]) -> list[str]:
         options = [
-            option.strip()
+            html.unescape(option).strip()
             for option in value
             if isinstance(option, str) and option.strip()
         ]
@@ -58,6 +59,16 @@ class LLMResponse(BaseModel):
     messages: list[str] = Field(default_factory=list)
     polls: list[LLMPoll] = Field(default_factory=list, max_length=1)
     media_reply_unique_id: str | None = None
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def decode_messages(cls, value):
+        if not isinstance(value, list):
+            return value
+        return [
+            html.unescape(item) if isinstance(item, str) else item
+            for item in value
+        ]
 
 DEFAULT_PERSONA = """
 Ты — виртуальный участник группового чата в Telegram.
@@ -85,6 +96,7 @@ When you receive the conversation context enclosed in XML-style tags:
    - If you reply, set `reply_to_message_id` to the integer ID of the message you are replying to. If it's a general/unsolicited message, set it to null.
    - Your reply should be casual, relevant, and fit the group vibe.
    - You can send multiple messages by specifying them as separate strings in the `messages` array.
+   - Message strings must be plain Telegram text. Never use HTML or XML entities (write `>` not `&gt;`, `&` not `&amp;`).
    - You may create a Telegram poll only when it naturally fits the conversation. Set `polls` to an empty array, or to one poll object with `question`, `options`, `is_anonymous`, and `allows_multiple_answers`.
    - Polls are for choices, votes, preferences, or playful group decisions. Do not create a poll just because you were triggered.
    - Regular polls must have a 1-300 character question, 2-10 non-empty options, and options of 1-100 characters. Default to anonymous single-answer polls; set `allows_multiple_answers` to true only when multiple selections make sense.
@@ -112,7 +124,7 @@ Output your response as a JSON object with exactly these top-level fields, in th
 }
 
 RULES FOR MEDIA REACTIONS:
-- You can send one saved photo/sticker by setting "media_reply_unique_id" to an exact ID string from `<saved_media>`.
+- You can send one saved photo/sticker/gif by setting "media_reply_unique_id" to an exact ID string from `<saved_media>`.
 - Set "media_reply_unique_id" to null when no saved media fits, or when you do not want to react with saved media.
 - NEVER invent IDs or output Telegram file_id values. Use only the exact `id` attribute from the `<saved_media>` options.
 - Media-only replies are valid when `messages` is empty and `media_reply_unique_id` is set.
@@ -251,6 +263,12 @@ def _xml_text(value: object) -> str:
 def _xml_attr(value: object) -> str:
     return quoteattr(str(value or ""))
 
+def _xml_cdata(value: object) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return "".join(f"<![CDATA[{part}]]>" for part in text.split("]]>"))
+
 def build_context_prompt(
     messages_context: list[dict],
     user_thoughts: dict,
@@ -283,7 +301,7 @@ def build_context_prompt(
             attrs.append('focus="true"')
 
         attr_str = " ".join(attrs)
-        text_content = _xml_text(msg.get("text", "").strip())
+        text_content = _xml_cdata(msg.get("text", "").strip())
         context_parts.append(f"    <message {attr_str}>")
         context_parts.append(f"      <text>{text_content}</text>")
         context_parts.append("    </message>")
@@ -294,7 +312,7 @@ def build_context_prompt(
         context_parts.append("  <core_memory>")
         for username, thought in user_thoughts.items():
             u_name = _xml_text(username)
-            u_thought = _xml_text(thought)
+            u_thought = _xml_cdata(thought)
             context_parts.append(f'    <user name="{u_name}">{u_thought}</user>')
         context_parts.append("  </core_memory>")
 
@@ -302,7 +320,7 @@ def build_context_prompt(
     if general_memories:
         context_parts.append("  <retrieved_semantic_memory>")
         for mem in general_memories:
-            u_mem = _xml_text(mem)
+            u_mem = _xml_cdata(mem)
             context_parts.append(f"    <memory>{u_mem}</memory>")
         context_parts.append("  </retrieved_semantic_memory>")
 
@@ -316,7 +334,7 @@ def build_context_prompt(
             desc = option["description"]
             if len(desc) > 300:
                 desc = desc[:300] + "..."
-            m_desc = _xml_text(desc)
+            m_desc = _xml_cdata(desc)
             context_parts.append(f'    <media id={m_id} type={m_type} use_count={m_use}>{m_desc}</media>')
         context_parts.append("  </saved_media>")
 

@@ -201,6 +201,21 @@ async def test_saved_media_crud_and_limits(temp_db_path):
     assert val is not None
     assert val["use_count"] == 1
 
+    # Save gif media type
+    await memory.save_reusable_media(
+        chat_id=12345,
+        media_unique_id="gif_u1",
+        file_id="gif_f1",
+        media_type="animation",
+        description="cat dancing",
+        sender_user_id=111,
+        per_chat_limit=10,
+        global_limit=10,
+    )
+    gif = await memory.get_saved_media_by_unique_id(12345, "gif_u1")
+    assert gif is not None
+    assert gif["media_type"] == "animation"
+
 
 @pytest.mark.asyncio
 async def test_saved_media_global_limit(temp_db_path):

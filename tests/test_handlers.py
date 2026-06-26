@@ -11,6 +11,7 @@ def mock_context(mock_context):
     mock_context.bot.set_message_reaction = AsyncMock()
     mock_context.bot.send_photo = AsyncMock(return_value=MagicMock(message_id=888, from_user=MagicMock(id=999)))
     mock_context.bot.send_sticker = AsyncMock(return_value=MagicMock(message_id=889, from_user=MagicMock(id=999)))
+    mock_context.bot.send_animation = AsyncMock(return_value=MagicMock(message_id=890, from_user=MagicMock(id=999)))
     return mock_context
 
 
@@ -307,3 +308,79 @@ async def test_get_message_media_description_saves_photo_metadata(temp_db_path):
         mock_save_reusable.assert_called_once_with(
             12345, "photo_u1", "photo_f1", "photo", "a saved portrait", 67890
         )
+
+
+@pytest.mark.asyncio
+async def test_get_message_media_description_saves_gif_metadata(temp_db_path):
+    mock_animation = MagicMock()
+    mock_animation.file_unique_id = "gif_u1"
+    mock_animation.file_id = "gif_f1"
+    mock_animation.get_file = AsyncMock()
+
+    mock_msg = MagicMock()
+    mock_msg.photo = None
+    mock_msg.sticker = None
+    mock_msg.video = None
+    mock_msg.animation = mock_animation
+    mock_msg.document = None
+
+    with patch("bot.handlers.get_media_description", AsyncMock(return_value=None)), \
+         patch("bot.handlers.download_file", AsyncMock(return_value="dummy_path.gif")), \
+         patch("bot.handlers.extract_frames_from_video", return_value=[b"frame1"]), \
+         patch("bot.handlers.analyze_frames", AsyncMock(return_value="cat dancing")), \
+         patch("bot.handlers.save_reusable_media", AsyncMock()) as mock_save_reusable, \
+         patch("os.remove", MagicMock()):
+
+        desc = await handlers.get_message_media_description(
+            mock_msg,
+            chat_id=12345,
+            sender_user_id=67890,
+            save_reusable=True,
+        )
+
+        assert desc == "[User sent a gif: cat dancing]"
+        mock_save_reusable.assert_called_once_with(
+            12345, "gif_u1", "gif_f1", "animation", "cat dancing", 67890
+        )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_sends_saved_gif_reply(temp_db_path, mock_update_handler, mock_context):
+    handlers.chat_history.clear()
+    mock_update_handler.message.photo = None
+    mock_update_handler.message.sticker = None
+    mock_update_handler.message.video = None
+    mock_update_handler.message.animation = None
+    mock_update_handler.message.document = None
+
+    from bot import memory
+    await memory.add_whitelist(12345, "group", 999)
+    await memory.save_reusable_media(
+        chat_id=12345,
+        media_unique_id="gif_u1",
+        file_id="gif_f1",
+        media_type="animation",
+        description="cat dancing",
+    )
+
+    with patch("bot.handlers.should_reply", AsyncMock(return_value=True)), \
+         patch("bot.handlers.should_react", AsyncMock(return_value=False)), \
+         patch("bot.handlers.generate_response", AsyncMock(return_value={
+             "tool_calls": [],
+             "reply_to_message_id": 999,
+             "messages": [],
+             "polls": [],
+             "media_reply_unique_id": "gif_u1",
+         })):
+
+        await handlers.handle_message(mock_update_handler, mock_context)
+
+        mock_context.bot.send_animation.assert_called_once_with(
+            chat_id=12345,
+            animation="gif_f1",
+            reply_to_message_id=999,
+        )
+        mock_context.bot.send_message.assert_not_called()
+
+        saved = await memory.get_saved_media_by_unique_id(12345, "gif_u1")
+        assert saved["use_count"] == 1

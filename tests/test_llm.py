@@ -131,7 +131,7 @@ async def test_generate_response_success(temp_db_path):
         assert 'focus="true"' in user_message_content
         assert 'Hello bot' in user_message_content
         assert "<core_memory>" in user_message_content
-        assert '<user name="Alice">Needs help</user>' in user_message_content
+        assert '<user name="Alice"><![CDATA[Needs help]]></user>' in user_message_content
         assert "<retrieved_semantic_memory>" in user_message_content
         assert "Topic: Greeting, Summary: Alice said hello" in user_message_content
         
@@ -323,10 +323,30 @@ async def test_build_context_prompt_escaping():
     prompt = llm.build_context_prompt(mock_messages_context, {}, [], 1)
     
     assert "A&amp;B" in prompt
-    assert "2 &lt; 3 &amp; &quot;quoted&quot;" not in prompt  # Quote escaping only in attributes
-    assert "2 &lt; 3 &amp; \"quoted\"" in prompt
+    assert "<![CDATA[2 < 3 & \"quoted\"]]>" in prompt
+    assert "2 &lt; 3" not in prompt
     assert "C&amp;D" in prompt
     assert "hello &quot;quotes&quot;" in prompt or "hello &amp;quot;quotes&amp;quot;" in prompt or "hello \"quotes\"" in prompt
+
+
+@pytest.mark.asyncio
+async def test_build_context_prompt_preserves_raw_greater_than():
+    """Message text with > should stay raw in CDATA, not &gt;."""
+    prompt = llm.build_context_prompt(
+        [{"message_id": 1, "sender": "user", "user_id": 1, "text": ">:3"}],
+        {},
+        [],
+        1,
+    )
+    assert "<![CDATA[>:3]]>" in prompt
+    assert "&gt;:3" not in prompt
+
+
+def test_llm_response_decodes_html_entities():
+    response = llm.LLMResponse.model_validate(
+        {"messages": ["&gt;:3", "2 &lt; 3 &amp; ok"], "polls": []}
+    )
+    assert response.messages == [">:3", "2 < 3 & ok"]
 
 
 @pytest.mark.asyncio

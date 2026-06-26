@@ -42,7 +42,7 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
                 media_unique_id TEXT NOT NULL,
-                media_type TEXT NOT NULL CHECK(media_type IN ('photo', 'sticker')),
+                media_type TEXT NOT NULL CHECK(media_type IN ('photo', 'sticker', 'animation')),
                 file_id TEXT NOT NULL,
                 description TEXT NOT NULL,
                 sender_user_id INTEGER,
@@ -57,6 +57,8 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_saved_media_chat_seen 
             ON saved_media(chat_id, last_seen_at DESC, id DESC)
         """)
+
+        await _migrate_saved_media_schema(db)
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_saved_media_chat_used 
             ON saved_media(chat_id, last_used_at DESC, use_count ASC)
@@ -379,6 +381,54 @@ async def save_media_description(media_unique_id: str, description: str):
             (media_unique_id, description),
         )
         await db.commit()
+
+
+async def _migrate_saved_media_schema(db) -> None:
+    async with db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='saved_media'"
+    ) as cursor:
+        row = await cursor.fetchone()
+        if not row or not row[0] or "'animation'" in row[0]:
+            return
+
+    logging.info("Migrating DB: expanding saved_media media_type to include animation")
+    await db.execute("""
+        CREATE TABLE saved_media_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            media_unique_id TEXT NOT NULL,
+            media_type TEXT NOT NULL CHECK(media_type IN ('photo', 'sticker', 'animation')),
+            file_id TEXT NOT NULL,
+            description TEXT NOT NULL,
+            sender_user_id INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_used_at DATETIME,
+            use_count INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(chat_id, media_unique_id)
+        )
+    """)
+    await db.execute("""
+        INSERT INTO saved_media_new (
+            id, chat_id, media_unique_id, media_type, file_id, description,
+            sender_user_id, created_at, last_seen_at, last_used_at, use_count
+        )
+        SELECT
+            id, chat_id, media_unique_id, media_type, file_id, description,
+            sender_user_id, created_at, last_seen_at, last_used_at, use_count
+        FROM saved_media
+    """)
+    await db.execute("DROP TABLE saved_media")
+    await db.execute("ALTER TABLE saved_media_new RENAME TO saved_media")
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_saved_media_chat_seen
+        ON saved_media(chat_id, last_seen_at DESC, id DESC)
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_saved_media_chat_used
+        ON saved_media(chat_id, last_used_at DESC, use_count ASC)
+    """)
+
 async def _prune_saved_media(db, chat_id: int, per_chat_limit: int, global_limit: int) -> None:
     per_chat_limit = max(1, per_chat_limit)
     global_limit = max(1, global_limit)
@@ -415,7 +465,7 @@ async def save_reusable_media(
     chat_id: int,
     media_unique_id: str,
     file_id: str,
-    media_type: Literal["photo", "sticker"],
+    media_type: Literal["photo", "sticker", "animation"],
     description: str,
     sender_user_id: int | None = None,
     per_chat_limit: int = SAVED_MEDIA_PER_CHAT_LIMIT,
