@@ -9,7 +9,7 @@ docker run -d \
     --name telegram-group-bot \
     --restart unless-stopped \
     --env-file .env \
-    -v $(pwd)/bot_memory.db:/app/bot_memory.db \
+    -v $(pwd)/bot_memory.db:/data/bot_memory.db \
     telegram-group-bot
 
 echo "Bot deployed successfully!"
