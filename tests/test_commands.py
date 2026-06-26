@@ -360,3 +360,85 @@ async def test_settings_callback_in_dm_uses_global_config(mock_admin_update, moc
         await commands.settings_callback(mock_admin_update, mock_context)
 
     mock_set_reply.assert_called_once_with(0, 0.06)
+
+
+@pytest.mark.asyncio
+async def test_version_command(mock_update, mock_context):
+    mock_update.message.reply_text = AsyncMock()
+
+    with patch(
+        "bot.commands.get_version_info",
+        new_callable=AsyncMock,
+        return_value="Commit: abc1234",
+    ):
+        await commands.version_command(mock_update, mock_context)
+
+    mock_update.message.reply_text.assert_called_once_with("Commit: abc1234")
+
+
+@pytest.mark.asyncio
+async def test_set_env_command_updates_value(mock_admin_update, mock_context):
+    mock_admin_update.message.text = "/set_env OPENROUTER_MODEL google/gemini-flash-2.5"
+    mock_admin_update.message.reply_text = AsyncMock()
+    mock_admin_update.effective_chat.type = "private"
+
+    with patch("bot.commands.set_env_value", return_value=(False, "Updated OPENROUTER_MODEL.")):
+        await commands.set_env_command(mock_admin_update, mock_context)
+
+    mock_admin_update.message.reply_text.assert_called_once_with("Updated OPENROUTER_MODEL.")
+
+
+@pytest.mark.asyncio
+async def test_set_env_command_rejects_group_chat(mock_admin_update, mock_context):
+    mock_admin_update.message.text = "/set_env OPENROUTER_MODEL google/gemini-flash-2.5"
+    mock_admin_update.message.reply_text = AsyncMock()
+    mock_admin_update.effective_chat.type = "group"
+
+    await commands.set_env_command(mock_admin_update, mock_context)
+
+    mock_admin_update.message.reply_text.assert_called_once_with(
+        "This command is only available in a private chat with the bot."
+    )
+
+
+@pytest.mark.asyncio
+async def test_bot_env_command_shows_panel_in_dm(mock_admin_update, mock_context):
+    mock_admin_update.message.reply_text = AsyncMock()
+    mock_admin_update.effective_chat.type = "private"
+
+    with patch("bot.commands.format_env_panel", return_value="Environment file: /tmp/.env"):
+        await commands.bot_env_command(mock_admin_update, mock_context)
+
+    mock_admin_update.message.reply_text.assert_called_once()
+    text, = mock_admin_update.message.reply_text.call_args.args
+    assert "Environment file" in text
+
+
+@pytest.mark.asyncio
+async def test_bot_env_command_rejects_group_chat(mock_admin_update, mock_context):
+    mock_admin_update.message.reply_text = AsyncMock()
+    mock_admin_update.effective_chat.type = "group"
+
+    await commands.bot_env_command(mock_admin_update, mock_context)
+
+    mock_admin_update.message.reply_text.assert_called_once_with(
+        "This command is only available in a private chat with the bot."
+    )
+
+
+@pytest.mark.asyncio
+async def test_bot_env_callback_refreshes_panel(mock_admin_update, mock_context):
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.message.chat.type = "private"
+    query.data = "bot_env:refresh"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    mock_admin_update.callback_query = query
+
+    with patch("bot.commands.format_env_panel", return_value="Environment file: /tmp/.env"):
+        await commands.bot_env_callback(mock_admin_update, mock_context)
+
+    query.edit_message_text.assert_called_once()
+    query.answer.assert_called_once_with("Environment refreshed.")
+

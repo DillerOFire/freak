@@ -165,6 +165,30 @@ async def get_git_revision() -> str | None:
         return None
 
 
+async def get_version_info() -> str:
+    """Return a human-readable version string for the running checkout."""
+    try:
+        process = _run_cmd(
+            ["git", "log", "-1", "--format=%H%n%h%n%s%n%ci"],
+            check=True,
+        )
+        lines = [line.strip() for line in process.stdout.splitlines() if line.strip()]
+        if len(lines) >= 4:
+            full_hash, short_hash, subject, committed_at = lines[:4]
+            return (
+                f"Commit: {short_hash} ({full_hash})\n"
+                f"Message: {subject}\n"
+                f"Date: {committed_at}"
+            )
+    except Exception as e:
+        logging.error(f"Failed to read git version info: {e}")
+
+    revision = await get_git_revision()
+    if revision:
+        return f"Commit: {revision}"
+    return "Version unknown (not a git checkout)."
+
+
 async def pull_updates() -> tuple[bool, str]:
     """
     Pulls updates from the git repository.

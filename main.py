@@ -30,11 +30,16 @@ from bot.commands import (
     update_ytdlp_command,
     update_bot_command,
     help_command,
+    set_env_command,
+    version_command,
+    bot_env_command,
+    bot_env_callback,
 )
 from bot.jobs import load_jobs
 from bot.memory import init_db
 from bot.logic import init_logic
 from bot.telemetry import init_telemetry_db, start_telemetry_dashboard
+from bot.env_config import ensure_env_file_seeded
 
 
 # Configure logging
@@ -47,6 +52,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def post_init(application):
+    ensure_env_file_seeded()
     await init_db()
     await init_telemetry_db()
     await init_logic()
@@ -115,6 +121,7 @@ def main():
     )
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CallbackQueryHandler(settings_callback, pattern="^settings:"))
+    application.add_handler(CallbackQueryHandler(bot_env_callback, pattern="^bot_env:"))
     application.add_handler(CommandHandler("music", music_command))
     application.add_handler(CommandHandler("stop_utils", stop_utils_command))
     application.add_handler(CommandHandler("start_utils", start_utils_command))
@@ -130,6 +137,9 @@ def main():
     application.add_handler(CommandHandler("update_ytdlp", update_ytdlp_command))
     application.add_handler(CommandHandler("update_bot", update_bot_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("set_env", set_env_command))
+    application.add_handler(CommandHandler("bot_env", bot_env_command))
+    application.add_handler(CommandHandler("version", version_command))
 
     logging.info("Bot started polling...")
     application.run_polling()

@@ -212,6 +212,24 @@ def test_resolve_uv_executable_raises_when_missing(monkeypatch):
             system.resolve_uv_executable()
 
 
+@pytest.mark.asyncio
+async def test_get_version_info():
+    with patch("bot.system._run_cmd") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "fullhash1234567890abcdef\n"
+                "abc1234\n"
+                "feat: add version command\n"
+                "2026-06-26 12:00:00 +0000\n"
+            ),
+        )
+        info = await system.get_version_info()
+
+    assert "abc1234" in info
+    assert "feat: add version command" in info
+
+
 def test_restart_bot():
     """Test bot restart (sys.exit)."""
     with pytest.raises(SystemExit) as pytest_wrapped_e:

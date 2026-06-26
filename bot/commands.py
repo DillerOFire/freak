@@ -47,6 +47,25 @@ from bot.logic import (
 )
 from bot.llm import generate_reaction_prompt
 from bot.handlers import add_message_to_history
+from bot.env_config import format_env_panel, set_env_value
+from bot.system import get_version_info, restart_bot
+
+
+_DM_ONLY_MESSAGE = "This command is only available in a private chat with the bot."
+
+
+def _is_admin_dm(update: Update) -> bool:
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return False
+    return update.effective_chat.type == "private"
+
+
+def _is_admin_dm_query(query) -> bool:
+    if query.from_user.id != ADMIN_ID:
+        return False
+    if not query.message:
+        return False
+    return query.message.chat.type == "private"
 
 
 async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -708,6 +727,81 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
     return text, keyboard
 
 
+def _build_bot_env_panel() -> tuple[str, InlineKeyboardMarkup]:
+    text = format_env_panel()
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Refresh", callback_data="bot_env:refresh")]]
+    )
+    return text, keyboard
+
+
+async def bot_env_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(_DM_ONLY_MESSAGE)
+        return
+
+    text, keyboard = _build_bot_env_panel()
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def bot_env_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    if not _is_admin_dm_query(query):
+        await query.answer("Admin DM only.", show_alert=True)
+        return
+
+    if not query.message or query.data != "bot_env:refresh":
+        await query.answer()
+        return
+
+    text, keyboard = _build_bot_env_panel()
+    import telegram
+
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
+    await query.answer("Environment refreshed.")
+
+
+async def set_env_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(_DM_ONLY_MESSAGE)
+        return
+
+    parts = (update.message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await update.message.reply_text("Usage: /set_env <KEY> <value>")
+        return
+
+    key, value = parts[1], parts[2]
+    restart_required, message = set_env_value(key, value)
+    await update.message.reply_text(message)
+    logging.info("Env key %s updated by %s", key.upper(), update.effective_user.id)
+
+    if restart_required:
+        import asyncio
+
+        await asyncio.sleep(2)
+        restart_bot()
+
+
+async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    info = await get_version_info()
+    await update.message.reply_text(info)
+
+
 async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -908,6 +1002,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 <b>General</b>
 - <code>/help</code> - Show this message.
+- <code>/version</code> - Show the current git commit.
 - <code>/ping</code> - Check bot, chat, and user info.
 - <code>/music &lt;url&gt;</code> - Download audio from supported services.
 - <code>/memory [.|@user|user_id|username] ["query"]</code> - Search or inspect memories.
@@ -921,7 +1016,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - <code>/daily_cancel_task</code> - Cancel the daily task.
 
 <b>Admin configuration</b>
-- <code>/settings</code> - Show and change settings with buttons.
+- <code>/settings</code> - Show and change chat behavior with buttons.
+- <code>/bot_env</code> - View .env settings (admin DM only). Use with <code>/set_env</code>.
+- <code>/set_env &lt;KEY&gt; &lt;value&gt;</code> - Update a .env setting (admin DM only).
 - <code>/set_reply_chance &lt;0.0-1.0&gt;</code> - Set chance to reply to random messages.
 - <code>/set_reaction_chance &lt;0.0-1.0&gt;</code> - Set chance to react to messages.
 - <code>/set_cooldown &lt;seconds&gt;</code> - Set cooldown between auto-replies.

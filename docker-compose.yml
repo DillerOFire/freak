@@ -9,6 +9,7 @@ services:
     env_file: .env
     environment:
       RUN_MODE: docker
+      ENV_FILE: /data/.env
     volumes:
       - ./data:/data
     # Telemetry dashboard. Bind to localhost only; expose via reverse proxy

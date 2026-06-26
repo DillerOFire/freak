@@ -1,8 +1,35 @@
 import os
 import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _default_env_file_path() -> Path:
+    explicit = os.getenv("ENV_FILE", "").strip()
+    if explicit:
+        return Path(explicit)
+
+    cookies_dir = os.getenv("COOKIES_DIR", "")
+    if cookies_dir.startswith("/data") or os.getenv("RUN_MODE", "").strip().lower() == "docker":
+        return Path("/data/.env")
+
+    return PROJECT_ROOT / ".env"
+
+
+def _load_env_files() -> None:
+    managed_env = _default_env_file_path()
+    project_env = PROJECT_ROOT / ".env"
+    if project_env.exists() and project_env != managed_env:
+        load_dotenv(project_env, override=False)
+    if managed_env.exists():
+        load_dotenv(managed_env, override=True)
+    elif project_env.exists():
+        load_dotenv(project_env, override=True)
+
+
+_load_env_files()
 
 
 def _default_ytdlp_package_dir() -> str:
