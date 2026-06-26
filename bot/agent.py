@@ -1,5 +1,4 @@
 import asyncio
-import html
 import ipaddress
 import json
 import logging
@@ -8,13 +7,17 @@ import socket
 from urllib.parse import urlparse
 
 import aiohttp
+from ddgs import DDGS
 
 from bot.llm import client
 from bot.memory import search_general_memories, search_user_memories
 from config import LLM_PONDER_MODEL
 
-_TIMEOUT = aiohttp.ClientTimeout(total=10)
-_USER_AGENT = "Mozilla/5.0 (compatible; FreakBot/1.0; +https://github.com/)"
+_TIMEOUT = aiohttp.ClientTimeout(total=15)
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 PONDER_SYSTEM_PROMPT = """You are a research assistant. Answer the query by using the available tools.
 At each step, output a JSON object with one of these two shapes:
@@ -75,34 +78,80 @@ def _validate_url_for_fetch(url: str) -> str | None:
     return None
 
 
+def _format_search_hit(title: str, body: str, href: str = "") -> str:
+    line = f"{title}: {body}".strip(": ").strip()
+    if href:
+        line = f"{line} ({href})" if line else href
+    return line
+
+
+def _ddgs_text_search(query: str) -> list[str]:
+    results: list[str] = []
+    with DDGS() as ddgs:
+        for row in ddgs.text(query, max_results=5, backend="auto"):
+            line = _format_search_hit(
+                str(row.get("title", "")),
+                str(row.get("body", "")),
+                str(row.get("href", "")),
+            )
+            if line:
+                results.append(line)
+    return results
+
+
+def _ddgs_news_search(query: str) -> list[str]:
+    results: list[str] = []
+    with DDGS() as ddgs:
+        for row in ddgs.news(query, max_results=5, timelimit="d", backend="auto"):
+            line = _format_search_hit(
+                str(row.get("title", "")),
+                str(row.get("body", "")),
+                str(row.get("url", "")),
+            )
+            if line:
+                results.append(line)
+    return results
+
+
+def _run_web_search(query: str) -> list[str]:
+    results = _ddgs_text_search(query)
+    if results:
+        return results
+    if "news" in query.lower():
+        return _ddgs_news_search(query)
+    return []
+
+
 async def web_search(query: str) -> str:
     try:
-        url = "https://html.duckduckgo.com/html/"
-        headers = {"User-Agent": _USER_AGENT}
-        data = {"q": query, "b": ""}
-        async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
-            async with session.post(url, data=data) as resp:
-                body = await resp.text()
-
-        results: list[str] = []
-        for match in re.finditer(
-            r'<a[^>]+class="result__a"[^>]*>(.*?)</a>.*?'
-            r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-            body,
-            re.DOTALL | re.IGNORECASE,
-        ):
-            title = html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
-            snippet = html.unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
-            if title or snippet:
-                results.append(f"{title}: {snippet}".strip(": "))
-            if len(results) >= 5:
-                break
-
+        results = await asyncio.to_thread(_run_web_search, query)
         if not results:
             return "No search results found."
         return "\n".join(results)
     except Exception as error:
         return f"Search failed: {error}"
+
+
+def _ddgs_extract_page(url: str) -> str:
+    with DDGS() as ddgs:
+        result = ddgs.extract(url, fmt="text_plain")
+    content = result.get("content", "")
+    return str(content).strip()
+
+
+def _html_to_text(body: str) -> str:
+    cleaned = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", body)
+    text = re.sub(r"<[^>]+>", " ", cleaned)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+async def _fetch_web_page_direct(url: str) -> str:
+    headers = {"User-Agent": _USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
+    async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            raw = await resp.content.read(1_048_576)
+    return _html_to_text(raw.decode("utf-8", errors="replace"))
 
 
 async def fetch_web_page(url: str) -> str:
@@ -111,15 +160,17 @@ async def fetch_web_page(url: str) -> str:
         return f"Fetch failed: {block_reason}"
 
     try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                raw = await resp.content.read(1_048_576)
+        text = await asyncio.to_thread(_ddgs_extract_page, url)
+        if text:
+            return text[:4000]
+    except Exception as error:
+        logging.debug("ddgs extract failed for %s: %s", url, error)
 
-        body = raw.decode("utf-8", errors="replace")
-        text = re.sub(r"<[^>]+>", " ", body)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text[:4000]
+    try:
+        text = await _fetch_web_page_direct(url)
+        if text:
+            return text[:4000]
+        return "Fetch failed: page had no readable text."
     except Exception as error:
         return f"Fetch failed: {error}"
 

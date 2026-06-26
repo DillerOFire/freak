@@ -5,6 +5,7 @@ description = "Persona-driven Telegram bot with memory, media tools, and an LLM 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "ddgs>=9.14.0",
     "aiohttp>=3.11.0",
     "aiosqlite>=0.21.0",
     "openai>=2.8.1",

@@ -28,46 +28,39 @@ def _mock_aiohttp_response(body: str, *, as_bytes: bool = False):
 
 @pytest.mark.asyncio
 async def test_web_search_returns_results():
-    mock_html = """
-    <div class="result__body">
-      <h2 class="result__title">
-        <a rel="nofollow" class="result__a" href="https://example.com/1">First Result</a>
-      </h2>
-      <a class="result__snippet" href="https://example.com/1">First snippet text</a>
-    </div>
-    <div class="result__body">
-      <h2 class="result__title">
-        <a rel="nofollow" class="result__a" href="https://example.com/2">Second Result</a>
-      </h2>
-      <a class="result__snippet" href="https://example.com/2">Second snippet text</a>
-    </div>
-    """
-    mock_session = _mock_aiohttp_response(mock_html)
+    mock_rows = [
+        {"title": "First Result", "body": "First snippet text", "href": "https://example.com/1"},
+        {"title": "Second Result", "body": "Second snippet text", "href": "https://example.com/2"},
+    ]
 
-    with patch("bot.agent.aiohttp.ClientSession", return_value=mock_session):
+    with patch("bot.agent._run_web_search", return_value=[agent._format_search_hit(**row) for row in mock_rows]):
         result = await agent.web_search("test query")
-
-    mock_session.post.assert_called_once()
-    call_args = mock_session.post.call_args
-    assert call_args[0][0] == "https://html.duckduckgo.com/html/"
-    assert call_args[1]["data"] == {"q": "test query", "b": ""}
-    mock_session.get.assert_not_called()
 
     assert "First Result" in result
     assert "First snippet text" in result
+    assert "https://example.com/1" in result
     assert "Second Result" in result
 
 
 @pytest.mark.asyncio
-async def test_web_search_no_results_on_landing_page():
-    """DuckDuckGo returns its homepage (no result markup) when queried via GET."""
-    mock_html = "<!DOCTYPE html><html><head><title>DuckDuckGo</title></head><body></body></html>"
-    mock_session = _mock_aiohttp_response(mock_html)
-
-    with patch("bot.agent.aiohttp.ClientSession", return_value=mock_session):
+async def test_web_search_no_results():
+    with patch("bot.agent._run_web_search", return_value=[]):
         result = await agent.web_search("test query")
 
     assert result == "No search results found."
+
+
+@pytest.mark.asyncio
+async def test_web_search_news_fallback():
+    with patch("bot.agent._ddgs_text_search", return_value=[]) as text_mock, patch(
+        "bot.agent._ddgs_news_search",
+        return_value=["Headline: story body (https://example.com/news)"],
+    ) as news_mock:
+        results = agent._run_web_search("major news yesterday")
+
+    text_mock.assert_called_once_with("major news yesterday")
+    news_mock.assert_called_once_with("major news yesterday")
+    assert results == ["Headline: story body (https://example.com/news)"]
 
 
 @pytest.mark.asyncio
@@ -108,11 +101,23 @@ async def test_fetch_web_page_success():
 
     with (
         patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", side_effect=RuntimeError("blocked")),
         patch("bot.agent.aiohttp.ClientSession", return_value=mock_session),
     ):
         result = await agent.fetch_web_page("https://example.com/page")
 
     assert result == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_prefers_ddgs_extract():
+    with (
+        patch("bot.agent._validate_url_for_fetch", return_value=None),
+        patch("bot.agent._ddgs_extract_page", return_value="Readable article text"),
+    ):
+        result = await agent.fetch_web_page("https://example.com/article")
+
+    assert result == "Readable article text"
 
 
 @pytest.mark.asyncio
@@ -124,6 +129,7 @@ async def test_fetch_web_page_truncates_long_content():
 
     with (
         patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", side_effect=RuntimeError("blocked")),
         patch("bot.agent.aiohttp.ClientSession", return_value=mock_session),
     ):
         result = await agent.fetch_web_page("https://example.com/long")
