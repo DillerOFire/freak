@@ -37,6 +37,7 @@ htmlcov/
 
 # Local runtime data
 bot_memory.db
+.build-info.json
 *.db
 *.sqlite
 *.sqlite3

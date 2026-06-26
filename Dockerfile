@@ -26,6 +26,17 @@ ENV BOT_DB_PATH=/data/bot_memory.db \
 
 COPY --chown=freak:freak . .
 
+# .git is not copied into the image; bake commit metadata at build time.
+ARG GIT_COMMIT=unknown
+ARG GIT_COMMIT_SHORT=unknown
+ARG GIT_COMMIT_SUBJECT=
+ARG GIT_COMMIT_DATE=
+RUN if [ ! -f .build-info.json ]; then \
+      GIT_COMMIT="$GIT_COMMIT" GIT_COMMIT_SHORT="$GIT_COMMIT_SHORT" \
+      GIT_COMMIT_SUBJECT="$GIT_COMMIT_SUBJECT" GIT_COMMIT_DATE="$GIT_COMMIT_DATE" \
+      python3 scripts/write_build_info.py --from-env --force; \
+    fi
+
 USER freak
 
 # Telemetry dashboard is the in-container health signal.

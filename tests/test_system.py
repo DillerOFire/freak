@@ -214,7 +214,10 @@ def test_resolve_uv_executable_raises_when_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_version_info():
-    with patch("bot.system._run_cmd") as mock_run:
+    with (
+        patch("bot.system.load_build_info", return_value=None),
+        patch("bot.system._run_cmd") as mock_run,
+    ):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout=(

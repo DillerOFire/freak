@@ -4,6 +4,8 @@ import shutil
 import subprocess
 from functools import lru_cache
 
+from bot.build_info import format_build_info, load_build_info
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _STARTUP_CHECK = (
@@ -167,6 +169,10 @@ async def get_git_revision() -> str | None:
 
 async def get_version_info() -> str:
     """Return a human-readable version string for the running checkout."""
+    build_info = load_build_info()
+    if build_info:
+        return format_build_info(build_info)
+
     try:
         process = _run_cmd(
             ["git", "log", "-1", "--format=%H%n%h%n%s%n%ci"],
@@ -175,17 +181,22 @@ async def get_version_info() -> str:
         lines = [line.strip() for line in process.stdout.splitlines() if line.strip()]
         if len(lines) >= 4:
             full_hash, short_hash, subject, committed_at = lines[:4]
-            return (
-                f"Commit: {short_hash} ({full_hash})\n"
-                f"Message: {subject}\n"
-                f"Date: {committed_at}"
+            return format_build_info(
+                {
+                    "commit": full_hash,
+                    "short": short_hash,
+                    "subject": subject,
+                    "date": committed_at,
+                }
             )
     except Exception as e:
         logging.error(f"Failed to read git version info: {e}")
 
     revision = await get_git_revision()
     if revision:
-        return f"Commit: {revision}"
+        return format_build_info(
+            {"commit": revision, "short": revision[:7], "subject": "", "date": ""}
+        )
     return "Version unknown (not a git checkout)."
 
 
