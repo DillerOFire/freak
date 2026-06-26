@@ -21,7 +21,7 @@ client = AsyncOpenAI(
 )
 
 class LLMToolCall(BaseModel):
-    name: Literal["update_user_thought", "add_general_memory"]
+    name: Literal["update_user_thought", "add_general_memory", "ponder"]
     arguments: dict[str, Any]
 
 
@@ -104,6 +104,7 @@ When you receive the conversation context enclosed in XML-style tags:
 You have access to the following tools:
 1. update_user_thought(user_id: int, username: str, thought: str): Update your internal thoughts/opinion about a user.
 2. add_general_memory(topic: str, summary: str, importance: int): Add a new general memory about a topic with its importance rating (1 to 5).
+3. ponder(query: str): Research a topic deeply before replying. Use this when you need current/real-time information (news, events, prices), when asked to recall everything about a user, or when the question requires knowledge beyond what's in your memory. The query should be a clear research question in English. You will receive the research results and can then compose your reply. Only use ONE ponder call per response. If you want to tell the user to wait, include a message in the "messages" array — it will be sent immediately before the research begins.
 
 Output your response as a JSON object with exactly these top-level fields, in this order:
 {
@@ -255,6 +256,29 @@ Output:
   "messages": ["Сейчас я устрою голосование, мои нерешительные букашки."],
   "polls": [{"question": "Что выбираем на ужин?", "options": ["Пицца", "Суши", "Шаурма"], "is_anonymous": true, "allows_multiple_answers": false}]
 }
+Example 6: A user asks about current events. The bot tells them to wait and uses ponder to research.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="801" sender="Vasya" sender_id="111" focus="true">Маэстро, что сейчас в мире происходит?</message>
+  </working_memory>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [
+    {
+      "name": "ponder",
+      "arguments": {
+        "query": "latest world news today major events"
+      }
+    }
+  ],
+  "reply_to_message_id": 801,
+  "messages": ["Хм, дайте-ка я подумаю, букашки... Мне нужно освежить мою ВЕЛИКУЮ память!"],
+  "polls": [],
+  "media_reply_unique_id": null
+}
 """
 
 def _xml_text(value: object) -> str:
@@ -362,11 +386,14 @@ async def generate_response(
     source: str = "message",
     memory_query: str | None = None,
     saved_media_options: list[dict] | None = None,
+    extra_context: str | None = None,
 ) -> dict | None:
     system_prompt = await get_system_prompt()
     context_str = build_context_prompt(
         messages_context, user_thoughts, general_memories, focus_message_id, saved_media_options
     )
+    if extra_context:
+        context_str = context_str + "\n" + extra_context
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -487,6 +514,10 @@ async def generate_response(
                             write["error_type"] = type(mem_error).__name__
                             write["error_message"] = str(mem_error)[:500]
                             raise
+                    elif name == "ponder":
+                        logging.info(
+                            f"Ponder tool_call detected (query={args.get('query', '')!r}), deferring to handler"
+                        )
 
                 # Validate media_reply_unique_id
                 media_id = parsed.media_reply_unique_id
@@ -514,8 +545,9 @@ async def generate_response(
                 reply_to_message_id = parsed.reply_to_message_id
                 response_messages = list(parsed.messages)
                 
-                # Treat response as success if text messages, polls, or a valid media_reply_unique_id exist
-                if sanitized_messages or parsed.polls or parsed.media_reply_unique_id:
+                # Treat response as success if text messages, polls, media, or ponder (first pass)
+                has_ponder = any(tc.name == "ponder" for tc in parsed.tool_calls) and extra_context is None
+                if sanitized_messages or parsed.polls or parsed.media_reply_unique_id or has_ponder:
                     status = "success"
                     return parsed.model_dump()
                 else:

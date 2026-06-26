@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from bot.logic import should_reply, get_paused, should_react, get_utils_disabled
 from bot.llm import generate_response, generate_reaction
+from bot.agent import run_ponder_agent
 from bot.memory import (
     get_user_thought,
     get_relevant_general_memories,
@@ -24,6 +25,7 @@ from bot.vision import analyze_image, analyze_frames
 from config import COOKIES_DIR, ADMIN_ID
 import os
 import re
+from xml.sax.saxutils import escape as xml_escape
 
 # In-memory chat history (store last 20 messages per chat)
 # Map: chat_id -> deque
@@ -295,6 +297,97 @@ async def send_saved_media_reply(
         return None
 
 
+
+
+async def _send_llm_response(
+    response: dict,
+    chat_id: int,
+    bot_username: str,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    reply_to = response.get("reply_to_message_id")
+    messages_to_send = [msg.strip() for msg in response.get("messages", []) if isinstance(msg, str) and msg.strip()]
+    media_reply_unique_id = response.get("media_reply_unique_id")
+
+    if media_reply_unique_id:
+        try:
+            media_row = await get_saved_media_by_unique_id(chat_id, media_reply_unique_id)
+            if media_row:
+                sent_media_msg = await send_saved_media_reply(context, chat_id, media_row, reply_to)
+                if sent_media_msg:
+                    await mark_saved_media_used(chat_id, media_reply_unique_id)
+                    m_type = media_row["media_type"]
+                    m_desc = media_row["description"]
+                    add_message_to_history(
+                        chat_id,
+                        sent_media_msg.message_id,
+                        bot_username,
+                        f"[Bot sent saved {m_type}: {m_desc}]",
+                        sent_media_msg.from_user.id,
+                        reply_to_id=reply_to,
+                        reply_to_username=None,
+                        reply_to_text=None,
+                    )
+                    reply_to = None
+            else:
+                logging.error(f"Saved media row missing for id: {media_reply_unique_id}")
+        except Exception as e:
+            logging.error(f"Failed to send saved media reply: {e}")
+
+    for i, msg_text in enumerate(messages_to_send):
+        try:
+            current_reply_to = reply_to if i == 0 else None
+
+            sent_msg = None
+            if current_reply_to:
+                sent_msg = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=msg_text,
+                    reply_to_message_id=current_reply_to,
+                )
+            else:
+                sent_msg = await context.bot.send_message(
+                    chat_id=chat_id, text=msg_text
+                )
+
+            if sent_msg:
+                add_message_to_history(
+                    chat_id,
+                    sent_msg.message_id,
+                    bot_username,
+                    msg_text,
+                    sent_msg.from_user.id,
+                    reply_to_id=current_reply_to,
+                    reply_to_username=None,
+                    reply_to_text=None,
+                )
+        except Exception as e:
+            logging.error(f"Failed to send message part: {e}")
+
+    for poll in response.get("polls", []):
+        try:
+            sent_poll = await context.bot.send_poll(
+                chat_id=chat_id,
+                question=poll["question"],
+                options=poll["options"],
+                is_anonymous=poll.get("is_anonymous", True),
+                allows_multiple_answers=poll.get("allows_multiple_answers", False),
+            )
+
+            if sent_poll:
+                add_message_to_history(
+                    chat_id,
+                    sent_poll.message_id,
+                    bot_username,
+                    f"[Poll] {poll['question']}: {' | '.join(poll['options'])}",
+                    sent_poll.from_user.id,
+                    reply_to_id=None,
+                    reply_to_username=None,
+                    reply_to_text=None,
+                )
+        except Exception as e:
+            logging.error(f"Failed to send poll: {e}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -480,92 +573,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if response:
-            reply_to = response.get("reply_to_message_id")
-            messages_to_send = [msg.strip() for msg in response.get("messages", []) if isinstance(msg, str) and msg.strip()]
-            media_reply_unique_id = response.get("media_reply_unique_id")
+            ponder_calls = [
+                tc for tc in response.get("tool_calls", [])
+                if tc["name"] == "ponder"
+            ]
 
-            media_sent = False
-            if media_reply_unique_id:
-                try:
-                    media_row = await get_saved_media_by_unique_id(chat_id, media_reply_unique_id)
-                    if media_row:
-                        sent_media_msg = await send_saved_media_reply(context, chat_id, media_row, reply_to)
-                        if sent_media_msg:
-                            await mark_saved_media_used(chat_id, media_reply_unique_id)
-                            m_type = media_row["media_type"]
-                            m_desc = media_row["description"]
-                            add_message_to_history(
-                                chat_id,
-                                sent_media_msg.message_id,
-                                bot_username,
-                                f"[Bot sent saved {m_type}: {m_desc}]",
-                                sent_media_msg.from_user.id,
-                                reply_to_id=reply_to,
-                                reply_to_username=None,
-                                reply_to_text=None,
-                            )
-                            # Consume reply_to target so text messages do not reply to it
-                            reply_to = None
-                            media_sent = True
-                    else:
-                        logging.error(f"Saved media row missing for id: {media_reply_unique_id}")
-                except Exception as e:
-                    logging.error(f"Failed to send saved media reply: {e}")
+            if ponder_calls:
+                await _send_llm_response(response, chat_id, bot_username, context)
 
-            for i, msg_text in enumerate(messages_to_send):
-                try:
-                    # Only the first message uses the reply_to_message_id (if not already consumed by media)
-                    current_reply_to = reply_to if i == 0 else None
+                ponder_query = ponder_calls[0]["arguments"].get("query", "")
+                ponder_result = await run_ponder_agent(ponder_query, chat_id)
 
-                    sent_msg = None
-                    if current_reply_to:
-                        sent_msg = await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=msg_text,
-                            reply_to_message_id=current_reply_to,
-                        )
-                    else:
-                        sent_msg = await context.bot.send_message(
-                            chat_id=chat_id, text=msg_text
-                        )
+                extra_context = (
+                    f'\n<ponder_result query="{xml_escape(ponder_query)}">'
+                    f"\n{xml_escape(ponder_result)}"
+                    f"\n</ponder_result>"
+                    f"\n<instruction>You previously requested research via ponder."
+                    f" The results are in <ponder_result>. Use them to compose your reply."
+                    f" Do NOT call ponder again.</instruction>"
+                )
 
-                    if sent_msg:
-                        add_message_to_history(
-                            chat_id,
-                            sent_msg.message_id,
-                            bot_username,
-                            msg_text,
-                            sent_msg.from_user.id,
-                            reply_to_id=current_reply_to,
-                            reply_to_username=None,
-                            reply_to_text=None,
-                        )
-                except Exception as e:
-                    logging.error(f"Failed to send message part: {e}")
+                response2 = await generate_response(
+                    list(current_history),
+                    user_thoughts,
+                    general_memories,
+                    chat_id,
+                    focus_message_id=message_id,
+                    source="ponder",
+                    memory_query=memory_query,
+                    saved_media_options=saved_media_options,
+                    extra_context=extra_context,
+                )
 
-            for poll in response.get("polls", []):
-                try:
-                    sent_poll = await context.bot.send_poll(
-                        chat_id=chat_id,
-                        question=poll["question"],
-                        options=poll["options"],
-                        is_anonymous=poll.get("is_anonymous", True),
-                        allows_multiple_answers=poll.get("allows_multiple_answers", False),
-                    )
-
-                    if sent_poll:
-                        add_message_to_history(
-                            chat_id,
-                            sent_poll.message_id,
-                            bot_username,
-                            f"[Poll] {poll['question']}: {' | '.join(poll['options'])}",
-                            sent_poll.from_user.id,
-                            reply_to_id=None,
-                            reply_to_username=None,
-                            reply_to_text=None,
-                        )
-                except Exception as e:
-                    logging.error(f"Failed to send poll: {e}")
+                if response2:
+                    await _send_llm_response(response2, chat_id, bot_username, context)
+            else:
+                await _send_llm_response(response, chat_id, bot_username, context)
 
     # Reaction Logic
     if await should_react(chat_id):

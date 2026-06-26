@@ -1,23 +1,26 @@
 # Project Overview
 
-This is a Telegram bot built with `python-telegram-bot`, designed to act as a persona-based assistant ("Maestro Ponasenkov"). It features memory persistence, media handling (video/audio downloading), and LLM integration via OpenRouter.
+This is a Telegram bot built with `python-telegram-bot`, designed to act as a persona-based assistant ("Maestro Ponasenkov"). It features memory persistence, media handling (video/audio downloading), LLM integration via OpenRouter, and a sandboxed **ponder** research agent for deeper lookups before replying.
 
 ## 🛠 Development & Testing
 
-### Nix Development Environment
-For NixOS or any system with Nix installed, a development shell is available containing all system and language level dependencies (including `ffmpeg` and dynamic libs needed by packages like OpenCV):
-```bash
-nix-shell
-```
+### Setup
+
+1. Copy environment template: `cp .env.example .env` and set `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`, and `ADMIN_ID`.
+2. Install dependencies: `uv sync`
+3. Run tests: `just test`
+4. Run the bot: `just run`
 
 ### Dependency Management
+
 This project uses `uv` for dependency management.
+
 * Install dependencies: `uv sync`
 * Add a dependency: `uv add <package>`
 * Add a dev dependency: `uv add --dev <package>`
 
 ### Command Runner (`just`)
-A `justfile` is provided for common development tasks. Run these inside the `nix-shell` or on your host:
+
 * List all available commands: `just`
 * Sync python dependencies: `just sync`
 * Run the bot: `just run`
@@ -25,14 +28,22 @@ A `justfile` is provided for common development tasks. Run these inside the `nix
 * Clean up cache and virtual environment: `just clean`
 
 ### Running Tests
+
 A `pytest` suite is setup in the `tests/` directory.
 
-To run all tests:
 ```bash
 just test
 ```
 
 > **Note:** Tests use a temporary file-based SQLite database and mock external API calls (Telegram, OpenRouter, yt-dlp).
+
+### Optional: Nix development shell
+
+On NixOS (or with Nix installed), `shell.nix` provides `ffmpeg`, system libs for OpenCV, `uv`, and `just`. Use it only if your host environment is missing those pieces—not required for normal `uv` + `just` workflow.
+
+```bash
+nix-shell   # then: uv sync && just test
+```
 
 ## 🏗 Architecture
 
@@ -40,14 +51,17 @@ just test
 
 - **`bot/logic.py`**: Core decision-making logic. Determines if the bot should reply or react to a message based on cooldowns, random chances, and mentions.
 - **`bot/memory.py`**: Handles all database interactions using `aiosqlite`. Manages user thoughts, general memories, whitelists, and configuration.
-- **`bot/llm.py`**: Integration with OpenRouter (LLM) for generating text responses and reactions.
+- **`bot/llm.py`**: Integration with OpenRouter (LLM) for generating text responses and reactions; supports `ponder` tool_calls.
+- **`bot/agent.py`**: Sandboxed ReAct ponder agent (`web_search`, `fetch_web_page`, `recall_memories`) used when the main LLM requests research.
 - **`bot/media_utils.py`**: Utilities for downloading media (video/audio) using `yt-dlp` and processing images/video frames (using `cv2` and `bot/vision.py`).
-- **`bot/handlers.py`**: Telegram message handlers. Orchestrates the flow: Receive Message -> Check Logic -> Process Media -> call LLM -> Send Reply.
+- **`bot/handlers.py`**: Telegram message handlers. Orchestrates the flow: Receive Message → Check Logic → Process Media → call LLM → (optional ponder) → Send Reply.
 - **`bot/commands.py`**: Handlers for bot commands (e.g., `/start`, `/help`, `/music`, `/settings`).
 - **`bot/jobs.py`**: Scheduled tasks (daily messages, auto-updates).
 
 ### Database
+
 The bot uses a SQLite database (`bot_memory.db`) storing:
+
 - `users`: User thoughts/personas.
 - `general_memory`: Shared facts/context.
 - `whitelist`: Allowed users/groups.
@@ -55,14 +69,21 @@ The bot uses a SQLite database (`bot_memory.db`) storing:
 
 ## 🔐 Environment Variables
 
-Create a `.env` file with:
+See `.env.example` for the full list. Minimum required:
 
 ```ini
 TELEGRAM_BOT_TOKEN=your_token_here
 OPENROUTER_API_KEY=your_key_here
-OPENROUTER_MODEL=google/gemini-flash-2.5 (or similar)
 ADMIN_ID=123456789
 ```
+
+Common optional overrides:
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `OPENROUTER_MODEL` | Main persona / chat LLM | `google/gemini-flash-2.5` |
+| `OPENROUTER_PONDER_MODEL` | Ponder research agent | `deepseek/deepseek-v4-flash` |
+| `OPENROUTER_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
 
 ## 🚀 Deployment
 

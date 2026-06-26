@@ -6,6 +6,9 @@ load_dotenv(override=True)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-flash-2.5")
+OPENROUTER_PONDER_MODEL = os.getenv(
+    "OPENROUTER_PONDER_MODEL", "deepseek/deepseek-v4-flash"
+)
 REACTION_CHANCE = 0.05
 
 if not TELEGRAM_BOT_TOKEN:
