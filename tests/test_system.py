@@ -40,6 +40,26 @@ async def test_update_ytdlp_success(mock_subprocess, mock_uv_path):
 
 
 @pytest.mark.asyncio
+async def test_update_ytdlp_falls_back_to_writable_target(mock_subprocess, mock_uv_path, tmp_path, monkeypatch):
+    target_dir = str(tmp_path / "python-packages")
+    monkeypatch.setattr("config.YTDLP_PACKAGE_DIR", target_dir)
+
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=1, stdout="", stderr="error: Permission denied (os error 13)"),
+        MagicMock(returncode=0, stdout="Built yt-dlp", stderr=""),
+    ]
+
+    success, msg = await system.update_ytdlp_package()
+
+    assert success is True
+    assert "updated successfully" in msg
+    assert mock_subprocess.call_count == 2
+    second_args = mock_subprocess.call_args_list[1][0][0]
+    assert "--target" in second_args
+    assert target_dir in second_args
+
+
+@pytest.mark.asyncio
 async def test_check_for_updates_available(mock_subprocess):
     """Test when updates are available."""
     mock_subprocess.side_effect = [

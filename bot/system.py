@@ -54,32 +54,79 @@ def _run_cmd(args: list[str], *, check: bool = False) -> subprocess.CompletedPro
     )
 
 
+YTDLP_GIT_SOURCE = "git+https://github.com/yt-dlp/yt-dlp.git@master"
+
+
+def _ytdlp_output_indicates_update(output: str) -> bool:
+    lowered = output.lower()
+    return any(
+        token in lowered
+        for token in ("installed", "upgraded", "updated", "built", "prepared")
+    )
+
+
+def _process_text(value: str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _format_ytdlp_result(process: subprocess.CompletedProcess[str], *, location: str) -> tuple[bool, str]:
+    stdout = _process_text(process.stdout)
+    stderr = _process_text(process.stderr)
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+
+    if process.returncode == 0:
+        logging.info("yt-dlp update output (%s): %s", location, combined)
+        if _ytdlp_output_indicates_update(combined):
+            return True, f"yt-dlp updated successfully ({location}):\n{combined}"
+        return True, "yt-dlp is already up to date."
+
+    logging.error("yt-dlp update failed (%s): %s", location, combined)
+    return False, f"yt-dlp update failed ({location}):\n{combined}"
+
+
 async def update_ytdlp_package() -> tuple[bool, str]:
     """
-    Updates the yt-dlp package using uv pip install -U yt-dlp.
+    Update yt-dlp in the project venv, falling back to a writable package dir
+    when the venv is not writable (common in Docker images built as root).
     Returns (success, message).
     """
+    from config import YTDLP_PACKAGE_DIR
+
     try:
-        logging.info("Attempting to update yt-dlp...")
+        logging.info("Attempting to update yt-dlp in project venv...")
         process = _run_cmd(
+            _uv_cmd("pip", "install", "-U", YTDLP_GIT_SOURCE),
+            check=False,
+        )
+        success, message = _format_ytdlp_result(process, location="venv")
+        if success:
+            return success, message
+
+        combined = message.lower()
+        if "permission denied" not in combined and "read-only" not in combined:
+            return False, message
+
+        os.makedirs(YTDLP_PACKAGE_DIR, exist_ok=True)
+        logging.info(
+            "Venv yt-dlp update is not writable; installing to %s",
+            YTDLP_PACKAGE_DIR,
+        )
+        fallback = _run_cmd(
             _uv_cmd(
                 "pip",
                 "install",
                 "-U",
-                "git+https://github.com/yt-dlp/yt-dlp.git@master",
+                "--target",
+                YTDLP_PACKAGE_DIR,
+                YTDLP_GIT_SOURCE,
             ),
             check=False,
         )
-
-        if process.returncode == 0:
-            stdout = process.stdout.strip()
-            logging.info(f"yt-dlp update output: {stdout}")
-            if "Installed" in stdout or "upgraded" in stdout:
-                return True, f"yt-dlp updated successfully:\n{stdout}"
-            return True, "yt-dlp is already up to date."
-        stderr = process.stderr.strip()
-        logging.error(f"yt-dlp update failed: {stderr}")
-        return False, f"yt-dlp update failed:\n{stderr}"
+        return _format_ytdlp_result(fallback, location=YTDLP_PACKAGE_DIR)
 
     except Exception as e:
         logging.error(f"An error occurred while updating yt-dlp: {e}")

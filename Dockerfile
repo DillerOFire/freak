@@ -15,13 +15,14 @@ WORKDIR /app
 # Copy dependency files
 COPY --chown=freak:freak pyproject.toml uv.lock ./
 
-# Install dependencies
-RUN uv sync --frozen --no-install-project
+# Install dependencies (chown venv so in-container uv pip upgrades work as freak)
+RUN uv sync --frozen --no-install-project && chown -R freak:freak /app/.venv
 
 # Persistent data lives on a volume so memory and cookies survive recreation.
-RUN mkdir -p /data/cookies && chown -R freak:freak /data
+RUN mkdir -p /data/cookies /data/python-packages && chown -R freak:freak /data
 ENV BOT_DB_PATH=/data/bot_memory.db \
-    COOKIES_DIR=/data/cookies
+    COOKIES_DIR=/data/cookies \
+    YTDLP_PACKAGE_DIR=/data/python-packages
 
 COPY --chown=freak:freak . .
 

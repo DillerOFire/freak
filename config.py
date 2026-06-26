@@ -1,7 +1,15 @@
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+
+def _default_ytdlp_package_dir() -> str:
+    cookies_dir = os.getenv("COOKIES_DIR", "")
+    if cookies_dir.startswith("/data"):
+        return "/data/python-packages"
+    return os.path.join(os.path.dirname(__file__), "data", "python-packages")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -35,3 +43,8 @@ TELEMETRY_DASHBOARD_TOKEN = os.getenv("TELEMETRY_DASHBOARD_TOKEN")
 COOKIES_DIR = os.getenv("COOKIES_DIR", os.path.join(os.path.dirname(__file__), "cookies"))
 if not os.path.exists(COOKIES_DIR):
     os.makedirs(COOKIES_DIR)
+
+# Writable overlay for in-container yt-dlp upgrades (venv may be root-owned in Docker).
+YTDLP_PACKAGE_DIR = os.getenv("YTDLP_PACKAGE_DIR", _default_ytdlp_package_dir())
+if os.path.isdir(YTDLP_PACKAGE_DIR) and YTDLP_PACKAGE_DIR not in sys.path:
+    sys.path.insert(0, YTDLP_PACKAGE_DIR)
