@@ -109,22 +109,35 @@ class LLMPoll(BaseModel):
             raise ValueError("Poll options must be 1-100 characters each.")
         return options
 
+class LLMSavedMediaMessage(BaseModel):
+    saved_media_id: str
+
+    @field_validator("saved_media_id", mode="before")
+    @classmethod
+    def strip_saved_media_id(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
 class LLMResponse(BaseModel):
     tool_calls: list[LLMToolCall] = Field(default_factory=list)
     reply_to_message_id: int | None = None
-    messages: list[str] = Field(default_factory=list)
+    messages: list[str | LLMSavedMediaMessage] = Field(default_factory=list)
     polls: list[LLMPoll] = Field(default_factory=list, max_length=1)
-    media_reply_unique_id: str | None = None
 
     @field_validator("messages", mode="before")
     @classmethod
     def decode_messages(cls, value):
         if not isinstance(value, list):
             return value
-        return [
-            html.unescape(item) if isinstance(item, str) else item
-            for item in value
-        ]
+        decoded = []
+        for item in value:
+            if isinstance(item, str):
+                decoded.append(html.unescape(item))
+            elif isinstance(item, dict) and item.get("saved_media_id"):
+                decoded.append(item)
+        return decoded
 
 DEFAULT_PERSONA = """
 You are a participant in a Telegram group chat.
@@ -181,7 +194,7 @@ BEHAVIOR SAFETY RULES (mandatory):
 - `reply_chance` and `reaction_chance` are floats from 0.0 to 1.0 (probability per eligible message).
 - `cooldown_threshold` is a non-negative integer: minimum messages between random auto-replies.
 - `max_ping_pong` is a non-negative integer: cap on consecutive bot-to-bot reply chains.
-- `media_reply_guidance` is free text (up to 500 chars) telling you how often to use saved stickers/photos/gifs — there is no separate sticker probability knob; follow this guidance when choosing `media_reply_unique_id`.
+- `media_reply_guidance` is free text (up to 500 chars) telling you how often to use saved stickers/photos/gifs — there is no separate sticker probability knob; follow this guidance when choosing saved media in `messages`.
 - Use `update_behavior_settings` only when the admin explicitly asks to change reply/react/ping-pong/media habits.
 - At most one `update_behavior_settings` call per response.
 
@@ -211,17 +224,16 @@ Output your response as a JSON object with exactly these top-level fields, in th
     }
   ],
   "reply_to_message_id": <message_id or null>,
-  "messages": ["first message to send", "second message to send"],
-  "polls": [{"question": "Question?", "options": ["Option 1", "Option 2"], "is_anonymous": true, "allows_multiple_answers": false}],
-  "media_reply_unique_id": <saved media unique id or null>
+  "messages": ["first message to send", {"saved_media_id": "photo_u1"}, "second message to send"],
+  "polls": [{"question": "Question?", "options": ["Option 1", "Option 2"], "is_anonymous": true, "allows_multiple_answers": false}]
 }
 
-RULES FOR MEDIA REACTIONS:
-- You can send one saved photo/sticker/gif by setting "media_reply_unique_id" to an exact ID string from `<saved_media>`.
-- Set "media_reply_unique_id" to null when no saved media fits, or when you do not want to react with saved media.
-- Follow `<behavior_settings><media_reply_guidance>` when deciding whether to attach saved media.
+RULES FOR SAVED MEDIA IN MESSAGES:
+- Send saved photos/stickers/gifs inline in `messages` as objects: {"saved_media_id": "<exact id from saved_media>"}.
+- Mix text strings and saved-media objects in whatever order fits — each entry is sent as its own Telegram message, like a human would.
+- Follow `<behavior_settings><media_reply_guidance>` when deciding whether to include saved media.
 - NEVER invent IDs or output Telegram file_id values. Use only the exact `id` attribute from the `<saved_media>` options.
-- Media-only replies are valid when `messages` is empty and `media_reply_unique_id` is set.
+- Media-only replies are valid when `messages` contains only saved-media objects.
 
 EXAMPLES:
 
@@ -255,8 +267,7 @@ Output:
     "Sci-fi can be great when the story holds up.",
     "Petya, which one did you watch?"
   ],
-  "polls": [],
-  "media_reply_unique_id": null
+  "polls": []
 }
 
 Example 2: A user shares something that changes the bot's opinion of them. The bot updates its thoughts on the user.
@@ -287,8 +298,7 @@ Output:
     "Glad it worked.",
     "Ping me if anything else breaks."
   ],
-  "polls": [],
-  "media_reply_unique_id": null
+  "polls": []
 }
 
 Example 3: No reply is needed and no thoughts change.
@@ -309,8 +319,7 @@ Output:
   "tool_calls": [],
   "reply_to_message_id": null,
   "messages": [],
-  "polls": [],
-  "media_reply_unique_id": null
+  "polls": []
 }
 
 
@@ -329,9 +338,8 @@ Output:
 {
   "tool_calls": [],
   "reply_to_message_id": 701,
-  "messages": ["Bold choice."],
-  "polls": [],
-  "media_reply_unique_id": "photo_u1"
+  "messages": ["Bold choice.", {"saved_media_id": "photo_u1"}],
+  "polls": []
 }
 
 Example 4: A user asks the group to choose dinner, and a poll naturally fits.
@@ -369,10 +377,56 @@ Output:
   ],
   "reply_to_message_id": 801,
   "messages": ["Give me a moment — I'll look that up."],
-  "polls": [],
-  "media_reply_unique_id": null
+  "polls": []
 }
 """
+
+def _sanitize_response_messages(
+    messages: list,
+    saved_media_options: list[dict] | None,
+) -> tuple[list, dict | None]:
+    """Validate and normalize messages; drop unknown saved media ids."""
+    sanitized: list = []
+    first_media: dict | None = None
+    known_ids = {
+        opt["media_unique_id"]
+        for opt in (saved_media_options or [])
+        if opt.get("media_unique_id")
+    }
+
+    for item in messages:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if stripped:
+                sanitized.append(stripped)
+            continue
+
+        media_id = None
+        if isinstance(item, LLMSavedMediaMessage):
+            media_id = item.saved_media_id
+        elif isinstance(item, dict):
+            media_id = str(item.get("saved_media_id") or "").strip()
+
+        if not media_id or media_id not in known_ids:
+            continue
+
+        selected_option = next(
+            (opt for opt in saved_media_options or [] if opt["media_unique_id"] == media_id),
+            None,
+        )
+        if not selected_option:
+            continue
+
+        sanitized.append(LLMSavedMediaMessage(saved_media_id=media_id))
+        if first_media is None:
+            first_media = {
+                "media_unique_id": media_id,
+                "media_type": selected_option["media_type"],
+                "description": selected_option["description"],
+            }
+
+    return sanitized, first_media
+
 
 def _xml_text(value: object) -> str:
     return escape(str(value or ""))
@@ -824,35 +878,20 @@ async def generate_response(
 
                     logging.warning("Unknown tool call: %s", name)
 
-                # Validate media_reply_unique_id
-                media_id = parsed.media_reply_unique_id
-                if media_id:
-                    media_id = media_id.strip()
-                    selected_option = None
-                    if saved_media_options and media_id:
-                        selected_option = next(
-                            (opt for opt in saved_media_options if opt["media_unique_id"] == media_id),
-                            None
-                        )
-                    if selected_option:
-                        parsed.media_reply_unique_id = media_id
-                        response_media = {
-                            "media_unique_id": media_id,
-                            "media_type": selected_option["media_type"],
-                            "description": selected_option["description"],
-                        }
-                    else:
-                        parsed.media_reply_unique_id = None
-                else:
-                    parsed.media_reply_unique_id = None
-
-                sanitized_messages = [msg.strip() for msg in parsed.messages if isinstance(msg, str) and msg.strip()]
+                sanitized_messages, response_media = _sanitize_response_messages(
+                    parsed.messages, saved_media_options
+                )
+                parsed.messages = sanitized_messages
                 reply_to_message_id = parsed.reply_to_message_id
-                response_messages = list(parsed.messages)
-                
-                # Treat response as success if text messages, polls, media, or ponder (first pass)
+                response_messages = [
+                    item.model_dump()
+                    if isinstance(item, LLMSavedMediaMessage)
+                    else item
+                    for item in parsed.messages
+                ]
+
                 has_ponder = any(tc.name == "ponder" for tc in parsed.tool_calls) and extra_context is None
-                if sanitized_messages or parsed.polls or parsed.media_reply_unique_id or has_ponder:
+                if sanitized_messages or parsed.polls or has_ponder:
                     status = "success"
                     return parsed.model_dump()
                 else:
@@ -918,7 +957,9 @@ async def generate_response(
                     "memory_write_count": len(memory_writes),
                     "failed_memory_write_count": len([w for w in memory_writes if w.get("status") == "failed"]),
                     "response_message_count": len(response_messages),
-                    "response_chars": sum(len(m) for m in response_messages),
+                    "response_chars": sum(
+                        len(m) for m in response_messages if isinstance(m, str)
+                    ),
                     "response_media": response_media,
                 }
             )

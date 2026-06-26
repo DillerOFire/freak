@@ -96,7 +96,6 @@ async def test_generate_response_success(temp_db_path):
         "reply_to_message_id": 1,
         "messages": ["Hello, my dear!", "How can I help you today?"],
         "polls": [],
-        "media_reply_unique_id": None
     })
     
     mock_choice.message = mock_message
@@ -119,7 +118,6 @@ async def test_generate_response_success(temp_db_path):
         assert result["reply_to_message_id"] == 1
         assert result["messages"] == ["Hello, my dear!", "How can I help you today?"]
         assert result["polls"] == []
-        assert result["media_reply_unique_id"] is None
         
         # Verify user prompt format contains XML tags
         call_args = async_create_mock.call_args
@@ -360,9 +358,8 @@ async def test_generate_response_media_only_success(temp_db_path):
     mock_message.content = json.dumps({
         "tool_calls": [],
         "reply_to_message_id": 1,
-        "messages": [],
+        "messages": [{"saved_media_id": "photo_u1"}],
         "polls": [],
-        "media_reply_unique_id": "photo_u1"
     })
     mock_choice.message = mock_message
     mock_response = MagicMock()
@@ -384,8 +381,7 @@ async def test_generate_response_media_only_success(temp_db_path):
         )
         
         assert result is not None
-        assert result["messages"] == []
-        assert result["media_reply_unique_id"] == "photo_u1"
+        assert result["messages"] == [{"saved_media_id": "photo_u1"}]
         
         from bot.telemetry import fetch_llm_telemetry
         events = await fetch_llm_telemetry(chat_id=9999)
@@ -404,9 +400,8 @@ async def test_generate_response_unknown_media_id_is_ignored(temp_db_path):
     mock_message.content = json.dumps({
         "tool_calls": [],
         "reply_to_message_id": 1,
-        "messages": [],
+        "messages": [{"saved_media_id": "not_allowed"}],
         "polls": [],
-        "media_reply_unique_id": "not_allowed"
     })
     mock_choice.message = mock_message
     mock_response = MagicMock()
@@ -478,7 +473,6 @@ async def test_generate_response_memory_mutation_tools(temp_db_path):
         "reply_to_message_id": 1,
         "messages": ["Done, updated that for you."],
         "polls": [],
-        "media_reply_unique_id": None,
     })
     mock_choice.message = mock_message
     mock_response.choices = [mock_choice]
@@ -561,7 +555,6 @@ async def test_generate_response_persona_tools(temp_db_path):
         "reply_to_message_id": 1,
         "messages": ["Persona updated."],
         "polls": [],
-        "media_reply_unique_id": None,
     })
     mock_choice.message = mock_message
     mock_response.choices = [mock_choice]
@@ -645,7 +638,6 @@ async def test_generate_response_behavior_settings_tool(temp_db_path):
         "reply_to_message_id": 1,
         "messages": ["Updated behavior settings."],
         "polls": [],
-        "media_reply_unique_id": None,
     })
     mock_choice.message = mock_message
     mock_response.choices = [mock_choice]

@@ -209,9 +209,8 @@ async def test_handle_message_sends_saved_photo_reply(temp_db_path, mock_update_
          patch("bot.handlers.generate_response", AsyncMock(return_value={
              "tool_calls": [],
              "reply_to_message_id": 999,
-             "messages": [],
+             "messages": [{"saved_media_id": "photo_u1"}],
              "polls": [],
-             "media_reply_unique_id": "photo_u1",
          })):
          
         await handlers.handle_message(mock_update_handler, mock_context)
@@ -255,9 +254,8 @@ async def test_handle_message_sends_sticker_then_text(temp_db_path, mock_update_
          patch("bot.handlers.generate_response", AsyncMock(return_value={
              "tool_calls": [],
              "reply_to_message_id": 999,
-             "messages": ["perfect"],
+             "messages": [{"saved_media_id": "sticker_u1"}, "perfect"],
              "polls": [],
-             "media_reply_unique_id": "sticker_u1",
          })):
          
         await handlers.handle_message(mock_update_handler, mock_context)
@@ -370,9 +368,8 @@ async def test_handle_message_sends_saved_gif_reply(temp_db_path, mock_update_ha
          patch("bot.handlers.generate_response", AsyncMock(return_value={
              "tool_calls": [],
              "reply_to_message_id": 999,
-             "messages": [],
+             "messages": [{"saved_media_id": "gif_u1"}],
              "polls": [],
-             "media_reply_unique_id": "gif_u1",
          })):
 
         await handlers.handle_message(mock_update_handler, mock_context)

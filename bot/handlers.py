@@ -411,63 +411,72 @@ async def _send_llm_response(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     reply_to = response.get("reply_to_message_id")
-    messages_to_send = [msg.strip() for msg in response.get("messages", []) if isinstance(msg, str) and msg.strip()]
-    media_reply_unique_id = response.get("media_reply_unique_id")
+    reply_pending = reply_to is not None
 
-    if media_reply_unique_id:
-        try:
-            media_row = await get_saved_media_by_unique_id(chat_id, media_reply_unique_id)
-            if media_row:
-                sent_media_msg = await send_saved_media_reply(context, chat_id, media_row, reply_to)
-                if sent_media_msg:
-                    await mark_saved_media_used(chat_id, media_reply_unique_id)
-                    m_type = media_row["media_type"]
-                    m_desc = media_row["description"]
+    for item in response.get("messages", []):
+        current_reply_to = reply_to if reply_pending else None
+
+        if isinstance(item, str):
+            msg_text = item.strip()
+            if not msg_text:
+                continue
+            try:
+                if current_reply_to:
+                    sent_msg = await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=msg_text,
+                        reply_to_message_id=current_reply_to,
+                    )
+                else:
+                    sent_msg = await context.bot.send_message(
+                        chat_id=chat_id, text=msg_text
+                    )
+
+                if sent_msg:
                     add_message_to_history(
                         chat_id,
-                        sent_media_msg.message_id,
+                        sent_msg.message_id,
                         bot_username,
-                        f"[Bot sent saved {m_type}: {m_desc}]",
-                        sent_media_msg.from_user.id,
-                        reply_to_id=reply_to,
+                        msg_text,
+                        sent_msg.from_user.id,
+                        reply_to_id=current_reply_to,
                         reply_to_username=None,
                         reply_to_text=None,
                     )
-                    reply_to = None
-            else:
-                logging.error(f"Saved media row missing for id: {media_reply_unique_id}")
-        except Exception as e:
-            logging.error(f"Failed to send saved media reply: {e}")
+            except Exception as e:
+                logging.error(f"Failed to send message part: {e}")
+            reply_pending = False
+            continue
 
-    for i, msg_text in enumerate(messages_to_send):
-        try:
-            current_reply_to = reply_to if i == 0 else None
-
-            sent_msg = None
-            if current_reply_to:
-                sent_msg = await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=msg_text,
-                    reply_to_message_id=current_reply_to,
-                )
-            else:
-                sent_msg = await context.bot.send_message(
-                    chat_id=chat_id, text=msg_text
-                )
-
-            if sent_msg:
-                add_message_to_history(
-                    chat_id,
-                    sent_msg.message_id,
-                    bot_username,
-                    msg_text,
-                    sent_msg.from_user.id,
-                    reply_to_id=current_reply_to,
-                    reply_to_username=None,
-                    reply_to_text=None,
-                )
-        except Exception as e:
-            logging.error(f"Failed to send message part: {e}")
+        if isinstance(item, dict):
+            media_id = item.get("saved_media_id")
+            if not media_id:
+                continue
+            try:
+                media_row = await get_saved_media_by_unique_id(chat_id, media_id)
+                if media_row:
+                    sent_media_msg = await send_saved_media_reply(
+                        context, chat_id, media_row, current_reply_to
+                    )
+                    if sent_media_msg:
+                        await mark_saved_media_used(chat_id, media_id)
+                        m_type = media_row["media_type"]
+                        m_desc = media_row["description"]
+                        add_message_to_history(
+                            chat_id,
+                            sent_media_msg.message_id,
+                            bot_username,
+                            f"[Bot sent saved {m_type}: {m_desc}]",
+                            sent_media_msg.from_user.id,
+                            reply_to_id=current_reply_to,
+                            reply_to_username=None,
+                            reply_to_text=None,
+                        )
+                else:
+                    logging.error(f"Saved media row missing for id: {media_id}")
+            except Exception as e:
+                logging.error(f"Failed to send saved media reply: {e}")
+            reply_pending = False
 
     for poll in response.get("polls", []):
         try:
