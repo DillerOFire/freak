@@ -20,6 +20,7 @@ def _mock_aiohttp_response(body: str, *, as_bytes: bool = False):
 
     mock_session = MagicMock()
     mock_session.get = MagicMock(return_value=mock_resp)
+    mock_session.post = MagicMock(return_value=mock_resp)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
     return mock_session
@@ -28,19 +29,45 @@ def _mock_aiohttp_response(body: str, *, as_bytes: bool = False):
 @pytest.mark.asyncio
 async def test_web_search_returns_results():
     mock_html = """
-    <a class="result__a">First Result</a>
-    <a class="result__snippet">First snippet text</a>
-    <a class="result__a">Second Result</a>
-    <a class="result__snippet">Second snippet text</a>
+    <div class="result__body">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a" href="https://example.com/1">First Result</a>
+      </h2>
+      <a class="result__snippet" href="https://example.com/1">First snippet text</a>
+    </div>
+    <div class="result__body">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a" href="https://example.com/2">Second Result</a>
+      </h2>
+      <a class="result__snippet" href="https://example.com/2">Second snippet text</a>
+    </div>
     """
     mock_session = _mock_aiohttp_response(mock_html)
 
     with patch("bot.agent.aiohttp.ClientSession", return_value=mock_session):
         result = await agent.web_search("test query")
 
+    mock_session.post.assert_called_once()
+    call_args = mock_session.post.call_args
+    assert call_args[0][0] == "https://html.duckduckgo.com/html/"
+    assert call_args[1]["data"] == {"q": "test query", "b": ""}
+    mock_session.get.assert_not_called()
+
     assert "First Result" in result
     assert "First snippet text" in result
     assert "Second Result" in result
+
+
+@pytest.mark.asyncio
+async def test_web_search_no_results_on_landing_page():
+    """DuckDuckGo returns its homepage (no result markup) when queried via GET."""
+    mock_html = "<!DOCTYPE html><html><head><title>DuckDuckGo</title></head><body></body></html>"
+    mock_session = _mock_aiohttp_response(mock_html)
+
+    with patch("bot.agent.aiohttp.ClientSession", return_value=mock_session):
+        result = await agent.web_search("test query")
+
+    assert result == "No search results found."
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import socket
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -14,6 +14,7 @@ from bot.memory import search_general_memories, search_user_memories
 from config import OPENROUTER_PONDER_MODEL
 
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
+_USER_AGENT = "Mozilla/5.0 (compatible; FreakBot/1.0; +https://github.com/)"
 
 PONDER_SYSTEM_PROMPT = """You are a research assistant. Answer the query by using the available tools.
 At each step, output a JSON object with one of these two shapes:
@@ -76,9 +77,11 @@ def _validate_url_for_fetch(url: str) -> str | None:
 
 async def web_search(query: str) -> str:
     try:
-        url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-            async with session.get(url) as resp:
+        url = "https://html.duckduckgo.com/html/"
+        headers = {"User-Agent": _USER_AGENT}
+        data = {"q": query, "b": ""}
+        async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
+            async with session.post(url, data=data) as resp:
                 body = await resp.text()
 
         results: list[str] = []
