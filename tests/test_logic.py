@@ -267,3 +267,44 @@ async def test_get_logic_config_uses_global_defaults(temp_db_path):
     await set_reply_chance(GLOBAL_SETTINGS_CHAT_ID, 0.42)
     _, reply_chance, _ = await get_logic_config(99999)
     assert reply_chance == 0.42
+
+
+@pytest.mark.asyncio
+async def test_behavior_settings_read_and_update(temp_db_path):
+    from bot.logic import (
+        GLOBAL_SETTINGS_CHAT_ID,
+        get_behavior_settings,
+        update_behavior_settings,
+    )
+
+    admin_id = 4242
+    settings = await get_behavior_settings(GLOBAL_SETTINGS_CHAT_ID)
+    assert "reply_chance" in settings
+    assert settings["scope"] == "global"
+
+    ok, reason = await update_behavior_settings(
+        GLOBAL_SETTINGS_CHAT_ID,
+        requesting_user_id=admin_id,
+        admin_id=admin_id,
+        reply_chance=0.25,
+        reaction_chance=0.15,
+        max_ping_pong=3,
+        media_reply_guidance="Use stickers in about half of replies when they fit.",
+    )
+    assert ok is True
+    assert reason == "ok"
+
+    updated = await get_behavior_settings(GLOBAL_SETTINGS_CHAT_ID)
+    assert updated["reply_chance"] == 0.25
+    assert updated["reaction_chance"] == 0.15
+    assert updated["max_ping_pong"] == 3
+    assert "stickers" in updated["media_reply_guidance"]
+
+    denied, reason = await update_behavior_settings(
+        GLOBAL_SETTINGS_CHAT_ID,
+        requesting_user_id=1,
+        admin_id=admin_id,
+        reply_chance=0.1,
+    )
+    assert denied is False
+    assert reason == "admin_only"

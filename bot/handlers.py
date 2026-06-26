@@ -2,7 +2,7 @@ import logging
 from collections import deque
 from telegram import Update
 from telegram.ext import ContextTypes
-from bot.logic import should_reply, get_paused, should_react, get_utils_disabled
+from bot.logic import should_reply, get_paused, should_react, get_utils_disabled, resolve_settings_chat_id
 from bot.llm import generate_response, generate_reaction
 from bot.agent import run_ponder_agent
 from bot.memory import (
@@ -86,6 +86,8 @@ async def _complete_ponder_followup(
     saved_media_options: list,
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
+    settings_chat_id: int,
+    requesting_user_id: int | None = None,
 ) -> None:
     ponder_result = await run_ponder_agent(ponder_query, chat_id)
 
@@ -108,6 +110,8 @@ async def _complete_ponder_followup(
         memory_query=memory_query,
         saved_media_options=saved_media_options,
         extra_context=extra_context,
+        requesting_user_id=requesting_user_id,
+        settings_chat_id=settings_chat_id,
     )
 
     if response2:
@@ -661,6 +665,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Fetch saved media options
         saved_media_options = await get_saved_media_options(chat_id)
+        settings_chat_id = resolve_settings_chat_id(update.effective_chat)
 
         # Generate response
         response = await generate_response(
@@ -672,6 +677,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             source="message",
             memory_query=memory_query,
             saved_media_options=saved_media_options,
+            requesting_user_id=user.id,
+            settings_chat_id=settings_chat_id,
         )
 
         if response:
@@ -706,6 +713,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     saved_media_options=saved_media_options,
                     bot_username=bot_username,
                     context=context,
+                    settings_chat_id=settings_chat_id,
+                    requesting_user_id=user.id,
                 )
 
     # Reaction Logic

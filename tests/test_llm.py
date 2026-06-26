@@ -496,3 +496,175 @@ async def test_generate_response_memory_mutation_tools(temp_db_path):
     updated = await memory.get_general_memories(chat_id)
     assert "Corrected summary" in updated[0]
     assert await memory.get_media_description("vid_test") is None
+
+
+@pytest.mark.asyncio
+async def test_apply_persona_prompt_admin_only(temp_db_path):
+    new_persona = "You are a witty opera critic who speaks in short paragraphs."
+
+    with patch.object(llm, "ADMIN_ID", 999):
+        ok, reason = await llm.apply_persona_prompt(new_persona, requesting_user_id=999)
+        assert ok is True
+        assert reason == "ok"
+        assert await llm.get_stored_persona_prompt() == new_persona
+
+        denied, reason = await llm.apply_persona_prompt(new_persona, requesting_user_id=1)
+        assert denied is False
+        assert reason == "admin_only"
+
+
+@pytest.mark.asyncio
+async def test_apply_persona_prompt_rejects_too_short(temp_db_path):
+    with patch.object(llm, "ADMIN_ID", 999):
+        ok, reason = await llm.apply_persona_prompt("too short", requesting_user_id=999)
+        assert ok is False
+        assert reason == "too_short"
+
+
+@pytest.mark.asyncio
+async def test_reset_stored_persona_prompt(temp_db_path):
+    with patch.object(llm, "ADMIN_ID", 999):
+        await llm.apply_persona_prompt(
+            "You are a dramatic stage actor with flair and passion.",
+            requesting_user_id=999,
+        )
+        ok, reason = await llm.reset_stored_persona_prompt(requesting_user_id=999)
+        assert ok is True
+        assert await llm.get_stored_persona_prompt() == llm.DEFAULT_PERSONA
+
+
+@pytest.mark.asyncio
+async def test_generate_response_persona_tools(temp_db_path):
+    admin_id = 424242
+    new_persona = "You are a calm technical mentor who explains things clearly."
+
+    mock_messages_context = [
+        {
+            "message_id": 1,
+            "sender": "Admin",
+            "user_id": admin_id,
+            "text": "change your persona",
+        }
+    ]
+    mock_response = MagicMock()
+    mock_response.usage = None
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "tool_calls": [
+            {"name": "get_persona_prompt", "arguments": {}},
+            {
+                "name": "update_persona_prompt",
+                "arguments": {"persona": new_persona},
+            },
+        ],
+        "reply_to_message_id": 1,
+        "messages": ["Persona updated."],
+        "polls": [],
+        "media_reply_unique_id": None,
+    })
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+
+    with (
+        patch.object(llm, "ADMIN_ID", admin_id),
+        patch.object(llm.client.chat.completions, "create", AsyncMock(return_value=mock_response)),
+        patch.object(llm, "generate_reaction_prompt", AsyncMock(return_value="reaction prompt")),
+    ):
+        result = await llm.generate_response(
+            messages_context=mock_messages_context,
+            user_thoughts={},
+            general_memories=[],
+            chat_id=1,
+            focus_message_id=1,
+            requesting_user_id=admin_id,
+        )
+
+    assert result is not None
+    assert await llm.get_stored_persona_prompt() == new_persona
+
+
+def test_build_context_prompt_marks_admin_focus():
+    messages = [
+        {
+            "message_id": 10,
+            "sender": "Boss",
+            "user_id": 777,
+            "text": "update yourself",
+        }
+    ]
+    with patch.object(llm, "ADMIN_ID", 777):
+        prompt = llm.build_context_prompt(messages, {}, [], focus_message_id=10)
+    assert 'focus="true"' in prompt
+    assert 'is_admin="true"' in prompt
+
+
+def test_build_context_prompt_includes_behavior_settings():
+    behavior = {
+        "scope": "chat",
+        "reply_chance": 0.05,
+        "reaction_chance": 0.07,
+        "cooldown_threshold": 10,
+        "max_ping_pong": 2,
+        "media_reply_guidance": "Send gifs often.",
+    }
+    prompt = llm.build_context_prompt([], {}, [], behavior_settings=behavior)
+    assert "<behavior_settings" in prompt
+    assert "<reply_chance>0.0500</reply_chance>" in prompt
+    assert "Send gifs often." in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_response_behavior_settings_tool(temp_db_path):
+    from bot.logic import GLOBAL_SETTINGS_CHAT_ID, get_behavior_settings
+
+    admin_id = 9001
+    mock_messages_context = [
+        {
+            "message_id": 1,
+            "sender": "Admin",
+            "user_id": admin_id,
+            "text": "react more and use more stickers",
+        }
+    ]
+    mock_response = MagicMock()
+    mock_response.usage = None
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "tool_calls": [
+            {"name": "get_behavior_settings", "arguments": {}},
+            {
+                "name": "update_behavior_settings",
+                "arguments": {
+                    "reaction_chance": 0.2,
+                    "media_reply_guidance": "Use saved stickers or gifs in most replies when appropriate.",
+                },
+            },
+        ],
+        "reply_to_message_id": 1,
+        "messages": ["Updated behavior settings."],
+        "polls": [],
+        "media_reply_unique_id": None,
+    })
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+
+    with (
+        patch.object(llm, "ADMIN_ID", admin_id),
+        patch.object(llm.client.chat.completions, "create", AsyncMock(return_value=mock_response)),
+    ):
+        result = await llm.generate_response(
+            messages_context=mock_messages_context,
+            user_thoughts={},
+            general_memories=[],
+            chat_id=12345,
+            focus_message_id=1,
+            requesting_user_id=admin_id,
+            settings_chat_id=GLOBAL_SETTINGS_CHAT_ID,
+        )
+
+    assert result is not None
+    settings = await get_behavior_settings(GLOBAL_SETTINGS_CHAT_ID)
+    assert settings["reaction_chance"] == 0.2
+    assert "stickers" in settings["media_reply_guidance"]

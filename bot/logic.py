@@ -171,6 +171,76 @@ async def get_max_ping_pong(chat_id: int) -> int:
         return DEFAULT_MAX_PING_PONG
 
 
+MAX_COOLDOWN_THRESHOLD = 200
+MAX_PING_PONG_LIMIT = 20
+MAX_MEDIA_REPLY_GUIDANCE_LEN = 500
+
+
+async def get_media_reply_guidance(chat_id: int) -> str:
+    val = await _get_chat_config_effective(chat_id, "media_reply_guidance")
+    return val.strip() if val else ""
+
+
+async def set_media_reply_guidance(chat_id: int, guidance: str) -> None:
+    guidance = guidance.strip()[:MAX_MEDIA_REPLY_GUIDANCE_LEN]
+    await set_chat_config(chat_id, "media_reply_guidance", guidance)
+
+
+async def get_behavior_settings(settings_chat_id: int) -> dict:
+    cooldown, reply_chance, reaction_chance = await get_logic_config(settings_chat_id)
+    return {
+        "scope": "global" if settings_chat_id == GLOBAL_SETTINGS_CHAT_ID else "chat",
+        "settings_chat_id": settings_chat_id,
+        "reply_chance": reply_chance,
+        "reaction_chance": reaction_chance,
+        "cooldown_threshold": cooldown,
+        "max_ping_pong": await get_max_ping_pong(settings_chat_id),
+        "media_reply_guidance": await get_media_reply_guidance(settings_chat_id),
+    }
+
+
+async def update_behavior_settings(
+    settings_chat_id: int,
+    *,
+    requesting_user_id: int | None,
+    admin_id: int,
+    reply_chance: float | None = None,
+    reaction_chance: float | None = None,
+    cooldown_threshold: int | None = None,
+    max_ping_pong: int | None = None,
+    media_reply_guidance: str | None = None,
+) -> tuple[bool, str]:
+    if requesting_user_id != admin_id:
+        return False, "admin_only"
+
+    changed = False
+    if reply_chance is not None:
+        await set_reply_chance(settings_chat_id, max(0.0, min(1.0, float(reply_chance))))
+        changed = True
+    if reaction_chance is not None:
+        await set_reaction_chance(
+            settings_chat_id, max(0.0, min(1.0, float(reaction_chance)))
+        )
+        changed = True
+    if cooldown_threshold is not None:
+        await set_cooldown_threshold(
+            settings_chat_id, max(0, min(MAX_COOLDOWN_THRESHOLD, int(cooldown_threshold)))
+        )
+        changed = True
+    if max_ping_pong is not None:
+        await set_max_ping_pong(
+            settings_chat_id, max(0, min(MAX_PING_PONG_LIMIT, int(max_ping_pong)))
+        )
+        changed = True
+    if media_reply_guidance is not None:
+        await set_media_reply_guidance(settings_chat_id, str(media_reply_guidance))
+        changed = True
+
+    if not changed:
+        return False, "no_fields"
+    return True, "ok"
+
+
 async def should_reply(message, bot_username: str, chat_id: int) -> bool:
     global messages_since_last_reply
 
