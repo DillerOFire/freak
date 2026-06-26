@@ -52,20 +52,6 @@ _PONDER_DEFERRAL_MARKERS = (
     "ща ",
 )
 
-_REALTIME_TOPIC_MARKERS = (
-    "новост",
-    "news",
-    "что в мире",
-    "what's happening",
-    "current events",
-    "происходит",
-    "сегодня",
-    "today",
-    "в мире",
-    "world",
-)
-
-
 def _has_ponder_tool_call(response: dict) -> bool:
     return any(tc.get("name") == "ponder" for tc in response.get("tool_calls", []))
 
@@ -85,9 +71,6 @@ def _derive_ponder_query(user_text: str, memory_query: str | None = None) -> str
     source = (user_text or memory_query or "").strip()
     if not source:
         return "general information request"
-    lower = source.lower()
-    if any(marker in lower for marker in _REALTIME_TOPIC_MARKERS):
-        return "latest world news today major events"
     return source[:500]
 
 

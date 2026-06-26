@@ -410,11 +410,20 @@ def test_llm_promised_research_without_ponder_ignores_normal_reply():
     assert handlers._llm_promised_research_without_ponder(response) is False
 
 
-def test_derive_ponder_query_news_russian():
-    q = handlers._derive_ponder_query("Маэстро, что сейчас в мире происходит?")
-    assert q == "latest world news today major events"
+def test_derive_ponder_query_passes_through_user_text():
+    text = "Маэстро, что сейчас в мире происходит?"
+    assert handlers._derive_ponder_query(text) == text
 
 
-def test_derive_ponder_query_passes_through_other_questions():
-    q = handlers._derive_ponder_query("Who invented the telephone?")
-    assert "telephone" in q
+def test_derive_ponder_query_preserves_specific_news_terms():
+    text = "Apple news today"
+    assert handlers._derive_ponder_query(text) == text
+
+
+def test_derive_ponder_query_truncates_long_text():
+    text = "x" * 600
+    assert len(handlers._derive_ponder_query(text)) == 500
+
+
+def test_derive_ponder_query_falls_back_to_memory_query():
+    assert handlers._derive_ponder_query("", "Who invented the telephone?") == "Who invented the telephone?"
