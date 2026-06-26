@@ -1,0 +1,45 @@
+# Secrets / runtime config
+.env
+.env.*
+!.env.example
+
+# Local runtime data
+bot_memory.db
+*.db
+*.sqlite
+*.sqlite3
+cookies/
+data/
+
+# Git
+.git
+.gitignore
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.ipynb_checkpoints/
+
+# Repo-only files not needed in the image
+shell.nix
+freak.service
+deploy.sh
+verify_history.py
+check_filters.py

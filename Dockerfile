@@ -4,17 +4,32 @@ FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 # Install system dependencies (git for updates, ffmpeg for media processing)
-RUN apt-get update && apt-get install -y git ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for the running process
+RUN useradd --create-home --uid 1000 --shell /bin/bash freak
 
 WORKDIR /app
 
 # Copy dependency files
-COPY pyproject.toml uv.lock ./
+COPY --chown=freak:freak pyproject.toml uv.lock ./
 
 # Install dependencies
 RUN uv sync --frozen --no-install-project
 
-COPY . .
+# Persistent data lives on a volume so memory and cookies survive recreation.
+RUN mkdir -p /data/cookies && chown -R freak:freak /data
+ENV BOT_DB_PATH=/data/bot_memory.db \
+    COOKIES_DIR=/data/cookies
+
+COPY --chown=freak:freak . .
+
+USER freak
+
+# Telemetry dashboard is the in-container health signal.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -sf http://127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}/ || exit 1
 
 # Run the application
 CMD ["uv", "run", "--no-sync", "main.py"]

@@ -5,8 +5,13 @@ import logging
 import re
 import os
 
-# Use absolute path for DB to avoid issues with CWD
-DB_NAME = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot_memory.db")
+# Use absolute path for DB to avoid issues with CWD.
+# In Docker the DB lives on a mounted volume so memory survives container
+# recreation; allow overriding the path via BOT_DB_PATH.
+DB_NAME = os.getenv(
+    "BOT_DB_PATH",
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot_memory.db"),
+)
 
 SAVED_MEDIA_PER_CHAT_LIMIT = 50
 SAVED_MEDIA_GLOBAL_LIMIT = 500

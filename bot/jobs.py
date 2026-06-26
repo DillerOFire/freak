@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 from telegram.ext import Application, ContextTypes
 from bot.memory import get_all_daily_messages, get_all_daily_tasks, get_relevant_general_memories
@@ -10,6 +11,13 @@ from bot.system import (
     apply_bot_updates,
     restart_bot,
 )
+
+# When running inside a container, image lifecycle is owned by the orchestrator
+# (Watchtower / compose pull). The in-process git+uv self-update and yt-dlp
+# pip-update jobs would write into the ephemeral container layer and restart
+# into the same image, so they are disabled there.
+RUN_MODE = os.getenv("RUN_MODE", "").strip().lower()
+IN_CONTAINER = RUN_MODE == "docker"
 
 
 async def send_daily_message_callback(context: ContextTypes.DEFAULT_TYPE):
@@ -240,9 +248,14 @@ async def load_jobs(application: Application):
     logging.info("Loading scheduled jobs from database...")
 
     try:
-        # Schedule system jobs
-        schedule_ytdlp_update_check(application)
-        schedule_bot_update_check(application)
+        # Schedule system jobs.
+        # The self-update and yt-dlp-pip-update jobs only make sense when the
+        # bot runs from a git checkout with a supervisor that restarts it
+        # (bare-metal / systemd). Under Docker the image is replaced wholesale
+        # by Watchtower, so these would fight the orchestrator.
+        if not IN_CONTAINER:
+            schedule_ytdlp_update_check(application)
+            schedule_bot_update_check(application)
 
         messages = await get_all_daily_messages()
 

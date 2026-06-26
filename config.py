@@ -32,6 +32,6 @@ TELEMETRY_DASHBOARD_HOST = os.getenv("TELEMETRY_DASHBOARD_HOST", "127.0.0.1")
 TELEMETRY_DASHBOARD_PORT = int(os.getenv("TELEMETRY_DASHBOARD_PORT", "8765"))
 TELEMETRY_DASHBOARD_TOKEN = os.getenv("TELEMETRY_DASHBOARD_TOKEN")
 
-COOKIES_DIR = os.path.join(os.path.dirname(__file__), "cookies")
+COOKIES_DIR = os.getenv("COOKIES_DIR", os.path.join(os.path.dirname(__file__), "cookies"))
 if not os.path.exists(COOKIES_DIR):
     os.makedirs(COOKIES_DIR)
