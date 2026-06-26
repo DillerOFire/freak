@@ -122,7 +122,7 @@ async def _complete_ponder_followup(
     try:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Хм, исследование завершилось, но я не смог собрать ответ — спросите иначе, букашки.",
+            text="Research finished, but I couldn't put together a reply — try asking differently.",
             reply_to_message_id=message_id,
         )
     except Exception as e:

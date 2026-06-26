@@ -405,13 +405,13 @@ def test_llm_promised_research_without_ponder_ignores_when_ponder_present():
 def test_llm_promised_research_without_ponder_ignores_normal_reply():
     response = {
         "tool_calls": [],
-        "messages": ["Сейчас я устрою голосование, мои нерешительные букашки."],
+        "messages": ["I'll set up a quick vote."],
     }
     assert handlers._llm_promised_research_without_ponder(response) is False
 
 
 def test_derive_ponder_query_passes_through_user_text():
-    text = "Маэстро, что сейчас в мире происходит?"
+    text = "What's happening in the world today?"
     assert handlers._derive_ponder_query(text) == text
 
 

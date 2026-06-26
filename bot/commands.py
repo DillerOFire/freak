@@ -466,9 +466,16 @@ async def show_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     current_prompt = await get_config("persona_prompt")
     if not current_prompt:
-        await update.message.reply_text("No custom prompt set (using default).")
+        await update.message.reply_text(
+            "No custom persona prompt set (using default). "
+            "Technical tool/output instructions are appended automatically."
+        )
     else:
-        await update.message.reply_text(f"Current System Prompt:\n\n{current_prompt}")
+        await update.message.reply_text(
+            "Current persona prompt "
+            "(technical tool/output instructions are appended automatically):\n\n"
+            f"{current_prompt}"
+        )
 
 
 async def set_reply_chance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -8,7 +8,8 @@ async def test_get_system_prompt_default(temp_db_path):
     """Test that get_system_prompt uses DEFAULT_PERSONA and saves it if not configured."""
     prompt = await llm.get_system_prompt()
     assert llm.DEFAULT_PERSONA in prompt
-    assert llm.SYSTEM_INSTRUCTIONS in prompt
+    assert llm.SYSTEM_INSTRUCTIONS.strip() in prompt
+    assert "\n---\n\n" in prompt
     
     # Verify it was saved in config
     from bot.memory import get_config
@@ -24,7 +25,7 @@ async def test_get_system_prompt_custom(temp_db_path):
     
     prompt = await llm.get_system_prompt()
     assert custom_persona in prompt
-    assert llm.SYSTEM_INSTRUCTIONS in prompt
+    assert llm.SYSTEM_INSTRUCTIONS.strip() in prompt
     assert llm.DEFAULT_PERSONA not in prompt
 
 @pytest.mark.asyncio

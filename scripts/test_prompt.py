@@ -14,22 +14,22 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 from bot.llm import generate_response, get_system_prompt, generate_reaction
 
 async def main():
-    print("=== Maestro Ponasenkov Prompt Tester ===")
+    print("=== Bot Prompt Tester ===")
     
     # Mock data representing a typical Telegram conversation
     messages_context = [
-        {"message_id": 100, "sender": "Vasya", "user_id": 111, "text": "Привет всем! Чем занимаетесь?"},
-        {"message_id": 101, "sender": "Petya", "user_id": 222, "text": "Да вот, книжку читаю по истории. Там про войну 1812 года."},
-        {"message_id": 102, "sender": "Vasya", "user_id": 111, "text": "О, круто. А ты веришь в официальную историю? Понасенков говорит, все переврали."},
+        {"message_id": 100, "sender": "Vasya", "user_id": 111, "text": "Hey everyone! What are you up to?"},
+        {"message_id": 101, "sender": "Petya", "user_id": 222, "text": "Reading a book on local history."},
+        {"message_id": 102, "sender": "Vasya", "user_id": 111, "text": "Nice. Do you think the official account is accurate?"},
     ]
     
     user_thoughts = {
-        "Vasya": "Обычный парень, интересуется глупостями.",
-        "Petya": "Пытается казаться умным, читает про 1812 год."
+        "Vasya": "Casual chatter.",
+        "Petya": "Often shares book recommendations."
     }
     
     general_memories = [
-        "Topic: Война 1812 года, Summary: Обсуждали исторические книги и достоверность официальных источников."
+        "Topic: Local history, Summary: The group discussed history books and source reliability."
     ]
     
     # Patch database calls to avoid hitting the real database config tables
@@ -69,7 +69,7 @@ async def main():
         
         # Test 3: Generate reaction
         print("Generating reaction to Vasya's message...")
-        reaction = await generate_reaction("Понасенков говорит, все переврали.")
+        reaction = await generate_reaction("Do you think the official account is accurate?")
         print(f"Generated reaction: {reaction}")
         print("-------------------------\n")
 
