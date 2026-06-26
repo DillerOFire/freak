@@ -7,7 +7,7 @@ from config import ADMIN_ID
 from bot.system import (
     update_ytdlp_package,
     check_for_updates,
-    pull_updates,
+    apply_bot_updates,
     restart_bot,
 )
 
@@ -157,7 +157,7 @@ def schedule_daily_task(application, chat_id, time_obj, task_content):
 
 async def check_bot_update_job(context: ContextTypes.DEFAULT_TYPE):
     """
-    Checks for bot updates from git, pulls them, and restarts the bot.
+    Checks for bot updates, applies them (git pull + uv sync + import check), and restarts.
     """
     logging.info("Checking for bot updates...")
     if await check_for_updates():
@@ -170,13 +170,13 @@ async def check_bot_update_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"Failed to notify admin about update found: {e}")
 
-        success, message = await pull_updates()
+        success, message = await apply_bot_updates()
 
         if success:
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text=f"Updates pulled successfully:\n{message}\nRestarting bot...",
+                    text=f"Updates applied successfully:\n{message}\nRestarting bot...",
                 )
             except Exception as e:
                 logging.error(f"Failed to notify admin about pull success: {e}")
