@@ -17,7 +17,7 @@ Think of it as a moody, opinionated chat member with memory — not a question-a
 - **Daily schedules** — send a message or run an LLM prompt every day at a given time.
 - **Whitelist** — only respond in chats/users you allow.
 - **Telemetry dashboard** — optional local web dashboard of usage stats.
-- **Self-update** — `/update_bot` pulls git updates, runs `uv sync`, verifies imports, then restarts; `/update_ytdlp` refreshes the downloader.
+- **Auto-update** — on bare-metal, `/update_bot` pulls git updates, runs `uv sync`, verifies imports, then restarts; `/update_ytdlp` refreshes the downloader. Under Docker the image is replaced wholesale by Watchtower, so these jobs are disabled there (see [Deployment](#-deployment)).
 
 ---
 
@@ -77,6 +77,15 @@ The model defaults are sensible; override them only if you want different ones:
 | `OPENROUTER_PONDER_MODEL` | Research agent | `deepseek/deepseek-v4-flash` |
 | `OPENROUTER_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
 
+Docker-only overrides (set in `docker-compose.yml` or `.env`):
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `RUN_MODE` | Set to `docker` to disable in-process self-update jobs | _(unset — bare-metal mode)_ |
+| `BOT_DB_PATH` | SQLite database location | `bot_memory.db` next to the code; `/data/bot_memory.db` in the image |
+| `COOKIES_DIR` | Where `cookies.txt` files live | `cookies/` next to the code; `/data/cookies` in the image |
+| `TELEMETRY_DASHBOARD_HOST` | Dashboard bind address | `127.0.0.1`; set `0.0.0.0` in Docker so the port-forwarded healthcheck reaches it |
+
 ### 4. Run it
 
 ```bash
@@ -115,10 +124,126 @@ Tests use a temporary SQLite DB and mock Telegram / OpenRouter / yt-dlp calls.
 
 ## 📦 Deployment
 
-### Option A — systemd (recommended)
+### Option A — Docker + GHCR + Watchtower (recommended)
+
+Every push to `master` (and every tag, plus a daily 04:00 UTC rebuild for yt-dlp freshness) builds a multi-arch image and publishes it to GHCR:
+
+```
+ghcr.io/dillerofire/freak:master      # branch tag, what Watchtower tracks
+ghcr.io/dillerofire/freak:sha-<sha>   # per-commit pin
+ghcr.io/dillerofire/freak:v1.2.3      # semver tags
+```
+
+The image is public, so no registry login is needed on the host.
+
+#### 1. Create a deploy directory on the server
+
+```bash
+mkdir -p ~/deploy/freak/data/cookies
+cd ~/deploy/freak
+cp /path/to/repo/.env .env          # your secrets live here, not in the image
+# migrate an existing DB (if upgrading from bare-metal):
+cp /old/freak/bot_memory.db data/bot_memory.db
+cp /old/freak/cookies/*.txt data/cookies/ 2>/dev/null || true
+```
+
+#### 2. Write a `docker-compose.yml`
+
+```yaml
+services:
+  bot:
+    image: ghcr.io/dillerofire/freak:master
+    container_name: freak
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RUN_MODE: docker
+      TELEMETRY_DASHBOARD_HOST: "0.0.0.0"
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}:${TELEMETRY_DASHBOARD_PORT:-8765}"
+```
+
+The `./data` volume is where the SQLite DB and cookies persist across container recreations. `RUN_MODE=docker` turns off the in-process `git pull` / yt-dlp self-update jobs — the image owns that lifecycle now.
+
+#### 3. Run it
+
+```bash
+docker compose up -d
+docker compose logs -f
+```
+
+#### 4. Manage it with systemd
+
+So the bot starts on boot and survives restarts:
+
+```ini
+[Unit]
+Description=Freak Bot (Docker Compose)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=you
+WorkingDirectory=/home/you/deploy/freak
+ExecStart=/usr/bin/docker compose -f /home/you/deploy/freak/docker-compose.yml up
+ExecStop=/usr/bin/docker compose -f /home/you/deploy/freak/docker-compose.yml stop
+TimeoutStartSec=0
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo cp freak.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now freak
+```
+
+Logs: `docker compose -f ~/deploy/freak/docker-compose.yml logs -f` or `journalctl -u freak -f`.
+
+#### 5. Auto-update with Watchtower
+
+Watchtower polls GHCR every 5 minutes and recreates the container when a new image lands. Put this in its own deploy dir:
+
+```yaml
+# ~/deploy/watchtower/docker-compose.yml
+services:
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      DOCKER_API_VERSION: "1.41"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --cleanup freak personfreak
+```
+
+```bash
+cd ~/deploy/watchtower
+docker compose up -d
+```
+
+List the container names you want Watchtower to watch at the end of the `command` line. `--cleanup` removes the old image after a successful update.
+
+> **Note:** Watchtower stops and recreates the container itself. If it hits a transient compose-networking error and leaves the container in a bad state, `systemctl restart freak` will recover it (the foreground `up` in the unit recreates as needed).
+
+#### Running multiple instances
+
+Each instance is its own deploy dir with its own `.env`, `data/`, and `docker-compose.yml`. Use distinct `container_name`s and `TELEMETRY_DASHBOARD_PORT`s. Watchtower takes a list of container names to watch.
+
+### Option B — Bare metal with systemd
+
+Run directly from a git checkout with `uv`. The in-bot self-update commands (`/update_bot`, `/update_ytdlp`) work in this mode — they pull, sync, verify, and exit so systemd restarts into the new code.
 
 1. Put the project where you want it (e.g. `/home/you/freak`).
-2. Copy and adjust `freak.service`:
+2. `uv sync` to install dependencies.
+3. Copy and adjust `freak.service`:
 
 ```ini
 [Unit]
@@ -137,7 +262,7 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-3. Install and start:
+4. Install and start:
 
 ```bash
 sudo cp freak.service /etc/systemd/system/
@@ -145,15 +270,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now freak
 ```
 
-Logs: `journalctl -u freak -f`. Updates land cleanly via the in-bot `/update_bot` command (it pulls and exits; systemd restarts it).
-
-### Option B — Docker
-
-```bash
-./deploy.sh
-```
-
-This builds the image and runs a container with the DB mounted for persistence, reading env from `.env`. Stops/restarts with Docker. Requires Docker installed.
+Logs: `journalctl -u freak -f`. Updates land via `/update_bot` in Telegram (it pulls and exits; systemd restarts it).
 
 ---
 
@@ -201,13 +318,15 @@ bot/
   telemetry/        Optional usage dashboard
 ```
 
-Database file `bot_memory.db` is created next to the code on first run.
+Database file `bot_memory.db` is created next to the code on first run. In Docker it lives on the `./data` volume (`/data/bot_memory.db` inside the container) so memory survives container recreation.
 
 ---
 
 ## 🔧 Optional: cookies for media
 
 Some services (YouTube, Instagram, etc.) need auth cookies for downloads. Drop a `cookies.txt` per service into the `cookies/` dir, or upload it via `/update_cookies <service>` (admin only, as a file attachment). Supported services include `youtube`, `instagram`, `x`, `tiktok`, `facebook`, `reddit`, `spotify`, `soundcloud`, `bandcamp`, `vk`, `rutube`, and others.
+
+Under Docker, cookies live in `data/cookies/` (mounted at `/data/cookies` inside the container) and persist across recreations.
 
 ---
 
