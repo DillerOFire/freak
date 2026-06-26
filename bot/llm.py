@@ -8,7 +8,18 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from xml.sax.saxutils import escape, quoteattr
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_REFERER, OPENROUTER_TITLE
 from bot.messages import AvailableReactions
-from bot.memory import update_user_thought, add_general_memory, get_config, set_config
+from bot.memory import (
+    update_user_thought,
+    add_general_memory,
+    delete_general_memory,
+    update_general_memory,
+    clear_media_description,
+    save_media_description,
+    update_saved_media_description,
+    search_media_descriptions,
+    get_config,
+    set_config,
+)
 from bot.telemetry import record_llm_telemetry
 
 client = AsyncOpenAI(
@@ -21,8 +32,28 @@ client = AsyncOpenAI(
 )
 
 class LLMToolCall(BaseModel):
-    name: Literal["update_user_thought", "add_general_memory", "ponder"]
+    name: Literal[
+        "update_user_thought",
+        "add_general_memory",
+        "ponder",
+        "update_general_memory",
+        "delete_general_memory",
+        "clear_media_summary",
+        "update_media_summary",
+        "search_media_summaries",
+    ]
     arguments: dict[str, Any]
+
+
+MEMORY_MUTATION_TOOLS = frozenset({
+    "update_user_thought",
+    "add_general_memory",
+    "update_general_memory",
+    "delete_general_memory",
+    "clear_media_summary",
+    "update_media_summary",
+})
+MAX_MEMORY_MUTATIONS_PER_RESPONSE = 5
 
 
 class LLMPoll(BaseModel):
@@ -100,7 +131,20 @@ When you receive the conversation context enclosed in XML-style tags:
 You have access to the following tools:
 1. update_user_thought(user_id: int, username: str, thought: str): Update your internal thoughts/opinion about a user.
 2. add_general_memory(topic: str, summary: str, importance: int): Add a new general memory about a topic with its importance rating (1 to 5).
-3. ponder(query: str): Research a topic deeply before replying. Use this when you need current/real-time information (news, events, prices), when asked to recall everything about a user, or when the question requires knowledge beyond what's in your memory. The query should be a clear research question in English. You will receive the research results and can then compose your reply. Only use ONE ponder call per response. If you want to tell the user to wait, include a message in the "messages" array — it will be sent immediately before the research begins.
+3. update_general_memory(memory_id: int, topic?: str, summary?: str, importance?: int): Update one existing general memory by its numeric id from `<retrieved_semantic_memory>`. Provide at least one field to change.
+4. delete_general_memory(memory_id: int): Delete one specific general memory by id. Use only when the user explicitly asks to forget or remove a topic.
+5. clear_media_summary(media_unique_id: str): Clear the cached summary for one piece of media so it will be re-analyzed next time. Use the exact `media_unique_id` from message attributes or `search_media_summaries`.
+6. update_media_summary(media_unique_id: str, description: str): Replace the cached summary text for one piece of media.
+7. search_media_summaries(query: str): Search cached media summaries by description text. Read-only; use before clear/update when you need to find the right id.
+8. ponder(query: str): Research a topic deeply before replying. Use this when you need current/real-time information (news, events, prices), when asked to recall everything about a user, or when the question requires knowledge beyond what's in your memory. The query should be a clear research question in English. You will receive the research results and can then compose your reply. Only use ONE ponder call per response. If you want to tell the user to wait, include a message in the "messages" array — it will be sent immediately before the research begins.
+
+MEMORY SAFETY RULES (mandatory):
+- Never delete or clear more than one memory entry per tool call.
+- Use exact numeric `memory_id` values from context; never guess ids.
+- Use exact `media_unique_id` strings from message attributes or search results; never invent ids.
+- Do not bulk-delete, wipe, or "clear all" memories. If asked to reset everything, refuse and offer to remove specific items.
+- Prefer `update_general_memory` / `update_media_summary` over delete+clear when the user wants a correction.
+- At most five memory-mutating tool calls per response (excluding ponder and search_media_summaries).
 
 PONDER RULES (mandatory):
 - If you need live/current information, you MUST call ponder in tool_calls.
@@ -321,6 +365,8 @@ def build_context_prompt(
                 if len(r_text) > 500:
                     r_text = r_text[:500] + "..."
                 attrs.append(f'reply_excerpt={_xml_attr(r_text)}')
+        if msg.get("media_unique_id"):
+            attrs.append(f'media_unique_id={_xml_attr(msg["media_unique_id"])}')
 
         if focus_message_id and msg["message_id"] == focus_message_id:
             attrs.append('focus="true"')
@@ -376,6 +422,60 @@ async def get_system_prompt() -> str:
         persona = DEFAULT_PERSONA
         await set_config("persona_prompt", persona)
     return f"{persona.strip()}\n\n---\n\n{SYSTEM_INSTRUCTIONS.strip()}"
+
+
+async def _apply_memory_tool_call(
+    name: str,
+    args: dict[str, Any],
+    chat_id: int,
+) -> dict[str, Any]:
+    write: dict[str, Any] = {"type": name, "status": "pending", "arguments": args}
+
+    try:
+        if name == "update_user_thought":
+            await update_user_thought(args["user_id"], args["username"], args["thought"])
+            write["status"] = "succeeded"
+        elif name == "add_general_memory":
+            await add_general_memory(
+                args["topic"], args["summary"], chat_id, args.get("importance", 3)
+            )
+            write["status"] = "succeeded"
+        elif name == "update_general_memory":
+            memory_id = int(args["memory_id"])
+            ok = await update_general_memory(
+                memory_id,
+                chat_id,
+                topic=args.get("topic"),
+                summary=args.get("summary"),
+                importance=args.get("importance"),
+            )
+            write["status"] = "succeeded" if ok else "not_found"
+        elif name == "delete_general_memory":
+            memory_id = int(args["memory_id"])
+            ok = await delete_general_memory(memory_id, chat_id)
+            write["status"] = "succeeded" if ok else "not_found"
+        elif name == "clear_media_summary":
+            ok = await clear_media_description(str(args["media_unique_id"]))
+            write["status"] = "succeeded" if ok else "not_found"
+        elif name == "update_media_summary":
+            media_unique_id = str(args["media_unique_id"])
+            description = str(args["description"])
+            await save_media_description(media_unique_id, description)
+            await update_saved_media_description(chat_id, media_unique_id, description)
+            write["status"] = "succeeded"
+        elif name == "search_media_summaries":
+            results = await search_media_descriptions(str(args.get("query", "")))
+            write["status"] = "succeeded"
+            write["results"] = results
+        else:
+            write["status"] = "skipped"
+    except Exception as mem_error:
+        write["status"] = "failed"
+        write["error_type"] = type(mem_error).__name__
+        write["error_message"] = str(mem_error)[:500]
+        raise
+
+    return write
 
 
 async def generate_response(
@@ -475,50 +575,50 @@ async def generate_response(
                 ]
 
                 # Process validated tool calls
+                mutation_count = 0
                 for tool_call in parsed.tool_calls:
                     name = tool_call.name
                     args = tool_call.arguments
 
-                    if name == "update_user_thought":
-                        logging.info(
-                            f"Memorizing (User Thought): {json.dumps(args, ensure_ascii=False)}"
-                        )
-                        write = {"type": "user_thought", "status": "pending", "arguments": args}
-                        memory_writes.append(write)
-                        try:
-                            await update_user_thought(
-                                args["user_id"], args["username"], args["thought"]
+                    if name in MEMORY_MUTATION_TOOLS:
+                        mutation_count += 1
+                        if mutation_count > MAX_MEMORY_MUTATIONS_PER_RESPONSE:
+                            logging.warning(
+                                "Skipping memory tool %s: exceeded max mutations per response",
+                                name,
                             )
-                            write["status"] = "succeeded"
-                        except Exception as mem_error:
-                            write["status"] = "failed"
-                            write["error_type"] = type(mem_error).__name__
-                            write["error_message"] = str(mem_error)[:500]
-                            raise
-                    elif name == "add_general_memory":
-                        logging.info(
-                            f"Memorizing (General): {json.dumps(args, ensure_ascii=False)}"
-                        )
-                        write = {
-                            "type": "general_memory",
-                            "status": "pending",
-                            "arguments": {**args, "chat_id": chat_id},
-                        }
-                        memory_writes.append(write)
-                        try:
-                            await add_general_memory(
-                                args["topic"], args["summary"], chat_id, args.get("importance", 3)
-                            )
-                            write["status"] = "succeeded"
-                        except Exception as mem_error:
-                            write["status"] = "failed"
-                            write["error_type"] = type(mem_error).__name__
-                            write["error_message"] = str(mem_error)[:500]
-                            raise
-                    elif name == "ponder":
+                            memory_writes.append({
+                                "type": name,
+                                "status": "skipped",
+                                "reason": "mutation_limit",
+                                "arguments": args,
+                            })
+                            continue
+
+                    if name == "ponder":
                         logging.info(
                             f"Ponder tool_call detected (query={args.get('query', '')!r}), deferring to handler"
                         )
+                        continue
+
+                    if name == "search_media_summaries":
+                        logging.info(
+                            "Searching media summaries: %s",
+                            json.dumps(args, ensure_ascii=False),
+                        )
+                        write = await _apply_memory_tool_call(name, args, chat_id)
+                        memory_writes.append(write)
+                        continue
+
+                    if name in MEMORY_MUTATION_TOOLS:
+                        logging.info(
+                            f"Memorizing ({name}): {json.dumps(args, ensure_ascii=False)}"
+                        )
+                        write = await _apply_memory_tool_call(name, args, chat_id)
+                        memory_writes.append(write)
+                        continue
+
+                    logging.warning("Unknown tool call: %s", name)
 
                 # Validate media_reply_unique_id
                 media_id = parsed.media_reply_unique_id

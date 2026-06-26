@@ -432,3 +432,67 @@ async def test_generate_response_unknown_media_id_is_ignored(temp_db_path):
         events = await fetch_llm_telemetry(chat_id=9999)
         assert len(events) == 1
         assert events[0]["status"] == "no_reply"
+
+
+@pytest.mark.asyncio
+async def test_generate_response_memory_mutation_tools(temp_db_path):
+    from bot import memory
+
+    chat_id = 4242
+    await memory.add_general_memory("Old topic", "Old summary", chat_id)
+    memories = await memory.get_general_memories(chat_id)
+    memory_id = int(memories[0].split(",")[0].removeprefix("id="))
+    await memory.save_media_description("vid_test", "old video summary")
+
+    mock_messages_context = [
+        {
+            "message_id": 1,
+            "sender": "Alice",
+            "user_id": 123,
+            "text": "fix my memories",
+            "media_unique_id": "vid_test",
+        }
+    ]
+    mock_response = MagicMock()
+    mock_response.usage = None
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps({
+        "tool_calls": [
+            {
+                "name": "update_general_memory",
+                "arguments": {
+                    "memory_id": memory_id,
+                    "summary": "Corrected summary",
+                },
+            },
+            {
+                "name": "clear_media_summary",
+                "arguments": {"media_unique_id": "vid_test"},
+            },
+            {
+                "name": "search_media_summaries",
+                "arguments": {"query": "video"},
+            },
+        ],
+        "reply_to_message_id": 1,
+        "messages": ["Done, updated that for you."],
+        "polls": [],
+        "media_reply_unique_id": None,
+    })
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+
+    with patch.object(llm.client.chat.completions, "create", AsyncMock(return_value=mock_response)):
+        result = await llm.generate_response(
+            messages_context=mock_messages_context,
+            user_thoughts={},
+            general_memories=memories,
+            chat_id=chat_id,
+            focus_message_id=1,
+        )
+
+    assert result is not None
+    updated = await memory.get_general_memories(chat_id)
+    assert "Corrected summary" in updated[0]
+    assert await memory.get_media_description("vid_test") is None

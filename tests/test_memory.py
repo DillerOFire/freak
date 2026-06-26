@@ -229,3 +229,67 @@ async def test_saved_media_global_limit(temp_db_path):
         async with db.execute("SELECT COUNT(*) FROM saved_media") as cursor:
             row = await cursor.fetchone()
             assert row[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_general_memory_update_and_delete(temp_db_path):
+    chat_id = 100
+    other_chat = 200
+    await memory.add_general_memory("Topic A", "Summary A", chat_id)
+    await memory.add_general_memory("Topic B", "Summary B", other_chat)
+
+    memories = await memory.get_general_memories(chat_id)
+    assert len(memories) == 1
+    assert memories[0].startswith("id=")
+
+    memory_id = int(memories[0].split(",")[0].removeprefix("id="))
+
+    assert await memory.update_general_memory(
+        memory_id, chat_id, summary="Updated summary", importance=5
+    )
+    updated = await memory.get_general_memories(chat_id)
+    assert "Updated summary" in updated[0]
+
+    assert await memory.delete_general_memory(memory_id, chat_id) is True
+    assert await memory.get_general_memories(chat_id) == []
+
+    # Cannot delete from wrong chat
+    other_memories = await memory.get_general_memories(other_chat)
+    other_id = int(other_memories[0].split(",")[0].removeprefix("id="))
+    assert await memory.delete_general_memory(other_id, chat_id) is False
+    assert len(await memory.get_general_memories(other_chat)) == 1
+
+    assert await memory.delete_general_memory(0, chat_id) is False
+
+
+@pytest.mark.asyncio
+async def test_media_description_clear_update_and_search(temp_db_path):
+    await memory.save_media_description("vid_abc", "A cat playing piano")
+    assert await memory.get_media_description("vid_abc") == "A cat playing piano"
+
+    results = await memory.search_media_descriptions("cat piano")
+    assert len(results) == 1
+    assert "vid_abc" in results[0]
+
+    await memory.save_media_description("vid_abc", "A dog on a skateboard")
+    assert await memory.get_media_description("vid_abc") == "A dog on a skateboard"
+
+    assert await memory.clear_media_description("vid_abc") is True
+    assert await memory.get_media_description("vid_abc") is None
+    assert await memory.clear_media_description("vid_abc") is False
+    assert await memory.clear_media_description("") is False
+
+
+@pytest.mark.asyncio
+async def test_update_saved_media_description(temp_db_path):
+    await memory.save_reusable_media(
+        chat_id=42,
+        media_unique_id="gif_u1",
+        file_id="gif_f1",
+        media_type="animation",
+        description="old desc",
+        sender_user_id=1,
+    )
+    assert await memory.update_saved_media_description(42, "gif_u1", "new desc")
+    row = await memory.get_saved_media_by_unique_id(42, "gif_u1")
+    assert row["description"] == "new desc"

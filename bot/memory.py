@@ -17,6 +17,11 @@ SAVED_MEDIA_PER_CHAT_LIMIT = 50
 SAVED_MEDIA_GLOBAL_LIMIT = 500
 SAVED_MEDIA_PROMPT_LIMIT = 12
 
+MAX_MEMORY_SUMMARY_LEN = 4000
+MAX_MEDIA_DESCRIPTION_LEN = 2000
+MAX_MEDIA_UNIQUE_ID_LEN = 128
+_MEDIA_UNIQUE_ID_RE = re.compile(r"^[\w-]+$")
+
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -195,14 +200,24 @@ async def update_user_thought(user_id: int, username: str, thought: str):
         logging.info("DEBUG: Committed user thought to DB")
 
 
+def _format_general_memory(memory_id: int, topic: str, summary: str) -> str:
+    return f"id={memory_id}, Topic: {topic}, Summary: {summary}"
+
+
+def _is_valid_media_unique_id(media_unique_id: str) -> bool:
+    if not media_unique_id or len(media_unique_id) > MAX_MEDIA_UNIQUE_ID_LEN:
+        return False
+    return bool(_MEDIA_UNIQUE_ID_RE.match(media_unique_id))
+
+
 async def get_general_memories(chat_id: int, limit: int = 5) -> list[str]:
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
-            "SELECT topic, summary FROM general_memory WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?",
+            "SELECT id, topic, summary FROM general_memory WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?",
             (chat_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [f"Topic: {row[0]}, Summary: {row[1]}" for row in rows]
+            return [_format_general_memory(row[0], row[1], row[2]) for row in rows]
 
 
 async def add_general_memory(topic: str, summary: str, chat_id: int, importance: int = 3):
@@ -275,7 +290,7 @@ async def get_relevant_general_memories(chat_id: int, query: str, limit: int = 5
             )
             await db.commit()
             
-            return [f"Topic: {row[1]}, Summary: {row[2]}" for row in rows]
+            return [_format_general_memory(row[0], row[1], row[2]) for row in rows]
     except aiosqlite.Error as e:
         logging.error(f"FTS query error in get_relevant_general_memories: {e}")
         return await get_general_memories(chat_id, limit)
@@ -358,7 +373,7 @@ async def search_general_memories(chat_id: int, query: str, limit: int = 10) -> 
             )
             await db.commit()
             
-            return [f"Topic: {row[1]}, Summary: {row[2]}" for row in rows]
+            return [_format_general_memory(row[0], row[1], row[2]) for row in rows]
     except aiosqlite.Error as e:
         logging.error(f"FTS query error in search_general_memories: {e}")
         return []
@@ -375,6 +390,11 @@ async def get_media_description(media_unique_id: str) -> str | None:
 
 
 async def save_media_description(media_unique_id: str, description: str):
+    if not _is_valid_media_unique_id(media_unique_id):
+        return
+    description = description.strip()[:MAX_MEDIA_DESCRIPTION_LEN]
+    if not description:
+        return
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             """
@@ -386,6 +406,157 @@ async def save_media_description(media_unique_id: str, description: str):
             (media_unique_id, description),
         )
         await db.commit()
+
+
+async def clear_media_description(media_unique_id: str) -> bool:
+    """Remove a cached media summary so it will be re-analyzed on next send."""
+    if not _is_valid_media_unique_id(media_unique_id):
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "DELETE FROM media_descriptions WHERE media_unique_id = ?",
+            (media_unique_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def search_media_descriptions(query: str, limit: int = 5) -> list[str]:
+    """Search cached media summaries by description text (read-only)."""
+    query = query.strip()
+    if not query:
+        return []
+    limit = max(1, min(10, limit))
+    terms = [t for t in re.findall(r"[A-Za-zА-Яа-яЁё0-9_]{2,}", query.lower())]
+    if not terms:
+        terms = [query.lower()]
+
+    conditions = " AND ".join("LOWER(description) LIKE ?" for _ in terms)
+    params = [f"%{term}%" for term in terms]
+    params.append(limit)
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            f"""
+            SELECT media_unique_id, description
+            FROM media_descriptions
+            WHERE {conditions}
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        f"media_unique_id={row[0]}, description: {row[1]}"
+        for row in rows
+    ]
+
+
+async def update_saved_media_description(
+    chat_id: int,
+    media_unique_id: str,
+    description: str,
+) -> bool:
+    """Update the description on a chat's saved reusable media row."""
+    if not _is_valid_media_unique_id(media_unique_id):
+        return False
+    description = description.strip()[:MAX_MEDIA_DESCRIPTION_LEN]
+    if not description:
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            UPDATE saved_media
+            SET description = ?
+            WHERE chat_id = ? AND media_unique_id = ?
+            """,
+            (description, chat_id, media_unique_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def delete_general_memory(memory_id: int, chat_id: int) -> bool:
+    """Delete a single general memory row scoped to the chat."""
+    if memory_id <= 0:
+        return False
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "DELETE FROM general_memory WHERE id = ? AND chat_id = ?",
+            (memory_id, chat_id),
+        )
+        if cursor.rowcount == 0:
+            return False
+        await db.execute(
+            "INSERT INTO general_memory_fts(general_memory_fts, rowid) VALUES('delete', ?)",
+            (memory_id,),
+        )
+        await db.commit()
+        return True
+
+
+async def update_general_memory(
+    memory_id: int,
+    chat_id: int,
+    *,
+    topic: str | None = None,
+    summary: str | None = None,
+    importance: int | None = None,
+) -> bool:
+    """Update fields on a single general memory row scoped to the chat."""
+    if memory_id <= 0:
+        return False
+
+    updates: list[str] = []
+    params: list[object] = []
+
+    if topic is not None:
+        topic = topic.strip()
+        if not topic:
+            return False
+        updates.append("topic = ?")
+        params.append(topic[:500])
+    if summary is not None:
+        summary = summary.strip()
+        if not summary:
+            return False
+        updates.append("summary = ?")
+        params.append(summary[:MAX_MEMORY_SUMMARY_LEN])
+    if importance is not None:
+        updates.append("importance = ?")
+        params.append(max(1, min(5, importance)))
+
+    if not updates:
+        return False
+
+    params.extend([memory_id, chat_id])
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            f"UPDATE general_memory SET {', '.join(updates)} WHERE id = ? AND chat_id = ?",
+            params,
+        )
+        if cursor.rowcount == 0:
+            return False
+
+        async with db.execute(
+            "SELECT topic, summary FROM general_memory WHERE id = ? AND chat_id = ?",
+            (memory_id, chat_id),
+        ) as row_cursor:
+            row = await row_cursor.fetchone()
+        if not row:
+            return False
+
+        await db.execute(
+            "INSERT INTO general_memory_fts(general_memory_fts, rowid) VALUES('delete', ?)",
+            (memory_id,),
+        )
+        await db.execute(
+            "INSERT INTO general_memory_fts(rowid, topic, summary) VALUES (?, ?, ?)",
+            (memory_id, row[0], row[1]),
+        )
+        await db.commit()
+        return True
 
 
 async def _migrate_saved_media_schema(db) -> None:

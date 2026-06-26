@@ -48,7 +48,7 @@ async def test_handle_message_reply_logic(temp_db_path, mock_update_handler, moc
         mock_whitelist.return_value = True
         mock_should_reply.return_value = True
         mock_llm.return_value = {"messages": ["Hello human", "Second msg"], "reply_to_message_id": None}
-        mock_media_desc.return_value = None
+        mock_media_desc.return_value = (None, None)
 
         await handlers.handle_message(mock_update_handler, mock_context)
 
@@ -82,7 +82,7 @@ async def test_handle_message_reaction(temp_db_path, mock_update_handler, mock_c
         mock_should_reply.return_value = False
         mock_should_react.return_value = True
         mock_gen_react.return_value = "👍"
-        mock_media_desc.return_value = None
+        mock_media_desc.return_value = (None, None)
 
         await handlers.handle_message(mock_update_handler, mock_context)
 
@@ -106,7 +106,7 @@ async def test_handle_message_ignore(temp_db_path, mock_update_handler, mock_con
     ):
         mock_whitelist.return_value = True
         mock_should_reply.return_value = False
-        mock_media_desc.return_value = None
+        mock_media_desc.return_value = (None, None)
 
         await handlers.handle_message(mock_update_handler, mock_context)
 
@@ -132,7 +132,7 @@ async def test_handle_message_bot_sender_history_label(temp_db_path, mock_update
         mock_whitelist.return_value = True
         mock_should_reply.return_value = False
         mock_should_react.return_value = False
-        mock_media_desc.return_value = None
+        mock_media_desc.return_value = (None, None)
 
         await handlers.handle_message(mock_update_handler, mock_context)
 
@@ -158,7 +158,7 @@ async def test_handle_message_sends_poll_response(temp_db_path, mock_update_hand
         mock_whitelist.return_value = True
         mock_should_reply.return_value = True
         mock_should_react.return_value = False
-        mock_media_desc.return_value = None
+        mock_media_desc.return_value = (None, None)
         mock_llm.return_value = {
             "messages": [],
             "reply_to_message_id": None,
@@ -297,7 +297,7 @@ async def test_get_message_media_description_saves_photo_metadata(temp_db_path):
          patch("builtins.open", MagicMock()), \
          patch("os.remove", MagicMock()):
          
-        desc = await handlers.get_message_media_description(
+        desc, media_id = await handlers.get_message_media_description(
             mock_msg,
             chat_id=12345,
             sender_user_id=67890,
@@ -305,6 +305,7 @@ async def test_get_message_media_description_saves_photo_metadata(temp_db_path):
         )
         
         assert desc == "[User sent a photo: a saved portrait]"
+        assert media_id == "photo_u1"
         mock_save_reusable.assert_called_once_with(
             12345, "photo_u1", "photo_f1", "photo", "a saved portrait", 67890
         )
@@ -331,7 +332,7 @@ async def test_get_message_media_description_saves_gif_metadata(temp_db_path):
          patch("bot.handlers.save_reusable_media", AsyncMock()) as mock_save_reusable, \
          patch("os.remove", MagicMock()):
 
-        desc = await handlers.get_message_media_description(
+        desc, media_id = await handlers.get_message_media_description(
             mock_msg,
             chat_id=12345,
             sender_user_id=67890,
@@ -339,6 +340,7 @@ async def test_get_message_media_description_saves_gif_metadata(temp_db_path):
         )
 
         assert desc == "[User sent a gif: cat dancing]"
+        assert media_id == "gif_u1"
         mock_save_reusable.assert_called_once_with(
             12345, "gif_u1", "gif_f1", "animation", "cat dancing", 67890
         )

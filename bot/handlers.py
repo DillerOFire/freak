@@ -138,23 +138,25 @@ def add_message_to_history(
     reply_to_id: int | None = None,
     reply_to_username: str | None = None,
     reply_to_text: str | None = None,
+    media_unique_id: str | None = None,
 ):
     # Initialize chat history if needed
     if chat_id not in chat_history:
         chat_history[chat_id] = deque(maxlen=20)
 
     # Add to history
-    chat_history[chat_id].append(
-        {
-            "message_id": message_id,
-            "sender": sender,
-            "text": text,
-            "user_id": user_id,
-            "reply_to_id": reply_to_id,
-            "reply_to_username": reply_to_username,
-            "reply_to_text": reply_to_text,
-        }
-    )
+    entry = {
+        "message_id": message_id,
+        "sender": sender,
+        "text": text,
+        "user_id": user_id,
+        "reply_to_id": reply_to_id,
+        "reply_to_username": reply_to_username,
+        "reply_to_text": reply_to_text,
+    }
+    if media_unique_id:
+        entry["media_unique_id"] = media_unique_id
+    chat_history[chat_id].append(entry)
 
 
 async def get_message_media_description(
@@ -163,10 +165,10 @@ async def get_message_media_description(
     chat_id: int | None = None,
     sender_user_id: int | None = None,
     save_reusable: bool = False,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """
-    Analyzes media in a message and returns a description.
-    Returns None if no media is found or analysis fails/is not applicable.
+    Analyzes media in a message and returns (description, media_unique_id).
+    Returns (None, None) if no media is found or analysis fails/is not applicable.
     """
     media_description = ""
     file_unique_id = None
@@ -367,7 +369,9 @@ async def get_message_media_description(
         doc = message.document
         media_description = f"[User sent a document: {doc.file_name} ({doc.mime_type})]"
 
-    return media_description if media_description else None
+    if media_description:
+        return media_description, file_unique_id
+    return None, None
 
 
 
@@ -502,7 +506,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await is_whitelisted(chat_id):
             return
 
-    media_description = await get_message_media_description(
+    media_description, media_unique_id = await get_message_media_description(
         update.message,
         chat_id=chat_id,
         sender_user_id=user.id,
@@ -612,8 +616,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply_to_text = reply_to_msg.text or reply_to_msg.caption
         if not reply_to_text:
-            desc = await get_message_media_description(reply_to_msg)
-            reply_to_text = desc if desc else "[Media]"
+            reply_desc, _ = await get_message_media_description(reply_to_msg)
+            reply_to_text = reply_desc if reply_desc else "[Media]"
 
     sender_name = user.username or user.first_name
     if getattr(user, "is_bot", False):
@@ -628,6 +632,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_id,
         reply_to_username,
         reply_to_text,
+        media_unique_id,
     )
 
     bot_username = context.bot.username
