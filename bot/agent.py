@@ -4,14 +4,24 @@ import json
 import logging
 import re
 import socket
+from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
 from ddgs import DDGS
 
-from bot.llm import client
-from bot.memory import search_general_memories, search_user_memories
-from config import LLM_PONDER_MODEL
+from bot.llm import client, DEFAULT_PERSONA, generate_reaction_prompt
+from bot.memory import (
+    search_general_memories,
+    search_user_memories,
+    get_config,
+    set_config,
+)
+from bot.logic import (
+    get_behavior_settings,
+    update_behavior_settings,
+)
+from config import LLM_PONDER_MODEL, ADMIN_ID
 
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 _USER_AGENT = (
@@ -19,21 +29,28 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-PONDER_SYSTEM_PROMPT = """You are a research assistant. Answer the query by using the available tools.
+PONDER_SYSTEM_PROMPT = """You are a research and configuration assistant. Answer the query by using the available tools.
 At each step, output a JSON object with one of these two shapes:
 
-To use a tool: {"thought": "your reasoning", "tool": "tool_name", "tool_input": "input string"}
+To use a tool: {"thought": "your reasoning", "tool": "tool_name", "tool_input": "input string or JSON object"}
 To give your final answer: {"thought": "your reasoning", "answer": "your concise summary"}
 
 Available tools:
 - web_search: Search the web for current information. Input: search query string.
 - fetch_web_page: Fetch and read a web page. Input: full URL (https only). Returns page text.
 - recall_memories: Search bot's memory database for information about users or topics. Input: search query string.
+- get_persona_prompt: Return the current editable persona prompt (voice/character only). No input needed.
+- update_persona_prompt: Replace the editable persona prompt. Input: the full new persona text as a string. Admin-only.
+- reset_persona_prompt: Restore the built-in default persona prompt. No input needed. Admin-only.
+- get_behavior_settings: Read current chat behavior knobs (reply chance, reaction chance, cooldown, ping-pong cap, media/sticker guidance). No input needed.
+- update_behavior_settings: Update one or more behavior knobs. Input: JSON object with any of reply_chance (float 0-1), reaction_chance (float 0-1), cooldown_threshold (int), max_ping_pong (int), media_reply_guidance (string up to 500 chars). Admin-only.
 
 Rules:
 - Be concise. Your final answer should be a factual summary in 2-4 sentences.
 - You may call multiple tools across steps before giving your final answer.
 - Always give a final answer, even if tool results are empty or unhelpful.
+- Persona and behavior tools are admin-only; if the requesting user is not the admin, they will be denied.
+- When updating the persona, compose a complete persona text (at least 30 characters) based on the admin's request.
 """
 
 
@@ -189,23 +206,160 @@ async def recall_memories(query: str, chat_id: int) -> str:
     return "\n".join(lines)
 
 
+MIN_PERSONA_LEN = 30
+MAX_PERSONA_LEN = 6000
+
+
+async def get_stored_persona_prompt() -> str:
+    persona = await get_config("persona_prompt")
+    if persona and persona.strip():
+        return persona.strip()
+    return DEFAULT_PERSONA
+
+
+async def apply_persona_prompt(
+    persona: str,
+    *,
+    requesting_user_id: int | None,
+) -> tuple[bool, str]:
+    if requesting_user_id != ADMIN_ID:
+        return False, "admin_only"
+    persona = persona.strip()
+    if len(persona) < MIN_PERSONA_LEN:
+        return False, "too_short"
+    if len(persona) > MAX_PERSONA_LEN:
+        persona = persona[:MAX_PERSONA_LEN]
+    await set_config("persona_prompt", persona)
+    reaction_prompt = await generate_reaction_prompt(persona)
+    await set_config("reaction_prompt", reaction_prompt)
+    return True, "ok"
+
+
+async def reset_stored_persona_prompt(
+    *,
+    requesting_user_id: int | None,
+) -> tuple[bool, str]:
+    if requesting_user_id != ADMIN_ID:
+        return False, "admin_only"
+    await set_config("persona_prompt", DEFAULT_PERSONA)
+    reaction_prompt = await generate_reaction_prompt(DEFAULT_PERSONA)
+    await set_config("reaction_prompt", reaction_prompt)
+    return True, "ok"
+
+
+def _format_behavior_settings(settings: dict) -> str:
+    lines = [
+        f"scope={settings['scope']}",
+        f"reply_chance={settings['reply_chance']:.4f}",
+        f"reaction_chance={settings['reaction_chance']:.4f}",
+        f"cooldown_threshold={settings['cooldown_threshold']}",
+        f"max_ping_pong={settings['max_ping_pong']}",
+    ]
+    guidance = settings.get("media_reply_guidance") or ""
+    if guidance:
+        lines.append(f"media_reply_guidance={guidance}")
+    else:
+        lines.append("media_reply_guidance=(not set)")
+    return "\n".join(lines)
+
+
+async def _ponder_get_persona_prompt(
+    tool_input: Any, *, chat_id: int, settings_chat_id: int, requesting_user_id: int | None
+) -> str:
+    return await get_stored_persona_prompt()
+
+
+async def _ponder_update_persona_prompt(
+    tool_input: Any, *, chat_id: int, settings_chat_id: int, requesting_user_id: int | None
+) -> str:
+    persona = tool_input if isinstance(tool_input, str) else str(
+        tool_input.get("persona", "") if isinstance(tool_input, dict) else tool_input
+    )
+    ok, reason = await apply_persona_prompt(persona, requesting_user_id=requesting_user_id)
+    return "Persona prompt updated successfully." if ok else f"Persona update denied: {reason}"
+
+
+async def _ponder_reset_persona_prompt(
+    tool_input: Any, *, chat_id: int, settings_chat_id: int, requesting_user_id: int | None
+) -> str:
+    ok, reason = await reset_stored_persona_prompt(requesting_user_id=requesting_user_id)
+    return "Persona prompt reset to default." if ok else f"Persona reset denied: {reason}"
+
+
+async def _ponder_get_behavior_settings(
+    tool_input: Any, *, chat_id: int, settings_chat_id: int, requesting_user_id: int | None
+) -> str:
+    settings = await get_behavior_settings(settings_chat_id)
+    return _format_behavior_settings(settings)
+
+
+async def _ponder_update_behavior_settings(
+    tool_input: Any, *, chat_id: int, settings_chat_id: int, requesting_user_id: int | None
+) -> str:
+    args = tool_input if isinstance(tool_input, dict) else {}
+    ok, reason = await update_behavior_settings(
+        settings_chat_id,
+        requesting_user_id=requesting_user_id,
+        admin_id=ADMIN_ID,
+        reply_chance=args.get("reply_chance"),
+        reaction_chance=args.get("reaction_chance"),
+        cooldown_threshold=args.get("cooldown_threshold"),
+        max_ping_pong=args.get("max_ping_pong"),
+        media_reply_guidance=args.get("media_reply_guidance"),
+    )
+    return "Behavior settings updated successfully." if ok else f"Behavior update denied: {reason}"
 PONDER_TOOLS: dict[str, dict] = {
     "web_search": {
         "description": "Search the web for current information. Input: search query string.",
         "function": web_search,
+        "context": "none",
     },
     "fetch_web_page": {
         "description": "Fetch and read a web page. Input: full URL (https only). Returns page text.",
         "function": fetch_web_page,
+        "context": "none",
     },
     "recall_memories": {
         "description": "Search bot's memory database for information about users or topics. Input: search query string.",
         "function": recall_memories,
+        "context": "chat_id",
+    },
+    "get_persona_prompt": {
+        "description": "Return the current editable persona prompt (voice/character only). No input needed.",
+        "function": _ponder_get_persona_prompt,
+        "context": "full",
+    },
+    "update_persona_prompt": {
+        "description": "Replace the editable persona prompt. Input: the full new persona text as a string. Admin-only.",
+        "function": _ponder_update_persona_prompt,
+        "context": "full",
+    },
+    "reset_persona_prompt": {
+        "description": "Restore the built-in default persona prompt. No input needed. Admin-only.",
+        "function": _ponder_reset_persona_prompt,
+        "context": "full",
+    },
+    "get_behavior_settings": {
+        "description": "Read current chat behavior knobs (reply chance, reaction chance, cooldown, ping-pong cap, media/sticker guidance). No input needed.",
+        "function": _ponder_get_behavior_settings,
+        "context": "full",
+    },
+    "update_behavior_settings": {
+        "description": "Update one or more behavior knobs. Input: JSON object with any of reply_chance (float 0-1), reaction_chance (float 0-1), cooldown_threshold (int), max_ping_pong (int), media_reply_guidance (string up to 500 chars). Admin-only.",
+        "function": _ponder_update_behavior_settings,
+        "context": "full",
     },
 }
 
 
-async def run_ponder_agent(query: str, chat_id: int, max_steps: int = 6) -> str:
+async def run_ponder_agent(
+    query: str,
+    chat_id: int,
+    max_steps: int = 6,
+    *,
+    requesting_user_id: int | None = None,
+    settings_chat_id: int | None = None,
+) -> str:
     try:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": PONDER_SYSTEM_PROMPT},
@@ -243,7 +397,11 @@ async def run_ponder_agent(query: str, chat_id: int, max_steps: int = 6) -> str:
 
             if "tool" in parsed:
                 tool_name = parsed.get("tool", "")
-                tool_input = str(parsed.get("tool_input", ""))
+                raw_tool_input = parsed.get("tool_input", "")
+                if isinstance(raw_tool_input, (dict, list)):
+                    tool_input = raw_tool_input
+                else:
+                    tool_input = str(raw_tool_input)
 
                 if tool_name not in PONDER_TOOLS:
                     messages.append(
@@ -251,18 +409,35 @@ async def run_ponder_agent(query: str, chat_id: int, max_steps: int = 6) -> str:
                             "role": "user",
                             "content": (
                                 f"Error: unknown tool '{tool_name}'. "
-                                "Available: web_search, fetch_web_page, recall_memories"
+                                f"Available: {', '.join(PONDER_TOOLS)}"
                             ),
                         }
                     )
                     continue
 
-                tool_fn = PONDER_TOOLS[tool_name]["function"]
+                tool_entry = PONDER_TOOLS[tool_name]
+                tool_fn = tool_entry["function"]
+                tool_context = tool_entry.get("context", "none")
+                effective_settings_chat_id = settings_chat_id if settings_chat_id is not None else chat_id
                 try:
-                    if tool_name == "recall_memories":
-                        result = await asyncio.wait_for(tool_fn(tool_input, chat_id), timeout=15.0)
+                    if tool_context == "chat_id":
+                        result = await asyncio.wait_for(
+                            tool_fn(tool_input, chat_id), timeout=15.0
+                        )
+                    elif tool_context == "full":
+                        result = await asyncio.wait_for(
+                            tool_fn(
+                                tool_input,
+                                chat_id=chat_id,
+                                settings_chat_id=effective_settings_chat_id,
+                                requesting_user_id=requesting_user_id,
+                            ),
+                            timeout=15.0,
+                        )
                     else:
-                        result = await asyncio.wait_for(tool_fn(tool_input), timeout=15.0)
+                        result = await asyncio.wait_for(
+                            tool_fn(tool_input), timeout=15.0
+                        )
                 except Exception as error:
                     result = f"Tool error: {error}"
 

@@ -89,7 +89,12 @@ async def _complete_ponder_followup(
     settings_chat_id: int,
     requesting_user_id: int | None = None,
 ) -> None:
-    ponder_result = await run_ponder_agent(ponder_query, chat_id)
+    ponder_result = await run_ponder_agent(
+        ponder_query,
+        chat_id,
+        requesting_user_id=requesting_user_id,
+        settings_chat_id=settings_chat_id,
+    )
 
     extra_context = (
         f'\n<ponder_result query="{xml_escape(ponder_query)}">'
@@ -110,7 +115,6 @@ async def _complete_ponder_followup(
         memory_query=memory_query,
         saved_media_options=saved_media_options,
         extra_context=extra_context,
-        requesting_user_id=requesting_user_id,
         settings_chat_id=settings_chat_id,
     )
 
@@ -686,7 +690,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             source="message",
             memory_query=memory_query,
             saved_media_options=saved_media_options,
-            requesting_user_id=user.id,
             settings_chat_id=settings_chat_id,
         )
 

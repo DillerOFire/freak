@@ -231,3 +231,182 @@ async def test_run_ponder_agent_invalid_tool_name():
         result = await agent.run_ponder_agent("dangerous", chat_id=1)
 
     assert result == "safe result"
+
+
+
+@pytest.mark.asyncio
+async def test_apply_persona_prompt_admin_only(temp_db_path):
+    new_persona = "You are a witty opera critic who speaks in short paragraphs."
+
+    with patch.object(agent, "ADMIN_ID", 999):
+        ok, reason = await agent.apply_persona_prompt(new_persona, requesting_user_id=999)
+        assert ok is True
+        assert reason == "ok"
+        assert await agent.get_stored_persona_prompt() == new_persona
+
+        denied, reason = await agent.apply_persona_prompt(new_persona, requesting_user_id=1)
+        assert denied is False
+        assert reason == "admin_only"
+
+
+@pytest.mark.asyncio
+async def test_apply_persona_prompt_rejects_too_short(temp_db_path):
+    with patch.object(agent, "ADMIN_ID", 999):
+        ok, reason = await agent.apply_persona_prompt("too short", requesting_user_id=999)
+        assert ok is False
+        assert reason == "too_short"
+
+
+@pytest.mark.asyncio
+async def test_reset_stored_persona_prompt(temp_db_path):
+    with patch.object(agent, "ADMIN_ID", 999):
+        await agent.apply_persona_prompt(
+            "You are a dramatic stage actor with flair and passion.",
+            requesting_user_id=999,
+        )
+        ok, reason = await agent.reset_stored_persona_prompt(requesting_user_id=999)
+        assert ok is True
+        assert await agent.get_stored_persona_prompt() == agent.DEFAULT_PERSONA
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_persona_update_via_string_tool_input(temp_db_path):
+    admin_id = 424242
+    new_persona = "You are a calm technical mentor who explains things clearly."
+
+    first = _mock_llm_json_response(
+        {"thought": "updating persona", "tool": "update_persona_prompt", "tool_input": new_persona}
+    )
+    second = _mock_llm_json_response({"thought": "done", "answer": "Persona updated."})
+    create_mock = AsyncMock(side_effect=[first, second])
+
+    with (
+        patch.object(agent, "ADMIN_ID", admin_id),
+        patch.object(agent, "generate_reaction_prompt", AsyncMock(return_value="reaction prompt")),
+        patch.object(agent.client.chat.completions, "create", create_mock),
+    ):
+        result = await agent.run_ponder_agent(
+            "change your persona to be a calm technical mentor",
+            chat_id=1,
+            requesting_user_id=admin_id,
+        )
+
+    assert result == "Persona updated."
+    assert await agent.get_stored_persona_prompt() == new_persona
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_persona_update_denied_for_non_admin(temp_db_path):
+    first = _mock_llm_json_response(
+        {"thought": "updating persona", "tool": "update_persona_prompt", "tool_input": "You are a pirate captain."}
+    )
+    second = _mock_llm_json_response({"thought": "denied", "answer": "Permission denied."})
+    create_mock = AsyncMock(side_effect=[first, second])
+
+    with (
+        patch.object(agent, "ADMIN_ID", 999),
+        patch.object(agent.client.chat.completions, "create", create_mock),
+    ):
+        result = await agent.run_ponder_agent(
+            "change your persona",
+            chat_id=1,
+            requesting_user_id=1,
+        )
+
+    assert "denied" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_behavior_update_via_dict_tool_input(temp_db_path):
+    from bot.logic import GLOBAL_SETTINGS_CHAT_ID, get_behavior_settings
+
+    admin_id = 9001
+    first = _mock_llm_json_response(
+        {
+            "thought": "updating behavior",
+            "tool": "update_behavior_settings",
+            "tool_input": {
+                "reaction_chance": 0.2,
+                "media_reply_guidance": "Use saved stickers or gifs in most replies when appropriate.",
+            },
+        }
+    )
+    second = _mock_llm_json_response({"thought": "done", "answer": "Behavior settings updated."})
+    create_mock = AsyncMock(side_effect=[first, second])
+
+    with (
+        patch.object(agent, "ADMIN_ID", admin_id),
+        patch.object(agent.client.chat.completions, "create", create_mock),
+    ):
+        result = await agent.run_ponder_agent(
+            "react more and use more stickers",
+            chat_id=12345,
+            requesting_user_id=admin_id,
+            settings_chat_id=GLOBAL_SETTINGS_CHAT_ID,
+        )
+
+    assert result == "Behavior settings updated."
+    settings = await get_behavior_settings(GLOBAL_SETTINGS_CHAT_ID)
+    assert settings["reaction_chance"] == 0.2
+    assert "stickers" in settings["media_reply_guidance"]
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_get_behavior_settings(temp_db_path):
+    from bot.logic import GLOBAL_SETTINGS_CHAT_ID
+
+    first = _mock_llm_json_response(
+        {"thought": "reading settings", "tool": "get_behavior_settings", "tool_input": ""}
+    )
+    second = _mock_llm_json_response({"thought": "done", "answer": "Settings retrieved."})
+    create_mock = AsyncMock(side_effect=[first, second])
+
+    with patch.object(agent.client.chat.completions, "create", create_mock):
+        result = await agent.run_ponder_agent(
+            "show me the current behavior settings",
+            chat_id=12345,
+            settings_chat_id=GLOBAL_SETTINGS_CHAT_ID,
+        )
+
+    assert result == "Settings retrieved."
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_get_persona_prompt(temp_db_path):
+    first = _mock_llm_json_response(
+        {"thought": "reading persona", "tool": "get_persona_prompt", "tool_input": ""}
+    )
+    second = _mock_llm_json_response({"thought": "done", "answer": "Persona retrieved."})
+    create_mock = AsyncMock(side_effect=[first, second])
+
+    with patch.object(agent.client.chat.completions, "create", create_mock):
+        result = await agent.run_ponder_agent(
+            "show me the current persona",
+            chat_id=1,
+        )
+
+    assert result == "Persona retrieved."
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_reset_persona_prompt(temp_db_path):
+    admin_id = 424242
+    first = _mock_llm_json_response(
+        {"thought": "resetting persona", "tool": "reset_persona_prompt", "tool_input": ""}
+    )
+    second = _mock_llm_json_response({"thought": "done", "answer": "Persona reset."})
+    create_mock = AsyncMock(side_effect=[first, second])
+
+    with (
+        patch.object(agent, "ADMIN_ID", admin_id),
+        patch.object(agent, "generate_reaction_prompt", AsyncMock(return_value="reaction prompt")),
+        patch.object(agent.client.chat.completions, "create", create_mock),
+    ):
+        result = await agent.run_ponder_agent(
+            "reset your persona to default",
+            chat_id=1,
+            requesting_user_id=admin_id,
+        )
+
+    assert result == "Persona reset."
+    assert await agent.get_stored_persona_prompt() == agent.DEFAULT_PERSONA
