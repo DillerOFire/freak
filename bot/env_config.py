@@ -22,6 +22,8 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "LLM_MODEL",
         "LLM_PONDER_MODEL",
         "LLM_VISION_MODEL",
+        "LLM_PONDER_BASE_URL",
+        "LLM_VISION_BASE_URL",
         "LLM_REFERER",
         "LLM_TITLE",
         "TELEMETRY_DASHBOARD_ENABLED",
@@ -54,6 +56,8 @@ SECRET_ENV_KEYS: frozenset[str] = frozenset(
 RESTART_REQUIRED_KEYS: frozenset[str] = frozenset(
     {
         "TELEGRAM_BOT_TOKEN",
+        "LLM_PONDER_BASE_URL",
+        "LLM_VISION_BASE_URL",
         "ADMIN_ID",
         "TELEMETRY_DASHBOARD_HOST",
         "TELEMETRY_DASHBOARD_PORT",
@@ -287,32 +291,48 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.agent as agent
 
         agent.LLM_PONDER_MODEL = value
+    elif key == "LLM_PONDER_BASE_URL":
+        config.LLM_PONDER_BASE_URL = value
+        import bot.agent as agent
+
+        agent.client.base_url = value
     elif key == "LLM_VISION_MODEL":
         config.LLM_VISION_MODEL = value
         import bot.vision as vision
 
         vision.LLM_VISION_MODEL = value
+    elif key == "LLM_VISION_BASE_URL":
+        config.LLM_VISION_BASE_URL = value
+        import bot.vision as vision
+
+        vision.client.base_url = value
     elif key == "LLM_API_KEY":
         config.LLM_API_KEY = value
         import bot.llm as llm
         import bot.vision as vision
+        import bot.agent as agent
 
         llm.client.api_key = value
         vision.client.api_key = value
+        agent.client.api_key = value
     elif key == "LLM_REFERER":
         config.LLM_REFERER = value
         import bot.llm as llm
         import bot.vision as vision
+        import bot.agent as agent
 
         llm.client.default_headers["HTTP-Referer"] = value
         vision.client.default_headers["HTTP-Referer"] = value
+        agent.client.default_headers["HTTP-Referer"] = value
     elif key == "LLM_TITLE":
         config.LLM_TITLE = value
         import bot.llm as llm
         import bot.vision as vision
+        import bot.agent as agent
 
         llm.client.default_headers["X-Title"] = value
         vision.client.default_headers["X-Title"] = value
+        agent.client.default_headers["X-Title"] = value
     elif key == "ADMIN_ID":
         config.ADMIN_ID = int(value)
     elif key == "TELEMETRY_DASHBOARD_ENABLED":

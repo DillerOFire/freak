@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import aiohttp
 from ddgs import DDGS
 
-from bot.llm import client, DEFAULT_PERSONA, generate_reaction_prompt
+from bot.llm import DEFAULT_PERSONA, generate_reaction_prompt
 from bot.memory import (
     search_general_memories,
     search_user_memories,
@@ -21,7 +21,18 @@ from bot.logic import (
     get_behavior_settings,
     update_behavior_settings,
 )
-from config import LLM_PONDER_MODEL, ADMIN_ID
+from config import LLM_PONDER_MODEL, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_REFERER, LLM_TITLE, ADMIN_ID
+from openai import AsyncOpenAI
+
+client = AsyncOpenAI(
+    base_url=LLM_PONDER_BASE_URL,
+    api_key=LLM_API_KEY,
+    timeout=15.0,
+    default_headers={
+        "HTTP-Referer": LLM_REFERER,
+        "X-Title": LLM_TITLE,
+    },
+)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 _USER_AGENT = (

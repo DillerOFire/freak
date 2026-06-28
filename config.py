@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+LLM_PONDER_BASE_URL = os.getenv("LLM_PONDER_BASE_URL", LLM_BASE_URL)
+LLM_VISION_BASE_URL = os.getenv("LLM_VISION_BASE_URL", LLM_BASE_URL)
 
 
 def _default_env_file_path() -> Path:

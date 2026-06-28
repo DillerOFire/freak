@@ -1,10 +1,10 @@
 import base64
 import logging
 from openai import AsyncOpenAI
-from config import LLM_API_KEY, LLM_BASE_URL, LLM_REFERER, LLM_TITLE, LLM_VISION_MODEL
+from config import LLM_API_KEY, LLM_VISION_BASE_URL, LLM_REFERER, LLM_TITLE, LLM_VISION_MODEL
 
 client = AsyncOpenAI(
-    base_url=LLM_BASE_URL,
+    base_url=LLM_VISION_BASE_URL,
     api_key=LLM_API_KEY,
     timeout=15.0,
     default_headers={
