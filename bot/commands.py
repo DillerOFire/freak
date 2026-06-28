@@ -1,3 +1,4 @@
+import asyncio
 import os
 import logging
 import shlex
@@ -826,7 +827,7 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "youtube.com" in url or "youtu.be" in url:
         cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
 
-    info = download_audio_ytdlp(url, cookies_path)
+    info = await asyncio.to_thread(download_audio_ytdlp, url, cookies_path)
     if info:
         audio_path = info["audio_path"]
         title = info["title"]

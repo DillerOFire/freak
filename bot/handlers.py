@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections import deque
 from telegram import Update
@@ -240,7 +241,7 @@ async def get_message_media_description(
                     file = await sticker.get_file()
                     file_path = await download_file(file)
 
-                    frames = extract_frames_from_video(file_path)
+                    frames = await asyncio.to_thread(extract_frames_from_video, file_path)
                     if frames:
                         description = await analyze_frames(frames)
                         if not description.startswith("Error"):
@@ -294,7 +295,7 @@ async def get_message_media_description(
                 file = await animation.get_file()
                 file_path = await download_file(file)
 
-                frames = extract_frames_from_video(file_path)
+                frames = await asyncio.to_thread(extract_frames_from_video, file_path)
                 if frames:
                     description = await analyze_frames(frames)
                     if not description.startswith("Error"):
@@ -326,7 +327,7 @@ async def get_message_media_description(
             file = await video.get_file()
             file_path = await download_file(file)
 
-            frames = extract_frames_from_video(file_path)
+            frames = await asyncio.to_thread(extract_frames_from_video, file_path)
             if frames:
                 description = await analyze_frames(frames)
                 if not description.startswith("Error"):
@@ -353,7 +354,7 @@ async def get_message_media_description(
                 file = await doc.get_file()
                 file_path = await download_file(file)
 
-                frames = extract_frames_from_video(file_path)
+                frames = await asyncio.to_thread(extract_frames_from_video, file_path)
                 if frames:
                     description = await analyze_frames(frames)
                     if not description.startswith("Error"):
@@ -599,7 +600,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif "rutube.ru" in url:
                     cookies_path = os.path.join(COOKIES_DIR, "rutube.txt")
 
-                video_path = download_video_ytdlp(url, cookies_path)
+                video_path = await asyncio.to_thread(download_video_ytdlp, url, cookies_path)
                 if video_path:
                     try:
                         await context.bot.send_video(

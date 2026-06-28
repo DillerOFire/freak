@@ -6,6 +6,7 @@ from config import LLM_API_KEY, LLM_BASE_URL, LLM_REFERER, LLM_TITLE, LLM_VISION
 client = AsyncOpenAI(
     base_url=LLM_BASE_URL,
     api_key=LLM_API_KEY,
+    timeout=15.0,
     default_headers={
         "HTTP-Referer": LLM_REFERER,
         "X-Title": LLM_TITLE,

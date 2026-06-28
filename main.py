@@ -92,6 +92,7 @@ def main():
         )
         & (~filters.COMMAND),
         handle_message,
+        block=False,
     )
     application.add_handler(msg_handler)
 
@@ -122,7 +123,7 @@ def main():
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CallbackQueryHandler(settings_callback, pattern="^settings:"))
     application.add_handler(CallbackQueryHandler(bot_env_callback, pattern="^bot_env:"))
-    application.add_handler(CommandHandler("music", music_command))
+    application.add_handler(CommandHandler("music", music_command, block=False))
     application.add_handler(CommandHandler("stop_utils", stop_utils_command))
     application.add_handler(CommandHandler("start_utils", start_utils_command))
     application.add_handler(CommandHandler("add_daily_msg", add_daily_msg_command))

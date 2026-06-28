@@ -28,6 +28,7 @@ from bot.telemetry import record_llm_telemetry
 client = AsyncOpenAI(
     base_url=LLM_BASE_URL,
     api_key=LLM_API_KEY,
+    timeout=15.0,
     default_headers={
         "HTTP-Referer": LLM_REFERER,
         "X-Title": LLM_TITLE,
