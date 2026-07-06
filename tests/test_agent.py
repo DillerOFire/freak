@@ -138,6 +138,83 @@ async def test_fetch_web_page_truncates_long_content():
 
 
 @pytest.mark.asyncio
+async def test_fetch_web_page_uses_alternate_url_fallback_for_rbc():
+    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
+    url = "https://www.rbc.ru/politics/06/07/2026/6a4b82899a79477c5a8d47d5"
+    expected_amp = "https://amp.rbc.ru/rbcnews/politics/06/07/2026/6a4b82899a79477c5a8d47d5"
+
+    with (
+        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", return_value=""),
+        patch("bot.agent._fetch_web_page_direct", side_effect=["", "RBC AMP article text"]) as direct_mock,
+        patch("bot.agent._fetch_web_page_reader", return_value="Reader article text") as reader_mock,
+    ):
+        result = await agent.fetch_web_page(url)
+
+    assert result == "RBC AMP article text"
+    direct_mock.assert_any_call(expected_amp)
+    reader_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_uses_reader_fallback():
+    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    with (
+        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", return_value=""),
+        patch("bot.agent._fetch_web_page_direct", return_value=""),
+        patch("bot.agent._fetch_web_page_reader", return_value="Reader article text"),
+    ):
+        result = await agent.fetch_web_page("https://example.com/article")
+
+    assert result == "Reader article text"
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_uses_search_fallback_for_blocked_article():
+    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
+    url = "https://www.rbc.ru/politics/06/07/2026/6a4b82899a79477c5a8d47d5"
+
+    with (
+        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", side_effect=RuntimeError("blocked")),
+        patch("bot.agent._fetch_web_page_direct", side_effect=RuntimeError("401, message='Unauthorized'")),
+        patch("bot.agent._fetch_web_page_reader", return_value=""),
+        patch("bot.agent._search_for_fetch_fallback", return_value="RBC snippet about the article"),
+    ):
+        result = await agent.fetch_web_page(url)
+
+    assert result == "RBC snippet about the article"
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_direct_retries_empty_cookie_challenge():
+    empty_resp = AsyncMock()
+    empty_resp.content.read = AsyncMock(return_value=b"")
+    empty_resp.raise_for_status = MagicMock()
+    empty_resp.__aenter__ = AsyncMock(return_value=empty_resp)
+    empty_resp.__aexit__ = AsyncMock(return_value=None)
+
+    article_resp = AsyncMock()
+    article_resp.content.read = AsyncMock(return_value=b"<html><body><p>RBC article text</p></body></html>")
+    article_resp.raise_for_status = MagicMock()
+    article_resp.__aenter__ = AsyncMock(return_value=article_resp)
+    article_resp.__aexit__ = AsyncMock(return_value=None)
+
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(side_effect=[empty_resp, article_resp])
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("bot.agent.aiohttp.ClientSession", return_value=mock_session):
+        result = await agent._fetch_web_page_direct("https://www.rbc.ru/politics/example")
+
+    assert result == "RBC article text"
+    assert mock_session.get.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_recall_memories_combines_results(temp_db_path):
     chat_id = 42
     await update_user_thought(123, "alice", "Alice likes opera and champagne")

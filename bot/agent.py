@@ -173,13 +173,98 @@ def _html_to_text(body: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+_FETCH_HEADERS = {
+    "User-Agent": _USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+async def _read_response_text(resp: aiohttp.ClientResponse) -> str:
+    raw = await resp.content.read(1_048_576)
+    charset = getattr(resp, "charset", None)
+    return raw.decode(charset if isinstance(charset, str) else "utf-8", errors="replace")
+
+
 async def _fetch_web_page_direct(url: str) -> str:
-    headers = {"User-Agent": _USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
+    parsed = urlparse(url)
+    headers = dict(_FETCH_HEADERS)
+    headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
     async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
-        async with session.get(url) as resp:
+        last_error: Exception | None = None
+        for _ in range(2):
+            async with session.get(url, allow_redirects=True) as resp:
+                try:
+                    resp.raise_for_status()
+                except Exception as error:
+                    last_error = error
+                    break
+                body = await _read_response_text(resp)
+                text = _html_to_text(body)
+                if text:
+                    return text
+        if last_error:
+            raise last_error
+    return ""
+
+
+def _alternate_fetch_urls(url: str) -> list[str]:
+    parsed = urlparse(url)
+    candidates: list[str] = []
+    if parsed.hostname and (parsed.hostname == "rbc.ru" or parsed.hostname.endswith(".rbc.ru")):
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 5 and all(part.isdigit() for part in parts[1:4]):
+            section, day, month, year, article_id = parts[:5]
+            candidates.append(f"https://amp.rbc.ru/rbcnews/{section}/{day}/{month}/{year}/{article_id}")
+    return candidates
+
+
+async def _fetch_web_page_alternates(url: str) -> str:
+    for candidate in _alternate_fetch_urls(url):
+        block_reason = _validate_url_for_fetch(candidate)
+        if block_reason:
+            logging.debug("alternate fetch URL blocked for %s: %s", candidate, block_reason)
+            continue
+        text = await _fetch_web_page_direct(candidate)
+        if text:
+            return text
+    return ""
+
+
+async def _fetch_web_page_reader(url: str) -> str:
+    reader_url = f"https://r.jina.ai/{url}"
+    async with aiohttp.ClientSession(timeout=_TIMEOUT, headers={"User-Agent": _USER_AGENT}) as session:
+        async with session.get(reader_url) as resp:
             resp.raise_for_status()
-            raw = await resp.content.read(1_048_576)
-    return _html_to_text(raw.decode("utf-8", errors="replace"))
+            text = await resp.text()
+    text = text.strip()
+    if re.search(r"(?i)target url returned error\s+401|markdown content:\s*$", text):
+        return ""
+    return text
+
+
+def _search_for_fetch_fallback(url: str) -> str:
+    parsed = urlparse(url)
+    terms = [url]
+    if parsed.path:
+        terms.append(parsed.path.rsplit("/", 1)[-1])
+    results: list[str] = []
+    for term in terms:
+        if not term:
+            continue
+        for result in _run_web_search(term):
+            if result not in results:
+                results.append(result)
+        if results:
+            break
+    return "\n".join(results)
 
 
 async def fetch_web_page(url: str) -> str:
@@ -187,20 +272,24 @@ async def fetch_web_page(url: str) -> str:
     if block_reason:
         return f"Fetch failed: {block_reason}"
 
-    try:
-        text = await asyncio.to_thread(_ddgs_extract_page, url)
-        if text:
-            return text[:4000]
-    except Exception as error:
-        logging.debug("ddgs extract failed for %s: %s", url, error)
+    errors: list[str] = []
+    for label, fetcher in (
+        ("ddgs extract", lambda: asyncio.to_thread(_ddgs_extract_page, url)),
+        ("direct browser fetch", lambda: _fetch_web_page_direct(url)),
+        ("alternate URL fetch", lambda: _fetch_web_page_alternates(url)),
+        ("reader fetch", lambda: _fetch_web_page_reader(url)),
+        ("search fallback", lambda: asyncio.to_thread(_search_for_fetch_fallback, url)),
+    ):
+        try:
+            text = await fetcher()
+            if text:
+                return text[:4000]
+            errors.append(f"{label}: no readable text")
+        except Exception as error:
+            errors.append(f"{label}: {error}")
+            logging.debug("%s failed for %s: %s", label, url, error)
 
-    try:
-        text = await _fetch_web_page_direct(url)
-        if text:
-            return text[:4000]
-        return "Fetch failed: page had no readable text."
-    except Exception as error:
-        return f"Fetch failed: {error}"
+    return "Fetch failed: " + "; ".join(errors[-2:])
 
 
 async def recall_memories(query: str, chat_id: int) -> str:
