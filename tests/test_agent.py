@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -138,80 +139,165 @@ async def test_fetch_web_page_truncates_long_content():
 
 
 @pytest.mark.asyncio
-async def test_fetch_web_page_uses_alternate_url_fallback_for_rbc():
+async def test_fetch_web_page_reader_tried_before_direct():
+    """Reader proxy is the general-purpose extractor and runs before a raw direct fetch."""
     public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
-    url = "https://www.rbc.ru/politics/06/07/2026/6a4b82899a79477c5a8d47d5"
-    expected_amp = "https://amp.rbc.ru/rbcnews/politics/06/07/2026/6a4b82899a79477c5a8d47d5"
 
     with (
         patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
         patch("bot.agent._ddgs_extract_page", return_value=""),
-        patch("bot.agent._fetch_web_page_direct", side_effect=["", "RBC AMP article text"]) as direct_mock,
+        patch("bot.agent._fetch_web_page_firecrawl", return_value=""),
+        patch("bot.agent._fetch_web_page_direct", return_value="Direct article text") as direct_mock,
         patch("bot.agent._fetch_web_page_reader", return_value="Reader article text") as reader_mock,
-    ):
-        result = await agent.fetch_web_page(url)
-
-    assert result == "RBC AMP article text"
-    direct_mock.assert_any_call(expected_amp)
-    reader_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_fetch_web_page_uses_reader_fallback():
-    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
-
-    with (
-        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
-        patch("bot.agent._ddgs_extract_page", return_value=""),
-        patch("bot.agent._fetch_web_page_direct", return_value=""),
-        patch("bot.agent._fetch_web_page_reader", return_value="Reader article text"),
     ):
         result = await agent.fetch_web_page("https://example.com/article")
 
     assert result == "Reader article text"
+    reader_mock.assert_called_once()
+    direct_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_uses_firecrawl_when_ddgs_empty():
+    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    with (
+        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", return_value=""),
+        patch("bot.agent._fetch_web_page_firecrawl", return_value="Firecrawl markdown text") as firecrawl_mock,
+        patch("bot.agent._fetch_web_page_reader", return_value="Reader text") as reader_mock,
+    ):
+        result = await agent.fetch_web_page("https://example.com/article")
+
+    assert result == "Firecrawl markdown text"
+    firecrawl_mock.assert_called_once()
+    reader_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_skips_firecrawl_without_api_key():
+    """When no FIRECRAWL_API_KEY is configured the stage returns empty and the chain falls through."""
+    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    with (
+        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", return_value=""),
+        patch("bot.agent.FIRECRAWL_API_KEY", None),
+        patch("bot.agent._fetch_web_page_reader", return_value="Reader text") as reader_mock,
+    ):
+        result = await agent.fetch_web_page("https://example.com/article")
+
+    assert result == "Reader text"
+    reader_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_firecrawl_falls_through_on_error():
+    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    with (
+        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", return_value=""),
+        patch("bot.agent._fetch_web_page_firecrawl", side_effect=RuntimeError("402 Payment Required")),
+        patch("bot.agent._fetch_web_page_reader", return_value="Reader text"),
+    ):
+        result = await agent.fetch_web_page("https://example.com/article")
+
+    assert result == "Reader text"
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_uses_direct_when_reader_empty():
+    public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    with (
+        patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
+        patch("bot.agent._ddgs_extract_page", return_value=""),
+        patch("bot.agent._fetch_web_page_firecrawl", return_value=""),
+        patch("bot.agent._fetch_web_page_reader", return_value=""),
+        patch("bot.agent._fetch_web_page_direct", return_value="Direct article text"),
+    ):
+        result = await agent.fetch_web_page("https://example.com/article")
+
+    assert result == "Direct article text"
 
 
 @pytest.mark.asyncio
 async def test_fetch_web_page_uses_search_fallback_for_blocked_article():
     public_addr = [(2, 1, 6, "", ("93.184.216.34", 0))]
-    url = "https://www.rbc.ru/politics/06/07/2026/6a4b82899a79477c5a8d47d5"
+    url = "https://example.com/news/06/07/2026/blocked-article"
 
     with (
         patch("bot.agent.socket.getaddrinfo", return_value=public_addr),
         patch("bot.agent._ddgs_extract_page", side_effect=RuntimeError("blocked")),
-        patch("bot.agent._fetch_web_page_direct", side_effect=RuntimeError("401, message='Unauthorized'")),
+        patch("bot.agent._fetch_web_page_firecrawl", side_effect=RuntimeError("402 Payment Required")),
         patch("bot.agent._fetch_web_page_reader", return_value=""),
-        patch("bot.agent._search_for_fetch_fallback", return_value="RBC snippet about the article"),
+        patch("bot.agent._fetch_web_page_direct", side_effect=RuntimeError("401, message='Unauthorized'")),
+        patch("bot.agent._search_for_fetch_fallback", return_value="Snippet about the article"),
     ):
         result = await agent.fetch_web_page(url)
 
-    assert result == "RBC snippet about the article"
-
+    assert result == "Snippet about the article"
 
 @pytest.mark.asyncio
-async def test_fetch_web_page_direct_retries_empty_cookie_challenge():
+async def test_fetch_web_page_direct_single_attempt_no_retry():
+    """Direct fetch no longer retries on empty body; reader proxy handles bot-detection cases."""
     empty_resp = AsyncMock()
     empty_resp.content.read = AsyncMock(return_value=b"")
     empty_resp.raise_for_status = MagicMock()
     empty_resp.__aenter__ = AsyncMock(return_value=empty_resp)
     empty_resp.__aexit__ = AsyncMock(return_value=None)
 
-    article_resp = AsyncMock()
-    article_resp.content.read = AsyncMock(return_value=b"<html><body><p>RBC article text</p></body></html>")
-    article_resp.raise_for_status = MagicMock()
-    article_resp.__aenter__ = AsyncMock(return_value=article_resp)
-    article_resp.__aexit__ = AsyncMock(return_value=None)
-
     mock_session = MagicMock()
-    mock_session.get = MagicMock(side_effect=[empty_resp, article_resp])
+    mock_session.get = MagicMock(return_value=empty_resp)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
 
     with patch("bot.agent.aiohttp.ClientSession", return_value=mock_session):
-        result = await agent._fetch_web_page_direct("https://www.rbc.ru/politics/example")
+        result = await agent._fetch_web_page_direct("https://example.com/article")
 
-    assert result == "RBC article text"
-    assert mock_session.get.call_count == 2
+    assert result == ""
+    assert mock_session.get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_firecrawl_no_api_key_returns_empty():
+    with patch("bot.agent.FIRECRAWL_API_KEY", None):
+        result = await agent._fetch_web_page_firecrawl("https://example.com/article")
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_page_firecrawl_posts_scrape_and_returns_markdown():
+    scrape_resp = AsyncMock()
+    scrape_resp.raise_for_status = MagicMock()
+    scrape_resp.json = AsyncMock(return_value={"data": {"markdown": "# Title\n\nBody text"}})
+    scrape_resp.__aenter__ = AsyncMock(return_value=scrape_resp)
+    scrape_resp.__aexit__ = AsyncMock(return_value=None)
+
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=scrape_resp)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("bot.agent.FIRECRAWL_API_KEY", "fc-test-key"),
+        patch("bot.agent.FIRECRAWL_API_URL", "https://api.firecrawl.dev"),
+        patch("bot.agent.aiohttp.ClientSession", return_value=mock_session) as session_mock,
+    ):
+        result = await agent._fetch_web_page_firecrawl("https://example.com/article")
+
+    assert result == "# Title\n\nBody text"
+    mock_session.post.assert_called_once()
+    call_args = mock_session.post.call_args
+    assert call_args.args[0] == "https://api.firecrawl.dev/v1/scrape"
+    body = call_args.kwargs["json"]
+    assert body["url"] == "https://example.com/article"
+    assert body["formats"] == ["markdown"]
+    assert body["onlyMainContent"] is True
+    session_headers = session_mock.call_args.kwargs["headers"]
+    assert session_headers["Authorization"] == "Bearer fc-test-key"
+    assert session_headers["Content-Type"] == "application/json"
 
 
 @pytest.mark.asyncio
@@ -309,6 +395,33 @@ async def test_run_ponder_agent_invalid_tool_name():
 
     assert result == "safe result"
 
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_tool_timeout_reports_tool_name():
+    first = _mock_llm_json_response(
+        {"thought": "fetching", "tool": "web_search", "tool_input": "q"}
+    )
+    second = _mock_llm_json_response({"thought": "moving on", "answer": "done"})
+    create_mock = AsyncMock(side_effect=[first, second])
+
+    async def slow_tool(_input):
+        await asyncio.sleep(10)
+        return "never"
+
+    original = agent.PONDER_TOOLS["web_search"]
+    agent.PONDER_TOOLS["web_search"] = {
+        "description": original["description"],
+        "function": slow_tool,
+        "context": "none",
+        "timeout": 0.05,
+    }
+    try:
+        with patch.object(agent.client.chat.completions, "create", create_mock):
+            result = await agent.run_ponder_agent("slow query", chat_id=1)
+    finally:
+        agent.PONDER_TOOLS["web_search"] = original
+
+    assert result == "done"
 
 
 @pytest.mark.asyncio

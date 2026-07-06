@@ -21,7 +21,7 @@ from bot.logic import (
     get_behavior_settings,
     update_behavior_settings,
 )
-from config import LLM_PONDER_MODEL, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE, ADMIN_ID
+from config import LLM_PONDER_MODEL, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE, ADMIN_ID, FIRECRAWL_API_KEY, FIRECRAWL_API_URL
 from openai import AsyncOpenAI
 
 client = AsyncOpenAI(
@@ -210,44 +210,10 @@ async def _fetch_web_page_direct(url: str) -> str:
     headers = dict(_FETCH_HEADERS)
     headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
     async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
-        last_error: Exception | None = None
-        for _ in range(2):
-            async with session.get(url, allow_redirects=True) as resp:
-                try:
-                    resp.raise_for_status()
-                except Exception as error:
-                    last_error = error
-                    break
-                body = await _read_response_text(resp)
-                text = _html_to_text(body)
-                if text:
-                    return text
-        if last_error:
-            raise last_error
-    return ""
-
-
-def _alternate_fetch_urls(url: str) -> list[str]:
-    parsed = urlparse(url)
-    candidates: list[str] = []
-    if parsed.hostname and (parsed.hostname == "rbc.ru" or parsed.hostname.endswith(".rbc.ru")):
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) >= 5 and all(part.isdigit() for part in parts[1:4]):
-            section, day, month, year, article_id = parts[:5]
-            candidates.append(f"https://amp.rbc.ru/rbcnews/{section}/{day}/{month}/{year}/{article_id}")
-    return candidates
-
-
-async def _fetch_web_page_alternates(url: str) -> str:
-    for candidate in _alternate_fetch_urls(url):
-        block_reason = _validate_url_for_fetch(candidate)
-        if block_reason:
-            logging.debug("alternate fetch URL blocked for %s: %s", candidate, block_reason)
-            continue
-        text = await _fetch_web_page_direct(candidate)
-        if text:
-            return text
-    return ""
+        async with session.get(url, allow_redirects=True) as resp:
+            resp.raise_for_status()
+            body = await _read_response_text(resp)
+            return _html_to_text(body)
 
 
 async def _fetch_web_page_reader(url: str) -> str:
@@ -259,6 +225,28 @@ async def _fetch_web_page_reader(url: str) -> str:
     text = text.strip()
     if re.search(r"(?i)target url returned error\s+401|markdown content:\s*$", text):
         return ""
+    return text
+
+async def _fetch_web_page_firecrawl(url: str) -> str:
+    """Fetch a page via the Firecrawl scrape API and return clean markdown."""
+    if not FIRECRAWL_API_KEY:
+        return ""
+    endpoint = f"{FIRECRAWL_API_URL.rstrip('/')}/v1/scrape"
+    headers = {
+        "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {"url": url, "formats": ["markdown"], "onlyMainContent": True}
+    async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
+        async with session.post(endpoint, json=payload) as resp:
+            resp.raise_for_status()
+            body = await resp.json()
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        return ""
+    text = str(data.get("markdown") or data.get("html") or "").strip()
+    if data.get("html") and not data.get("markdown"):
+        text = _html_to_text(text)
     return text
 
 
@@ -287,9 +275,9 @@ async def fetch_web_page(url: str) -> str:
     errors: list[str] = []
     for label, fetcher in (
         ("ddgs extract", lambda: asyncio.to_thread(_ddgs_extract_page, url)),
-        ("direct browser fetch", lambda: _fetch_web_page_direct(url)),
-        ("alternate URL fetch", lambda: _fetch_web_page_alternates(url)),
+        ("firecrawl fetch", lambda: _fetch_web_page_firecrawl(url)),
         ("reader fetch", lambda: _fetch_web_page_reader(url)),
+        ("direct browser fetch", lambda: _fetch_web_page_direct(url)),
         ("search fallback", lambda: asyncio.to_thread(_search_for_fetch_fallback, url)),
     ):
         try:
@@ -430,6 +418,7 @@ PONDER_TOOLS: dict[str, dict] = {
         "description": "Fetch and read a web page. Input: full URL (https only). Returns page text.",
         "function": fetch_web_page,
         "context": "none",
+        "timeout": 35.0,
     },
     "recall_memories": {
         "description": "Search bot's memory database for information about users or topics. Input: search query string.",
@@ -530,11 +519,12 @@ async def run_ponder_agent(
                 tool_entry = PONDER_TOOLS[tool_name]
                 tool_fn = tool_entry["function"]
                 tool_context = tool_entry.get("context", "none")
+                tool_timeout = tool_entry.get("timeout", 15.0)
                 effective_settings_chat_id = settings_chat_id if settings_chat_id is not None else chat_id
                 try:
                     if tool_context == "chat_id":
                         result = await asyncio.wait_for(
-                            tool_fn(tool_input, chat_id), timeout=15.0
+                            tool_fn(tool_input, chat_id), timeout=tool_timeout
                         )
                     elif tool_context == "full":
                         result = await asyncio.wait_for(
@@ -544,12 +534,14 @@ async def run_ponder_agent(
                                 settings_chat_id=effective_settings_chat_id,
                                 requesting_user_id=requesting_user_id,
                             ),
-                            timeout=15.0,
+                            timeout=tool_timeout,
                         )
                     else:
                         result = await asyncio.wait_for(
-                            tool_fn(tool_input), timeout=15.0
+                            tool_fn(tool_input), timeout=tool_timeout
                         )
+                except asyncio.TimeoutError:
+                    result = f"Tool error: {tool_name} timed out after {tool_timeout}s"
                 except Exception as error:
                     result = f"Tool error: {error}"
 

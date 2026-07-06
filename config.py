@@ -67,6 +67,11 @@ TELEMETRY_DASHBOARD_HOST = os.getenv("TELEMETRY_DASHBOARD_HOST", "127.0.0.1")
 TELEMETRY_DASHBOARD_PORT = int(os.getenv("TELEMETRY_DASHBOARD_PORT", "8765"))
 TELEMETRY_DASHBOARD_TOKEN = os.getenv("TELEMETRY_DASHBOARD_TOKEN")
 
+# Firecrawl (optional): dedicated page-to-markdown extractor used by the ponder agent's
+# fetch_web_page tool. When unset, the fetch chain skips the Firecrawl stage.
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip() or None
+FIRECRAWL_API_URL = os.getenv("FIRECRAWL_API_URL", "https://api.firecrawl.dev").strip() or "https://api.firecrawl.dev"
+
 COOKIES_DIR = os.getenv("COOKIES_DIR", os.path.join(os.path.dirname(__file__), "cookies"))
 if not os.path.exists(COOKIES_DIR):
     os.makedirs(COOKIES_DIR)
