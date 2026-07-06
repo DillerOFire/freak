@@ -31,6 +31,8 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "TELEMETRY_DASHBOARD_HOST",
         "TELEMETRY_DASHBOARD_PORT",
         "TELEMETRY_DASHBOARD_TOKEN",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
         "UV_EXECUTABLE",
     }
 )
@@ -51,6 +53,7 @@ SECRET_ENV_KEYS: frozenset[str] = frozenset(
         "TELEGRAM_BOT_TOKEN",
         "LLM_API_KEY",
         "TELEMETRY_DASHBOARD_TOKEN",
+        "FIRECRAWL_API_KEY",
     }
 )
 
@@ -352,6 +355,16 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         config.TELEMETRY_DASHBOARD_PORT = int(value)
     elif key == "TELEMETRY_DASHBOARD_TOKEN":
         config.TELEMETRY_DASHBOARD_TOKEN = value or None
+    elif key == "FIRECRAWL_API_KEY":
+        config.FIRECRAWL_API_KEY = value or None
+        import bot.agent as agent
+
+        agent.FIRECRAWL_API_KEY = value or None
+    elif key == "FIRECRAWL_API_URL":
+        config.FIRECRAWL_API_URL = value
+        import bot.agent as agent
+
+        agent.FIRECRAWL_API_URL = value
 
     return key in RESTART_REQUIRED_KEYS
 

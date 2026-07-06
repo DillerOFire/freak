@@ -128,3 +128,38 @@ def test_format_env_panel_lists_masked_values(env_file):
     assert str(env_file) in panel
     assert "LLM_MODEL=google/gemini" in panel
     assert "super" not in panel
+
+
+
+def test_set_env_value_accepts_firecrawl_keys(env_file):
+    env_file.write_text("", encoding="utf-8")
+
+    restart_required, message = env_config.set_env_value("FIRECRAWL_API_KEY", "fc-test-key")
+
+    assert restart_required is False
+    assert "Updated FIRECRAWL_API_KEY" in message
+    assert "FIRECRAWL_API_KEY=fc-test-key" in env_file.read_text(encoding="utf-8")
+
+
+def test_apply_env_to_runtime_updates_firecrawl(monkeypatch):
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "")
+    import config
+    import bot.agent as agent
+
+    config.FIRECRAWL_API_KEY = None
+    agent.FIRECRAWL_API_KEY = None
+
+    restart_required = env_config.apply_env_to_runtime("FIRECRAWL_API_KEY", "fc-new-key")
+
+    assert restart_required is False
+    assert config.FIRECRAWL_API_KEY == "fc-new-key"
+    assert agent.FIRECRAWL_API_KEY == "fc-new-key"
+
+
+def test_format_env_panel_masks_firecrawl_api_key(env_file):
+    env_file.write_text("FIRECRAWL_API_KEY=fc-supersecretkey\n", encoding="utf-8")
+
+    panel = env_config.format_env_panel()
+
+    assert "FIRECRAWL_API_KEY=" in panel
+    assert "supersecretkey" not in panel
