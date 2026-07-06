@@ -89,6 +89,34 @@ def test_apply_env_to_runtime_updates_llm_model(monkeypatch):
     assert llm.LLM_MODEL == "google/gemini-flash-2.5"
 
 
+def test_set_env_value_updates_prompt_cache_runtime(env_file, monkeypatch):
+    env_file.write_text("LLM_PROMPT_CACHE=true\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_PROMPT_CACHE", "true")
+    import config
+    import bot.llm as llm
+
+    config.LLM_PROMPT_CACHE = True
+    llm.LLM_PROMPT_CACHE = True
+
+    restart_required, message = env_config.set_env_value("LLM_PROMPT_CACHE", "false")
+
+    assert restart_required is False
+    assert "Updated LLM_PROMPT_CACHE" in message
+    assert "LLM_PROMPT_CACHE=false" in env_file.read_text(encoding="utf-8")
+    assert os.environ["LLM_PROMPT_CACHE"] == "false"
+    assert config.LLM_PROMPT_CACHE is False
+    assert llm.LLM_PROMPT_CACHE is False
+
+
+def test_format_env_panel_lists_prompt_cache(env_file):
+    env_file.write_text("LLM_PROMPT_CACHE=true\n", encoding="utf-8")
+
+    panel = env_config.format_env_panel()
+
+    assert "LLM_PROMPT_CACHE=true" in panel
+
+
+
 def test_format_env_panel_lists_masked_values(env_file):
     env_file.write_text(
         "LLM_API_KEY=supersecretvalue\nLLM_MODEL=google/gemini\n",

@@ -6,7 +6,7 @@ from typing import Any, Literal
 import html
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from xml.sax.saxutils import escape, quoteattr
-from config import ADMIN_ID, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_REFERER, LLM_TITLE
+from config import ADMIN_ID, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE
 from bot.messages import AvailableReactions
 from bot.memory import (
     update_user_thought,
@@ -34,6 +34,42 @@ client = AsyncOpenAI(
         "X-Title": LLM_TITLE,
     },
 )
+
+def _cacheable_text(text: str) -> str | list[dict[str, Any]]:
+    if not LLM_PROMPT_CACHE:
+        return text
+    return [
+        {
+            "type": "text",
+            "text": text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def _usage_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _usage_field(usage: object, *path: str) -> object:
+    current = usage
+    for key in path:
+        if current is None:
+            return None
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            current = getattr(current, key, None)
+    return current
+
+
+def _prompt_cached_tokens(usage: object) -> int | None:
+    return _usage_int(_usage_field(usage, "prompt_tokens_details", "cached_tokens"))
 
 class LLMToolCall(BaseModel):
     name: Literal[
@@ -596,7 +632,7 @@ async def generate_response(
         context_str = context_str + "\n" + extra_context
 
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": _cacheable_text(system_prompt)},
         {"role": "user", "content": context_str},
     ]
 
@@ -607,6 +643,7 @@ async def generate_response(
     error_message = None
     raw_response = None
     prompt_tokens = None
+    prompt_cached_tokens = None
     completion_tokens = None
     total_tokens = None
     tool_calls: list[dict] = []
@@ -653,9 +690,10 @@ async def generate_response(
         )
 
         usage = getattr(response, "usage", None)
-        prompt_tokens = getattr(usage, "prompt_tokens", None)
-        completion_tokens = getattr(usage, "completion_tokens", None)
-        total_tokens = getattr(usage, "total_tokens", None)
+        prompt_tokens = _usage_int(_usage_field(usage, "prompt_tokens"))
+        prompt_cached_tokens = _prompt_cached_tokens(usage)
+        completion_tokens = _usage_int(_usage_field(usage, "completion_tokens"))
+        total_tokens = _usage_int(_usage_field(usage, "total_tokens"))
 
         message = response.choices[0].message
         logging.info(f"LLM Response Content: {message}")
@@ -772,6 +810,7 @@ async def generate_response(
                     "error_message": error_message,
                     "latency_ms": latency_ms,
                     "prompt_tokens": prompt_tokens,
+                    "prompt_cached_tokens": prompt_cached_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": total_tokens,
                     "context_message_count": len(messages_context),
@@ -827,7 +866,7 @@ async def generate_reaction_prompt(persona_prompt: str) -> str:
     messages = [
         {
             "role": "system",
-            "content": (
+            "content": _cacheable_text(
                 "Generate a concise system prompt for a Telegram bot reaction picker. "
                 "It must preserve the supplied persona, instruct the picker to return "
                 "exactly one emoji and no explanation, and restrict choices to the "
@@ -882,8 +921,9 @@ async def get_reaction_prompt() -> str:
 
 
 async def generate_reaction(message_text: str) -> str | None:
+    reaction_prompt = await get_reaction_prompt()
     messages = [
-        {"role": "system", "content": await get_reaction_prompt()},
+        {"role": "system", "content": _cacheable_text(reaction_prompt)},
         {"role": "user", "content": message_text},
     ]
 

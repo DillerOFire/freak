@@ -46,6 +46,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-flash-2.5")
 LLM_PONDER_MODEL = os.getenv("LLM_PONDER_MODEL", "deepseek/deepseek-v4-flash")
+
+LLM_PROMPT_CACHE = os.getenv("LLM_PROMPT_CACHE", "true").lower() not in {"0", "false", "no"}
 REACTION_CHANCE = 0.05
 
 if not TELEGRAM_BOT_TOKEN:

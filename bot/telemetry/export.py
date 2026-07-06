@@ -28,6 +28,7 @@ def build_llm_telemetry_export(
                 "focus_message_id": event.get("focus_message_id"),
                 "latency_ms": event.get("latency_ms"),
                 "prompt_tokens": event.get("prompt_tokens"),
+                "prompt_cached_tokens": event.get("prompt_cached_tokens"),
                 "completion_tokens": event.get("completion_tokens"),
                 "total_tokens": event.get("total_tokens"),
                 "context_message_count": event.get("context_message_count", 0),

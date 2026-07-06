@@ -3,6 +3,19 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import json
 from bot import llm
 
+
+def _mock_chat_response(content: dict | str, *, usage: MagicMock | None = None) -> MagicMock:
+    mock_response = MagicMock()
+    mock_response.usage = usage
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = content if isinstance(content, str) else json.dumps(content)
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+    return mock_response
+
+
+
 @pytest.mark.asyncio
 async def test_get_system_prompt_default(temp_db_path):
     """Test that get_system_prompt uses DEFAULT_PERSONA and saves it if not configured."""
@@ -57,6 +70,108 @@ async def test_generate_reaction_prompt_appends_allowed_reactions():
     assert llm.ALLOWED_REACTIONS_TEXT in prompt
     assert "Hard constraint" in prompt
 
+
+
+
+def test_cacheable_text_respects_prompt_cache_toggle():
+    with patch.object(llm, "LLM_PROMPT_CACHE", True):
+        cached = llm._cacheable_text("stable system prompt")
+    assert isinstance(cached, list)
+    assert cached == [
+        {
+            "type": "text",
+            "text": "stable system prompt",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+    with patch.object(llm, "LLM_PROMPT_CACHE", False):
+        assert llm._cacheable_text("stable system prompt") == "stable system prompt"
+
+
+@pytest.mark.asyncio
+async def test_generate_response_prompt_cache_enabled_wraps_system_prompt_and_records_cached_tokens(temp_db_path):
+    usage = MagicMock()
+    usage.prompt_tokens = 100
+    usage.completion_tokens = 10
+    usage.total_tokens = 110
+    usage.prompt_cached_tokens = 64
+    usage.prompt_tokens_details = {"cached_tokens": 64}
+    mock_response = _mock_chat_response(
+        {
+            "tool_calls": [],
+            "reply_to_message_id": 1,
+            "messages": ["pong"],
+            "polls": [],
+        },
+        usage=usage,
+    )
+    async_create_mock = AsyncMock(return_value=mock_response)
+
+    with (
+        patch.object(llm, "LLM_PROMPT_CACHE", True),
+        patch.object(llm, "get_system_prompt", AsyncMock(return_value="stable system prompt")),
+        patch.object(llm, "get_behavior_settings", AsyncMock(return_value={})),
+        patch.object(llm.client.chat.completions, "create", async_create_mock),
+    ):
+        result = await llm.generate_response(
+            messages_context=[{"message_id": 1, "sender": "Alice", "user_id": 123, "text": "ping"}],
+            user_thoughts={},
+            general_memories=[],
+            chat_id=4141,
+            focus_message_id=1,
+        )
+
+    assert result is not None
+    assert result["messages"] == ["pong"]
+    request_messages = async_create_mock.call_args.kwargs["messages"]
+    system_content = request_messages[0]["content"]
+    assert system_content == [
+        {
+            "type": "text",
+            "text": "stable system prompt",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+    from bot.telemetry import fetch_llm_telemetry
+
+    events = await fetch_llm_telemetry(chat_id=4141)
+    assert len(events) == 1
+    assert events[0]["prompt_tokens"] == 100
+    assert events[0]["prompt_cached_tokens"] == 64
+
+
+@pytest.mark.asyncio
+async def test_generate_response_prompt_cache_disabled_sends_plain_system_prompt(temp_db_path):
+    mock_response = _mock_chat_response(
+        {
+            "tool_calls": [],
+            "reply_to_message_id": 1,
+            "messages": ["pong"],
+            "polls": [],
+        }
+    )
+    async_create_mock = AsyncMock(return_value=mock_response)
+
+    with (
+        patch.object(llm, "LLM_PROMPT_CACHE", False),
+        patch.object(llm, "get_system_prompt", AsyncMock(return_value="stable system prompt")),
+        patch.object(llm, "get_behavior_settings", AsyncMock(return_value={})),
+        patch.object(llm.client.chat.completions, "create", async_create_mock),
+    ):
+        result = await llm.generate_response(
+            messages_context=[{"message_id": 1, "sender": "Alice", "user_id": 123, "text": "ping"}],
+            user_thoughts={},
+            general_memories=[],
+            chat_id=4242,
+            focus_message_id=1,
+        )
+
+    assert result is not None
+    request_messages = async_create_mock.call_args.kwargs["messages"]
+    assert request_messages[0]["content"] == "stable system prompt"
+    assert "cache_control" not in json.dumps(request_messages, ensure_ascii=False)
 
 @pytest.mark.asyncio
 async def test_generate_response_success(temp_db_path):

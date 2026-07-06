@@ -105,6 +105,8 @@ def _summary_cards(summary: dict) -> str:
         ("No-reply rate", _rate(summary.get("no_reply_rate"))),
         ("Failure rate", _rate(summary.get("failure_rate"))),
         ("Avg context chars", _num(summary.get("avg_context_chars"))),
+        ("Avg prompt tokens", _num(summary.get("avg_prompt_tokens"))),
+        ("Avg cached prompt tokens", _num(summary.get("avg_prompt_cached_tokens"))),
         ("Avg retrieved memories", _num(summary.get("avg_retrieved_memory_count"))),
         ("Avg memory writes", _num(summary.get("avg_memory_write_count"))),
         ("Memory write success", _rate(summary.get("memory_write_success_rate"))),

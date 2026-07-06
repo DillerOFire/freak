@@ -54,6 +54,7 @@ async def init_telemetry_db() -> None:
                 error_message TEXT,
                 latency_ms INTEGER,
                 prompt_tokens INTEGER,
+                prompt_cached_tokens INTEGER,
                 completion_tokens INTEGER,
                 total_tokens INTEGER,
                 context_message_count INTEGER NOT NULL DEFAULT 0,
@@ -88,6 +89,11 @@ async def init_telemetry_db() -> None:
                 logging.info("Migrating DB: Adding response_media_json to llm_telemetry")
                 await db.execute(
                     "ALTER TABLE llm_telemetry ADD COLUMN response_media_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "prompt_cached_tokens" not in columns:
+                logging.info("Migrating DB: Adding prompt_cached_tokens to llm_telemetry")
+                await db.execute(
+                    "ALTER TABLE llm_telemetry ADD COLUMN prompt_cached_tokens INTEGER"
                 )
 
         await db.execute(
@@ -138,7 +144,7 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
             INSERT INTO llm_telemetry (
                 chat_id, source, model, focus_message_id, status,
                 error_type, error_message, latency_ms,
-                prompt_tokens, completion_tokens, total_tokens,
+                prompt_tokens, prompt_cached_tokens, completion_tokens, total_tokens,
                 context_message_count, context_chars, system_prompt_chars,
                 user_thought_count, retrieved_memory_count, memory_query,
                 trigger_messages_json, used_user_thoughts_json,
@@ -147,7 +153,7 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 response_message_count, response_chars, reply_to_message_id,
                 response_messages_json, system_prompt, context_prompt, raw_response,
                 response_media_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(event["chat_id"]),
@@ -159,6 +165,7 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 _opt("error_message"),
                 _opt("latency_ms"),
                 _opt("prompt_tokens"),
+                _opt("prompt_cached_tokens"),
                 _opt("completion_tokens"),
                 _opt("total_tokens"),
                 _count("context_message_count"),

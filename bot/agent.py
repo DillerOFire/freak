@@ -21,7 +21,7 @@ from bot.logic import (
     get_behavior_settings,
     update_behavior_settings,
 )
-from config import LLM_PONDER_MODEL, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_REFERER, LLM_TITLE, ADMIN_ID
+from config import LLM_PONDER_MODEL, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE, ADMIN_ID
 from openai import AsyncOpenAI
 
 client = AsyncOpenAI(
@@ -33,6 +33,18 @@ client = AsyncOpenAI(
         "X-Title": LLM_TITLE,
     },
 )
+
+def _cacheable_text(text: str) -> str | list[dict[str, Any]]:
+    if not LLM_PROMPT_CACHE:
+        return text
+    return [
+        {
+            "type": "text",
+            "text": text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
 
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 _USER_AGENT = (
@@ -461,8 +473,8 @@ async def run_ponder_agent(
     settings_chat_id: int | None = None,
 ) -> str:
     try:
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": PONDER_SYSTEM_PROMPT},
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": _cacheable_text(PONDER_SYSTEM_PROMPT)},
             {"role": "user", "content": query},
         ]
         last_thought: str | None = None

@@ -42,6 +42,10 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
         "response_message_count": 1,
         "response_chars": 8,
         "response_media": {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some image"},
+        "prompt_tokens": 42,
+        "prompt_cached_tokens": 24,
+        "completion_tokens": 7,
+        "total_tokens": 49,
     }
     await record_llm_telemetry(event)
 
@@ -56,6 +60,7 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
     assert row["memory_writes"][0]["status"] == "succeeded"
     assert row["response_messages"] == ["Hi there!"]
     assert row["response_media"] == {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some image"}
+    assert row["prompt_cached_tokens"] == 24
 
     chats = await get_telemetry_chats()
     assert chats == [111]
@@ -110,3 +115,25 @@ async def test_fetch_filters_and_event_detail(temp_db_path):
 
     missing = await fetch_llm_telemetry_event(99999)
     assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_record_llm_telemetry_defaults_missing_prompt_cached_tokens(temp_db_path):
+    await record_llm_telemetry(
+        {
+            "chat_id": 3,
+            "source": "message",
+            "status": "success",
+            "trigger_messages": [],
+            "used_user_thoughts": {},
+            "used_general_memories": [],
+            "tool_calls": [],
+            "memory_writes": [],
+            "response_messages": [],
+        }
+    )
+
+    fetched = await fetch_llm_telemetry(chat_id=3)
+    assert len(fetched) == 1
+    assert fetched[0]["prompt_cached_tokens"] is None
+

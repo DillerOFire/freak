@@ -50,6 +50,7 @@ def summarize_telemetry(events: list[dict]) -> dict:
             "memory_write_success_rate": None,
             "avg_response_message_count": None,
             "avg_prompt_tokens": None,
+            "avg_prompt_cached_tokens": None,
             "avg_completion_tokens": None,
             "latest_errors": [],
             "top_memory_write_topics": [],
@@ -114,6 +115,9 @@ def summarize_telemetry(events: list[dict]) -> dict:
     )
     avg_prompt_tokens = _safe_average(
         [event.get("prompt_tokens") for event in events]
+    )
+    avg_prompt_cached_tokens = _safe_average(
+        [event.get("prompt_cached_tokens") for event in events]
     )
     avg_completion_tokens = _safe_average(
         [event.get("completion_tokens") for event in events]
@@ -205,6 +209,7 @@ def summarize_telemetry(events: list[dict]) -> dict:
         "memory_write_success_rate": memory_write_success_rate,
         "avg_response_message_count": avg_response_message_count,
         "avg_prompt_tokens": avg_prompt_tokens,
+        "avg_prompt_cached_tokens": avg_prompt_cached_tokens,
         "avg_completion_tokens": avg_completion_tokens,
         "latest_errors": latest_errors,
         "top_memory_write_topics": top_memory_write_topics,

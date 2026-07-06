@@ -14,6 +14,7 @@ def _sample_event():
         "prompt_tokens": 100,
         "completion_tokens": 50,
         "total_tokens": 150,
+        "prompt_cached_tokens": 40,
         "context_message_count": 2,
         "context_chars": 600,
         "system_prompt_chars": 1000,
@@ -55,6 +56,8 @@ def test_render_dashboard_html_with_event():
     assert "Memorized" in html
     assert "photo_u1" in html
     assert "some photo description" in html
+    assert "Avg cached prompt tokens" in html
+    assert "40" in html
     # dynamic text is escaped
     assert "Hello &lt;bot&gt; &amp; friends" in html
 

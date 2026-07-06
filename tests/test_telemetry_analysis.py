@@ -21,6 +21,7 @@ def _success_event(eid, with_memory=True, response_count=1):
         "prompt_tokens": 100,
         "completion_tokens": 50,
         "total_tokens": 150,
+        "prompt_cached_tokens": 60,
         "tool_calls": [{"name": "add_general_memory", "arguments": {"topic": "Opera"}}],
         "memory_writes": (
             [
@@ -92,6 +93,7 @@ def test_summarize_telemetry_rates_and_memory():
     assert any(ex["id"] == 2 for ex in no_mem)
 
     assert summary["avg_prompt_tokens"] == 100  # ignores None
+    assert summary["avg_prompt_cached_tokens"] == 60
 
 
 def test_build_context_engineering_suggestions_json_contract():
@@ -129,4 +131,13 @@ def test_build_llm_telemetry_export():
     ev = export["events"][0]
     assert ev["trigger_messages"][0]["text"] == "message 1"
     assert ev["used_general_memories"] == []
+    assert ev["prompt_cached_tokens"] == 60
     assert ev["memory_writes"][0]["status"] == "succeeded"
+
+
+def test_build_llm_telemetry_export_includes_prompt_cache_summary():
+    events = [_success_event(1, with_memory=True)]
+    export = build_llm_telemetry_export(events, "persona text", {"limit": 100})
+
+    assert export["summary"]["avg_prompt_cached_tokens"] == 60
+    assert export["events"][0]["prompt_cached_tokens"] == 60

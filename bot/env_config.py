@@ -22,6 +22,7 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "LLM_MODEL",
         "LLM_PONDER_MODEL",
         "LLM_VISION_MODEL",
+        "LLM_PROMPT_CACHE",
         "LLM_PONDER_BASE_URL",
         "LLM_VISION_BASE_URL",
         "LLM_REFERER",
@@ -291,6 +292,14 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.agent as agent
 
         agent.LLM_PONDER_MODEL = value
+    elif key == "LLM_PROMPT_CACHE":
+        enabled = value.lower() not in {"0", "false", "no"}
+        config.LLM_PROMPT_CACHE = enabled
+        import bot.llm as llm
+        import bot.agent as agent
+
+        llm.LLM_PROMPT_CACHE = enabled
+        agent.LLM_PROMPT_CACHE = enabled
     elif key == "LLM_PONDER_BASE_URL":
         config.LLM_PONDER_BASE_URL = value
         import bot.agent as agent
