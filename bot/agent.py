@@ -47,6 +47,7 @@ def _cacheable_text(text: str) -> str | list[dict[str, Any]]:
 
 
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
+_FETCH_STAGE_TIMEOUT = aiohttp.ClientTimeout(total=8)
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -209,7 +210,7 @@ async def _fetch_web_page_direct(url: str) -> str:
     parsed = urlparse(url)
     headers = dict(_FETCH_HEADERS)
     headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
-    async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
+    async with aiohttp.ClientSession(timeout=_FETCH_STAGE_TIMEOUT, headers=headers) as session:
         async with session.get(url, allow_redirects=True) as resp:
             resp.raise_for_status()
             body = await _read_response_text(resp)
@@ -218,7 +219,7 @@ async def _fetch_web_page_direct(url: str) -> str:
 
 async def _fetch_web_page_reader(url: str) -> str:
     reader_url = f"https://r.jina.ai/{url}"
-    async with aiohttp.ClientSession(timeout=_TIMEOUT, headers={"User-Agent": _USER_AGENT}) as session:
+    async with aiohttp.ClientSession(timeout=_FETCH_STAGE_TIMEOUT, headers={"User-Agent": _USER_AGENT}) as session:
         async with session.get(reader_url) as resp:
             resp.raise_for_status()
             text = await resp.text()
@@ -237,7 +238,7 @@ async def _fetch_web_page_firecrawl(url: str) -> str:
         "Content-Type": "application/json",
     }
     payload = {"url": url, "formats": ["markdown"], "onlyMainContent": True}
-    async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
+    async with aiohttp.ClientSession(timeout=_FETCH_STAGE_TIMEOUT, headers=headers) as session:
         async with session.post(endpoint, json=payload) as resp:
             resp.raise_for_status()
             body = await resp.json()
@@ -418,7 +419,7 @@ PONDER_TOOLS: dict[str, dict] = {
         "description": "Fetch and read a web page. Input: full URL (https only). Returns page text.",
         "function": fetch_web_page,
         "context": "none",
-        "timeout": 35.0,
+        "timeout": 25.0,
     },
     "recall_memories": {
         "description": "Search bot's memory database for information about users or topics. Input: search query string.",
