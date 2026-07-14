@@ -34,9 +34,13 @@ async def test_web_search_returns_results():
         {"title": "Second Result", "body": "Second snippet text", "href": "https://example.com/2"},
     ]
 
-    with patch("bot.agent._run_web_search", return_value=[agent._format_search_hit(**row) for row in mock_rows]):
+    with (
+        patch("bot.agent._firecrawl_web_search", AsyncMock(return_value=[])),
+        patch("bot.agent._run_web_search", return_value=[agent._format_search_hit(**row) for row in mock_rows]),
+    ):
         result = await agent.web_search("test query")
 
+    assert result.startswith("Fallback search results (DDGS):")
     assert "First Result" in result
     assert "First snippet text" in result
     assert "https://example.com/1" in result
@@ -45,10 +49,55 @@ async def test_web_search_returns_results():
 
 @pytest.mark.asyncio
 async def test_web_search_no_results():
-    with patch("bot.agent._run_web_search", return_value=[]):
+    with (
+        patch("bot.agent._firecrawl_web_search", AsyncMock(return_value=[])),
+        patch("bot.agent._run_web_search", return_value=[]),
+    ):
         result = await agent.web_search("test query")
 
     assert result == "No search results found."
+
+
+@pytest.mark.asyncio
+async def test_web_search_prefers_firecrawl_results():
+    firecrawl_results = ["Reliable source\nhttps://example.com\nFull markdown context"]
+    with (
+        patch("bot.agent._firecrawl_web_search", AsyncMock(return_value=firecrawl_results)),
+        patch("bot.agent._run_web_search") as ddgs_mock,
+    ):
+        result = await agent.web_search("test query")
+
+    assert result.startswith("Firecrawl search results:")
+    assert "Full markdown context" in result
+    ddgs_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_firecrawl_web_search_posts_v2_request_and_formats_markdown():
+    response = AsyncMock()
+    response.raise_for_status = MagicMock()
+    response.json = AsyncMock(return_value={
+        "success": True,
+        "data": {"web": [{"title": "Result", "url": "https://example.com/a", "markdown": "Readable article text"}]},
+    })
+    response.__aenter__ = AsyncMock(return_value=response)
+    response.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.post = MagicMock(return_value=response)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("bot.agent.FIRECRAWL_API_KEY", "fc-test-key"),
+        patch("bot.agent.FIRECRAWL_API_URL", "https://api.firecrawl.dev"),
+        patch("bot.agent.aiohttp.ClientSession", return_value=session),
+    ):
+        results = await agent._firecrawl_web_search("research query")
+
+    session.post.assert_called_once_with(
+        "https://api.firecrawl.dev/v2/search", json={"query": "research query", "limit": 5}
+    )
+    assert results == ["Result\nhttps://example.com/a\nReadable article text"]
 
 
 @pytest.mark.asyncio

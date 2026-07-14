@@ -180,12 +180,59 @@ def _run_web_search(query: str) -> list[str]:
     return results or _ddgs_text_search(query)
 
 
+def _format_firecrawl_search_hit(row: dict[str, Any]) -> str:
+    title = str(row.get("title") or "").strip()
+    url = str(row.get("url") or "").strip()
+    markdown = str(row.get("markdown") or row.get("description") or "").strip()
+    if len(markdown) > 1_200:
+        markdown = markdown[:1_200].rstrip() + "..."
+
+    parts = [part for part in (title, url, markdown) if part]
+    return "\n".join(parts)
+
+
+async def _firecrawl_web_search(query: str) -> list[str]:
+    """Search through Firecrawl, returning result URLs plus readable page context."""
+    if not FIRECRAWL_API_KEY:
+        return []
+
+    endpoint = f"{FIRECRAWL_API_URL.rstrip('/')}/v2/search"
+    headers = {
+        "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {"query": query, "limit": 5}
+    async with aiohttp.ClientSession(timeout=_FETCH_STAGE_TIMEOUT, headers=headers) as session:
+        async with session.post(endpoint, json=payload) as response:
+            response.raise_for_status()
+            body = await response.json()
+
+    data = body.get("data") if isinstance(body, dict) else None
+    web_results = data.get("web") if isinstance(data, dict) else None
+    if not isinstance(web_results, list):
+        return []
+    return [
+        formatted
+        for row in web_results
+        if isinstance(row, dict)
+        if (formatted := _format_firecrawl_search_hit(row))
+    ]
+
+
 async def web_search(query: str) -> str:
+    """Use Firecrawl's search API by default, with DDGS as a resilient fallback."""
+    try:
+        firecrawl_results = await _firecrawl_web_search(query)
+        if firecrawl_results:
+            return "Firecrawl search results:\n\n" + "\n\n---\n\n".join(firecrawl_results)
+    except Exception as error:
+        logging.warning("Firecrawl search failed; using DDGS fallback: %s", error)
+
     try:
         results = await asyncio.to_thread(_run_web_search, query)
         if not results:
             return "No search results found."
-        return "\n".join(results)
+        return "Fallback search results (DDGS):\n" + "\n".join(results)
     except Exception as error:
         return f"Search failed: {error}"
 
