@@ -54,14 +54,24 @@ async def test_web_search_no_results():
 @pytest.mark.asyncio
 async def test_web_search_news_fallback():
     with patch("bot.agent._ddgs_text_search", return_value=[]) as text_mock, patch(
-        "bot.agent._ddgs_news_search",
-        return_value=["Headline: story body (https://example.com/news)"],
+        "bot.agent._ddgs_news_search", return_value=["Headline: story body (https://example.com/news)"]
     ) as news_mock:
         results = agent._run_web_search("major news yesterday")
 
-    text_mock.assert_called_once_with("major news yesterday")
     news_mock.assert_called_once_with("major news yesterday")
+    text_mock.assert_not_called()
     assert results == ["Headline: story body (https://example.com/news)"]
+
+
+def test_web_search_current_query_falls_back_to_text_when_news_is_empty():
+    with patch("bot.agent._ddgs_news_search", return_value=[]) as news_mock, patch(
+        "bot.agent._ddgs_text_search", return_value=["Web result"]
+    ) as text_mock:
+        results = agent._run_web_search("latest weather today")
+
+    news_mock.assert_called_once_with("latest weather today")
+    text_mock.assert_called_once_with("latest weather today")
+    assert results == ["Web result"]
 
 
 @pytest.mark.asyncio
@@ -237,7 +247,7 @@ async def test_fetch_web_page_uses_search_fallback_for_blocked_article():
     ):
         result = await agent.fetch_web_page(url)
 
-    assert result == "Snippet about the article"
+    assert result == "Search fallback (not full page): Snippet about the article"
 
 @pytest.mark.asyncio
 async def test_fetch_web_page_direct_single_attempt_no_retry():
@@ -340,6 +350,30 @@ async def test_run_ponder_agent_answer_on_first_step():
         result = await agent.run_ponder_agent("what is the answer", chat_id=1)
 
     assert result == "The answer is 42."
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_prefetches_linked_article_and_keeps_source():
+    url = "https://example.com/article"
+    mock_response = _mock_llm_json_response(
+        {"thought": "read the article", "answer": "The article says the launch is delayed."}
+    )
+
+    with (
+        patch("bot.agent.fetch_web_page", AsyncMock(return_value="Full article body with details.")) as fetch_mock,
+        patch.object(agent.client.chat.completions, "create", AsyncMock(return_value=mock_response)) as create_mock,
+    ):
+        result = await agent.run_ponder_agent(
+            f"Read this article and explain it: {url}",
+            chat_id=1,
+            conversation_context="Alice (id=7): [FOCUS] What does it say?",
+        )
+
+    fetch_mock.assert_awaited_once_with(url)
+    request = create_mock.call_args.kwargs["messages"][1]["content"]
+    assert "Full article body with details." in request
+    assert "What does it say?" in request
+    assert f'Sources consulted: {url}' in result
 
 
 @pytest.mark.asyncio

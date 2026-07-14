@@ -426,3 +426,29 @@ def test_derive_ponder_query_truncates_long_text():
 
 def test_derive_ponder_query_falls_back_to_memory_query():
     assert handlers._derive_ponder_query("", "Who invented the telephone?") == "Who invented the telephone?"
+
+
+def test_ponder_query_preserves_link_from_focused_message_when_llm_omits_it():
+    url = "https://lenta.ru/articles/2026/07/14/kawaii-svo/"
+    query = handlers._enrich_ponder_query_with_sources(
+        "Summarize the linked article", f"Can you read this? {url}"
+    )
+
+    assert "Summarize the linked article" in query
+    assert url in query
+    assert "read directly" in query
+
+
+def test_ponder_context_marks_focus_and_bounds_message_text():
+    context = handlers._build_ponder_conversation_context(
+        [
+            {"message_id": 1, "sender": "Alice", "text": "Earlier question"},
+            {"message_id": 2, "sender": "Bob", "text": "x" * 40},
+        ],
+        2,
+        max_chars_per_message=20,
+    )
+
+    assert "Alice (id=1): Earlier question" in context
+    assert "[FOCUS]Bob (id=2)" in context
+    assert "x" * 21 not in context

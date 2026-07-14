@@ -75,6 +75,43 @@ def _derive_ponder_query(user_text: str, memory_query: str | None = None) -> str
     return source[:500]
 
 
+def _urls_in_text(text: str | None) -> list[str]:
+    urls: list[str] = []
+    for raw_url in re.findall(r"https?://[^\s<>\]\[\"']+", text or "", flags=re.IGNORECASE):
+        url = raw_url.rstrip(".,;:!?)」】'")
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _enrich_ponder_query_with_sources(
+    ponder_query: str, focused_text: str, reply_to_text: str | None = None,
+) -> str:
+    """Never lose a linked article when the RP model rewrites a ponder request."""
+    query = (ponder_query or focused_text).strip()
+    existing = set(_urls_in_text(query))
+    missing = [url for url in _urls_in_text(f"{focused_text}\n{reply_to_text or ''}") if url not in existing]
+    if missing:
+        query = f"{query}\n\nPrimary source URLs to read directly: {' '.join(missing)}"
+    return query[:2000]
+
+
+def _build_ponder_conversation_context(
+    history: list[dict], focus_message_id: int, *, max_messages: int = 8, max_chars_per_message: int = 1000,
+) -> str:
+    """Pass compact, labelled working memory to the research agent."""
+    entries: list[str] = []
+    for message in history[-max_messages:]:
+        text = str(message.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > max_chars_per_message:
+            text = text[:max_chars_per_message] + "…"
+        marker = " [FOCUS]" if message.get("message_id") == focus_message_id else ""
+        entries.append(f"{marker}{message.get('sender', 'Unknown')} (id={message.get('message_id')}): {text}")
+    return "\n".join(entries)
+
+
 async def _complete_ponder_followup(
     *,
     ponder_query: str,
@@ -95,6 +132,7 @@ async def _complete_ponder_followup(
         chat_id,
         requesting_user_id=requesting_user_id,
         settings_chat_id=settings_chat_id,
+        conversation_context=_build_ponder_conversation_context(current_history, message_id),
     )
 
     extra_context = (
@@ -704,13 +742,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if ponder_calls:
                 await _send_llm_response(response, chat_id, bot_username, context)
-                ponder_query = ponder_calls[0]["arguments"].get("query", "")
+                ponder_query = _enrich_ponder_query_with_sources(
+                    ponder_calls[0]["arguments"].get("query", ""), text, reply_to_text,
+                )
             elif _llm_promised_research_without_ponder(response):
                 logging.warning(
                     "LLM promised research without ponder tool_call; running fallback ponder"
                 )
                 await _send_llm_response(response, chat_id, bot_username, context)
-                ponder_query = _derive_ponder_query(text, memory_query)
+                ponder_query = _enrich_ponder_query_with_sources(
+                    _derive_ponder_query(text, memory_query), text, reply_to_text,
+                )
             else:
                 await _send_llm_response(response, chat_id, bot_username, context)
 
