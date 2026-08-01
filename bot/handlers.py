@@ -21,6 +21,8 @@ from bot.media_utils import (
     download_file,
     extract_frames_from_video,
     download_video_ytdlp,
+    notify_admin_cookie_failure,
+    service_name_from_cookies_path,
 )
 from bot.vision import analyze_image, analyze_frames
 from config import COOKIES_DIR, ADMIN_ID
@@ -726,20 +728,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif "rutube.ru" in url:
                     cookies_path = os.path.join(COOKIES_DIR, "rutube.txt")
 
-                video_path = await asyncio.to_thread(download_video_ytdlp, url, cookies_path)
-                if video_path:
+                dl = await asyncio.to_thread(download_video_ytdlp, url, cookies_path)
+                if dl.cookie_issue:
+                    await notify_admin_cookie_failure(
+                        context.bot,
+                        url=url,
+                        result=dl,
+                        service=service_name_from_cookies_path(cookies_path),
+                    )
+                if dl.path:
                     try:
                         await context.bot.send_video(
                             chat_id=chat_id,
-                            video=open(video_path, "rb"),
+                            video=open(dl.path, "rb"),
                             reply_to_message_id=update.message.message_id,
                         )
-                        os.remove(video_path)
+                        os.remove(dl.path)
                         return  # Stop processing if we handled a video download
                     except Exception as e:
                         logging.error(f"Failed to send video: {e}")
-                        if os.path.exists(video_path):
-                            os.remove(video_path)
+                        if os.path.exists(dl.path):
+                            os.remove(dl.path)
 
     if media_description:
         text = f"{media_description}\n{text}".strip()

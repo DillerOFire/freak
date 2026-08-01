@@ -1,6 +1,7 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 from bot import media_utils
+from bot.media_utils import YtDlpResult
 
 
 @pytest.fixture
@@ -13,6 +14,13 @@ def mock_ytdlp():
 def mock_cv2():
     with patch("cv2.VideoCapture") as mock_cap, patch("cv2.imencode") as mock_imencode:
         yield mock_cap, mock_imencode
+
+
+@pytest.fixture(autouse=True)
+def clear_cookie_notify_cooldown():
+    media_utils._last_cookie_notify_at.clear()
+    yield
+    media_utils._last_cookie_notify_at.clear()
 
 
 def test_download_video_ytdlp_success(mock_ytdlp):
@@ -33,7 +41,8 @@ def test_download_video_ytdlp_success(mock_ytdlp):
 
         result = media_utils.download_video_ytdlp("https://example.com/video")
 
-        assert result == "/tmp/test_uuid.mp4"
+        assert result.ok
+        assert result.path == "/tmp/test_uuid.mp4"
         instance.download.assert_called_once_with(["https://example.com/video"])
 
         # Verify options
@@ -49,7 +58,41 @@ def test_download_video_ytdlp_failure(mock_ytdlp):
     instance.download.side_effect = Exception("Download failed")
 
     result = media_utils.download_video_ytdlp("https://example.com/video")
-    assert result is None
+    assert not result.ok
+    assert result.path is None
+    assert "Download failed" in (result.error or "")
+    assert result.cookie_issue is False
+
+
+def test_download_video_ytdlp_cookie_403(mock_ytdlp, tmp_path):
+    """403 Forbidden is treated as a cookie/auth issue when cookies were expected."""
+    instance = mock_ytdlp.return_value.__enter__.return_value
+    instance.download.side_effect = Exception(
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+    )
+    cookies = tmp_path / "youtube.txt"
+    cookies.write_text("# Netscape\n", encoding="utf-8")
+
+    result = media_utils.download_video_ytdlp(
+        "https://youtube.com/watch?v=abc", str(cookies)
+    )
+    assert not result.ok
+    assert result.cookie_issue is True
+    assert result.cookies_present is True
+
+
+def test_download_video_ytdlp_missing_cookies_is_cookie_issue(mock_ytdlp, tmp_path):
+    """Missing expected cookies file is a cookie issue on failure."""
+    instance = mock_ytdlp.return_value.__enter__.return_value
+    instance.download.side_effect = Exception("network boom")
+    missing = str(tmp_path / "youtube.txt")
+
+    result = media_utils.download_video_ytdlp(
+        "https://youtube.com/watch?v=abc", missing
+    )
+    assert not result.ok
+    assert result.cookie_issue is True
+    assert result.cookies_present is False
 
 
 def test_download_audio_ytdlp_success(mock_ytdlp):
@@ -81,10 +124,11 @@ def test_download_audio_ytdlp_success(mock_ytdlp):
 
         result = media_utils.download_audio_ytdlp("https://example.com/audio")
 
-        assert result is not None
-        assert result["title"] == "Test Song"
-        assert result["audio_path"].endswith(".mp3")
-        assert result["thumbnail_path"].endswith(".jpg")
+        assert result.ok
+        assert result.info is not None
+        assert result.info["title"] == "Test Song"
+        assert result.info["audio_path"].endswith(".mp3")
+        assert result.info["thumbnail_path"].endswith(".jpg")
 
 
 def test_extract_frames_from_video(mock_cv2):
@@ -110,3 +154,94 @@ def test_extract_frames_from_video(mock_cv2):
     assert len(frames) == 5
     assert all(f == b"encoded_image" for f in frames)
     mock_cap.release.assert_called_once()
+
+
+def test_detect_cookie_issue_markers():
+    assert media_utils._detect_cookie_issue(
+        "ERROR: Sign in to confirm your age", None, False
+    )
+    assert media_utils._detect_cookie_issue(
+        "HTTP Error 403: Forbidden", "/data/cookies/youtube.txt", True
+    )
+    assert not media_utils._detect_cookie_issue(
+        "Unsupported URL", None, False
+    )
+
+
+def test_cookie_refresh_instructions_include_service_links_and_tools():
+    text = media_utils.cookie_refresh_instructions("youtube")
+    assert "https://www.youtube.com" in text
+    assert "Get cookies.txt LOCALLY" in text
+    assert "chromewebstore.google.com" in text
+    assert "addons.mozilla.org" in text
+    assert "/update_cookies youtube" in text
+    assert "yt-dlp/wiki/FAQ" in text
+
+
+def test_format_cookie_failure_admin_message_is_actionable():
+    result = YtDlpResult(
+        error="HTTP Error 403: Forbidden",
+        cookie_issue=True,
+        cookies_path="/data/cookies/youtube.txt",
+        cookies_present=True,
+    )
+    text = media_utils.format_cookie_failure_admin_message(
+        url="https://www.youtube.com/watch?v=RqPUrRdCgRU",
+        result=result,
+        service="youtube",
+    )
+    assert "Cookie / auth failure — YouTube" in text
+    assert "RqPUrRdCgRU" in text
+    assert "invalid/expired" in text
+    assert "https://www.youtube.com" in text
+    assert "https://accounts.google.com" in text
+    assert "/update_cookies youtube" in text
+    assert len(text) <= 4000
+
+
+@pytest.mark.asyncio
+async def test_notify_admin_cookie_failure_sends_and_rate_limits():
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    result = YtDlpResult(
+        error="HTTP Error 403: Forbidden",
+        cookie_issue=True,
+        cookies_path="/data/cookies/youtube.txt",
+        cookies_present=True,
+    )
+
+    with patch.object(media_utils, "ADMIN_ID", 42):
+        sent = await media_utils.notify_admin_cookie_failure(
+            bot, url="https://youtu.be/x", result=result, service="youtube"
+        )
+        assert sent is True
+        bot.send_message.assert_called_once()
+        kwargs = bot.send_message.call_args.kwargs
+        text = kwargs["text"]
+        assert kwargs["chat_id"] == 42
+        assert kwargs.get("disable_web_page_preview") is True
+        assert "YouTube" in text
+        assert "https://www.youtube.com" in text
+        assert "Get cookies.txt LOCALLY" in text
+        assert "/update_cookies youtube" in text
+
+        # Second notify within cooldown is skipped
+        sent2 = await media_utils.notify_admin_cookie_failure(
+            bot, url="https://youtu.be/y", result=result, service="youtube"
+        )
+        assert sent2 is False
+        assert bot.send_message.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_notify_admin_skips_non_cookie_failures():
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    result = YtDlpResult(error="file too large", cookie_issue=False)
+
+    with patch.object(media_utils, "ADMIN_ID", 42):
+        sent = await media_utils.notify_admin_cookie_failure(
+            bot, url="https://youtu.be/x", result=result
+        )
+    assert sent is False
+    bot.send_message.assert_not_called()
