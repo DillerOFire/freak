@@ -544,6 +544,57 @@ async def test_generate_response_unknown_media_id_is_ignored(temp_db_path):
         assert events[0]["status"] == "no_reply"
 
 
+def test_sanitize_response_messages_allows_only_one_saved_media():
+    options = [
+        {"media_unique_id": "sticker_1", "media_type": "sticker", "description": "laugh"},
+        {"media_unique_id": "sticker_2", "media_type": "sticker", "description": "shrug"},
+    ]
+
+    messages, selected = llm._sanitize_response_messages(
+        [
+            {"saved_media_id": "sticker_1"},
+            "fair enough",
+            {"saved_media_id": "sticker_2"},
+        ],
+        options,
+    )
+
+    assert [
+        item.model_dump() if isinstance(item, llm.LLMSavedMediaMessage) else item
+        for item in messages
+    ] == [{"saved_media_id": "sticker_1"}, "fair enough"]
+    assert selected["media_unique_id"] == "sticker_1"
+
+
+def test_sanitize_response_messages_uses_contextual_media_limit():
+    options = [
+        {"media_unique_id": "sticker_1", "media_type": "sticker", "description": "laugh"},
+        {"media_unique_id": "sticker_2", "media_type": "sticker", "description": "shrug"},
+    ]
+    messages, _ = llm._sanitize_response_messages(
+        [{"saved_media_id": "sticker_1"}, {"saved_media_id": "sticker_2"}],
+        options,
+        max_saved_media=2,
+    )
+    assert len(messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_set_sticker_favorite_tool_updates_saved_sticker(temp_db_path):
+    from bot import memory
+
+    await memory.save_reusable_media(777, "sticker_fav", "file_1", "sticker", "perfect sigh")
+    result = await llm._apply_tool_call(
+        "set_sticker_favorite",
+        {"media_unique_id": "sticker_fav", "favorite": True},
+        777,
+    )
+
+    assert result["status"] == "succeeded"
+    sticker = await memory.get_saved_media_by_unique_id(777, "sticker_fav")
+    assert sticker["is_favorite"] == 1
+
+
 @pytest.mark.asyncio
 async def test_generate_response_memory_mutation_tools(temp_db_path):
     from bot import memory

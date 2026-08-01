@@ -273,6 +273,44 @@ async def test_handle_message_sends_sticker_then_text(temp_db_path, mock_update_
             text="perfect"
         )
 
+        history_entry = handlers.chat_history[12345][-2]
+        assert history_entry["media_unique_id"] == "sticker_u1"
+        assert history_entry["is_saved_media_reply"] is True
+
+
+def test_saved_media_policy_uses_spacing_in_text_chat_but_allows_sticker_exchange():
+    history = [
+        {"message_id": 1, "is_saved_media_reply": True},
+        {"message_id": 2},
+    ]
+    options = [{"media_unique_id": "another_sticker"}]
+
+    assert handlers._without_recent_saved_media(options, history) == []
+
+    history.extend({"message_id": message_id} for message_id in (3, 4))
+    assert handlers._without_recent_saved_media(options, history) == options
+
+    sticker_reply = [
+        {"message_id": 1, "is_saved_media_reply": True, "text": "[Bot sent saved sticker: laugh]"},
+        {"message_id": 2, "text": "[User sent a sticker: dramatic stare]"},
+    ]
+    policy = handlers._derive_saved_media_policy(sticker_reply)
+    assert policy["enabled"] is True
+    assert policy["mode"] == "sticker_exchange"
+    assert policy["max_items"] == 1
+
+
+def test_saved_media_policy_allows_two_items_only_in_sustained_sticker_exchange():
+    history = [
+        {"message_id": 1, "text": "[User sent a sticker: wave]"},
+        {"message_id": 2, "text": "[Bot sent saved sticker: grin]", "is_saved_media_reply": True},
+        {"message_id": 3, "text": "[User sent a sticker: laugh]"},
+    ]
+
+    policy = handlers._derive_saved_media_policy(history)
+    assert policy["stickers_only"] is True
+    assert policy["max_items"] == 2
+
 
 @pytest.mark.asyncio
 async def test_get_message_media_description_saves_photo_metadata(temp_db_path):

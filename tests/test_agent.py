@@ -5,13 +5,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from bot import agent
-from bot.memory import add_general_memory, update_user_thought
+from bot.memory import (
+    add_general_memory,
+    get_general_memories,
+    get_user_thought,
+    save_media_description,
+    search_media_descriptions,
+    update_user_thought,
+)
 
 
 def _mock_aiohttp_response(body: str, *, as_bytes: bool = False):
     mock_resp = AsyncMock()
     if as_bytes:
         mock_resp.content.read = AsyncMock(return_value=body.encode("utf-8"))
+        mock_resp.text = AsyncMock(return_value="")
         mock_resp.raise_for_status = MagicMock()
     else:
         mock_resp.text = AsyncMock(return_value=body)
@@ -97,19 +105,48 @@ async def test_firecrawl_web_search_posts_v2_request_and_formats_markdown():
     session.post.assert_called_once_with(
         "https://api.firecrawl.dev/v2/search", json={"query": "research query", "limit": 5}
     )
-    assert results == ["Result\nhttps://example.com/a\nReadable article text"]
+    assert results == [
+        "Title: Result\nURL: https://example.com/a\nSnippet: Readable article text"
+    ]
 
 
 @pytest.mark.asyncio
-async def test_web_search_news_fallback():
-    with patch("bot.agent._ddgs_text_search", return_value=[]) as text_mock, patch(
+async def test_web_search_current_query_merges_news_and_general_results():
+    with patch("bot.agent._ddgs_text_search", return_value=["Official source"]) as text_mock, patch(
         "bot.agent._ddgs_news_search", return_value=["Headline: story body (https://example.com/news)"]
     ) as news_mock:
         results = agent._run_web_search("major news yesterday")
 
     news_mock.assert_called_once_with("major news yesterday")
-    text_mock.assert_not_called()
-    assert results == ["Headline: story body (https://example.com/news)"]
+    text_mock.assert_called_once_with("major news yesterday")
+    assert results == ["Headline: story body (https://example.com/news)", "Official source"]
+
+
+def test_format_search_hit_preserves_news_provenance():
+    result = agent._format_search_hit(
+        "Fresh story",
+        "Just happened",
+        "https://example.com/news",
+        source="Example Wire",
+        published="2026-08-01T01:02:03+00:00",
+    )
+
+    assert "Title: Fresh story" in result
+    assert "URL: https://example.com/news" in result
+    assert "Source: Example Wire" in result
+    assert "Published: 2026-08-01T01:02:03+00:00" in result
+    assert "Snippet: Just happened" in result
+
+
+def test_distinct_source_count_counts_documents_but_not_fragments_twice():
+    assert agent._distinct_source_count(
+        [
+            "https://docs.python.org/3/whatsnew/3.14.html",
+            "https://docs.python.org/3/whatsnew/3.14.html#free-threading",
+            "https://peps.python.org/pep-0779/",
+            "https://astral.sh/blog/python-3.14",
+        ]
+    ) == 3
 
 
 def test_web_search_current_query_falls_back_to_text_when_news_is_empty():
@@ -121,6 +158,17 @@ def test_web_search_current_query_falls_back_to_text_when_news_is_empty():
     news_mock.assert_called_once_with("latest weather today")
     text_mock.assert_called_once_with("latest weather today")
     assert results == ["Web result"]
+
+
+def test_web_search_recognizes_russian_freshness_terms():
+    with patch("bot.agent._ddgs_news_search", return_value=["Свежая новость"]) as news_mock, patch(
+        "bot.agent._ddgs_text_search", return_value=["Официальный источник"]
+    ) as text_mock:
+        results = agent._run_web_search("последние новости сегодня")
+
+    news_mock.assert_called_once()
+    text_mock.assert_called_once()
+    assert results == ["Свежая новость", "Официальный источник"]
 
 
 @pytest.mark.asyncio
@@ -194,7 +242,7 @@ async def test_fetch_web_page_truncates_long_content():
     ):
         result = await agent.fetch_web_page("https://example.com/long")
 
-    assert len(result) <= 4000
+    assert len(result) <= agent._MAX_PAGE_CHARS
 
 
 @pytest.mark.asyncio
@@ -447,6 +495,189 @@ async def test_run_ponder_agent_tool_then_answer():
 
 
 @pytest.mark.asyncio
+async def test_run_ponder_agent_requires_fetch_after_search_before_answering():
+    url = "https://example.com/primary"
+    responses = [
+        _mock_llm_json_response(
+            {"thought": "find sources", "tool": "web_search", "tool_input": "research query"}
+        ),
+        _mock_llm_json_response(
+            {"thought": "the snippet looks enough", "answer": "Unverified snippet answer."}
+        ),
+        _mock_llm_json_response(
+            {"thought": "verify it", "tool": "fetch_web_page", "tool_input": url}
+        ),
+        _mock_llm_json_response(
+            {"thought": "verified", "answer": "The primary source confirms the claim."}
+        ),
+    ]
+    create_mock = AsyncMock(side_effect=responses)
+    search_mock = AsyncMock(
+        return_value=f"Search results are discovery leads.\n[1]\nTitle: Primary\nURL: {url}\nSnippet: Claim"
+    )
+    fetch_mock = AsyncMock(return_value="Full primary-source text")
+    original_search = agent.PONDER_TOOLS["web_search"]["function"]
+    original_fetch = agent.PONDER_TOOLS["fetch_web_page"]["function"]
+    agent.PONDER_TOOLS["web_search"]["function"] = search_mock
+    agent.PONDER_TOOLS["fetch_web_page"]["function"] = fetch_mock
+    try:
+        with patch.object(agent.client.chat.completions, "create", create_mock):
+            result = await agent.run_ponder_agent("research this claim", chat_id=1)
+    finally:
+        agent.PONDER_TOOLS["web_search"]["function"] = original_search
+        agent.PONDER_TOOLS["fetch_web_page"]["function"] = original_fetch
+
+    fetch_mock.assert_awaited_once_with(url)
+    assert "Unverified snippet answer" not in result
+    assert "The primary source confirms" in result
+    assert f"Sources consulted: {url}" in result
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_cross_checks_current_claim_with_two_sources():
+    first_url = "https://example.com/official"
+    second_url = "https://example.net/independent"
+    responses = [
+        _mock_llm_json_response(
+            {"thought": "search", "tool": "web_search", "tool_input": "latest release today"}
+        ),
+        _mock_llm_json_response(
+            {"thought": "read official", "tool": "fetch_web_page", "tool_input": first_url}
+        ),
+        _mock_llm_json_response(
+            {"thought": "one source", "answer": "The release happened."}
+        ),
+        _mock_llm_json_response(
+            {"thought": "cross-check", "tool": "fetch_web_page", "tool_input": second_url}
+        ),
+        _mock_llm_json_response(
+            {"thought": "corroborated", "answer": "Two sources confirm the release."}
+        ),
+    ]
+    search_mock = AsyncMock(
+        return_value=(
+            f"[1]\nURL: {first_url}\nSnippet: release\n\n"
+            f"[2]\nURL: {second_url}\nSnippet: confirmation"
+        )
+    )
+    fetch_mock = AsyncMock(side_effect=["Official announcement", "Independent report"])
+    original_search = agent.PONDER_TOOLS["web_search"]["function"]
+    original_fetch = agent.PONDER_TOOLS["fetch_web_page"]["function"]
+    agent.PONDER_TOOLS["web_search"]["function"] = search_mock
+    agent.PONDER_TOOLS["fetch_web_page"]["function"] = fetch_mock
+    try:
+        with patch.object(
+            agent.client.chat.completions, "create", AsyncMock(side_effect=responses)
+        ):
+            result = await agent.run_ponder_agent(
+                "What is the latest release today?", chat_id=1
+            )
+    finally:
+        agent.PONDER_TOOLS["web_search"]["function"] = original_search
+        agent.PONDER_TOOLS["fetch_web_page"]["function"] = original_fetch
+
+    assert fetch_mock.await_args_list[0].args == (first_url,)
+    assert fetch_mock.await_args_list[1].args == (second_url,)
+    assert "Two sources confirm" in result
+    assert first_url in result
+    assert second_url in result
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_uses_final_synthesis_call_after_last_tool_step():
+    url = "https://example.com/source"
+    responses = [
+        _mock_llm_json_response(
+            {"thought": "read source", "tool": "fetch_web_page", "tool_input": url}
+        ),
+        _mock_llm_json_response(
+            {"thought": "synthesize", "answer": "Verified final synthesis."}
+        ),
+    ]
+    fetch_mock = AsyncMock(return_value="Authoritative source body")
+    original_fetch = agent.PONDER_TOOLS["fetch_web_page"]["function"]
+    agent.PONDER_TOOLS["fetch_web_page"]["function"] = fetch_mock
+    try:
+        with patch.object(
+            agent.client.chat.completions, "create", AsyncMock(side_effect=responses)
+        ) as create_mock:
+            result = await agent.run_ponder_agent(
+                "verify a claim", chat_id=1, max_steps=1
+            )
+    finally:
+        agent.PONDER_TOOLS["fetch_web_page"]["function"] = original_fetch
+
+    assert create_mock.await_count == 2
+    assert "Verified final synthesis." in result
+    assert f"Sources consulted: {url}" in result
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_default_budget_allows_more_than_six_tool_steps():
+    tool_responses = [
+        _mock_llm_json_response(
+            {"thought": f"research step {index}", "tool": "web_search", "tool_input": f"q{index}"}
+        )
+        for index in range(7)
+    ]
+    final_response = _mock_llm_json_response(
+        {"thought": "enough evidence", "answer": "Completed deeper research."}
+    )
+    search_mock = AsyncMock(return_value="No search results found.")
+    original_tool = agent.PONDER_TOOLS["web_search"]["function"]
+    agent.PONDER_TOOLS["web_search"]["function"] = search_mock
+    try:
+        with (
+            patch.object(agent, "LLM_PONDER_MAX_STEPS", 10),
+            patch.object(
+                agent.client.chat.completions,
+                "create",
+                AsyncMock(side_effect=[*tool_responses, final_response]),
+            ) as create_mock,
+        ):
+            result = await agent.run_ponder_agent("research deeply", chat_id=1)
+    finally:
+        agent.PONDER_TOOLS["web_search"]["function"] = original_tool
+
+    assert create_mock.await_count == 8
+    assert search_mock.await_count == 7
+    assert result == "Completed deeper research."
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_does_not_refetch_same_page_fragment():
+    url = "https://docs.python.org/3/whatsnew/3.14.html"
+    responses = [
+        _mock_llm_json_response(
+            {"thought": "read page", "tool": "fetch_web_page", "tool_input": url}
+        ),
+        _mock_llm_json_response(
+            {
+                "thought": "read section",
+                "tool": "fetch_web_page",
+                "tool_input": url + "#free-threaded-python",
+            }
+        ),
+        _mock_llm_json_response(
+            {"thought": "done", "answer": "The page was read once."}
+        ),
+    ]
+    fetch_mock = AsyncMock(return_value="Full documentation page")
+    original_fetch = agent.PONDER_TOOLS["fetch_web_page"]["function"]
+    agent.PONDER_TOOLS["fetch_web_page"]["function"] = fetch_mock
+    try:
+        with patch.object(
+            agent.client.chat.completions, "create", AsyncMock(side_effect=responses)
+        ):
+            result = await agent.run_ponder_agent("inspect the documentation", chat_id=1)
+    finally:
+        agent.PONDER_TOOLS["fetch_web_page"]["function"] = original_fetch
+
+    fetch_mock.assert_awaited_once_with(url)
+    assert result.count(url) == 1
+
+
+@pytest.mark.asyncio
 async def test_run_ponder_agent_max_steps_exceeded():
     tool_response = _mock_llm_json_response(
         {"thought": "still looking", "tool": "web_search", "tool_input": "q"}
@@ -462,7 +693,7 @@ async def test_run_ponder_agent_max_steps_exceeded():
     finally:
         agent.PONDER_TOOLS["web_search"]["function"] = original_tool
 
-    assert "still looking" in result or "Could not complete research" in result
+    assert result == "Could not complete verified research in time."
 
 
 @pytest.mark.asyncio
@@ -683,3 +914,138 @@ async def test_run_ponder_agent_reset_persona_prompt(temp_db_path):
 
     assert result == "Persona reset."
     assert await agent.get_stored_persona_prompt() == agent.DEFAULT_PERSONA
+
+
+@pytest.mark.asyncio
+async def test_ponder_update_user_thought_dict_and_json_string(temp_db_path):
+    chat_id = 7
+    result = await agent._ponder_update_user_thought(
+        {"user_id": 42, "username": "bob", "thought": "Likes jazz."},
+        chat_id,
+    )
+    assert "Updated thoughts" in result
+    assert await get_user_thought(42) == "Likes jazz."
+
+    result = await agent._ponder_update_user_thought(
+        json.dumps({"user_id": 42, "username": "bob", "thought": "Loves bebop."}),
+        chat_id,
+    )
+    assert "Updated thoughts" in result
+    assert await get_user_thought(42) == "Loves bebop."
+
+
+@pytest.mark.asyncio
+async def test_ponder_add_update_delete_general_memory(temp_db_path):
+    chat_id = 11
+    add_result = await agent._ponder_add_general_memory(
+        {"topic": "Coffee", "summary": "Group prefers dark roast.", "importance": 4},
+        chat_id,
+    )
+    assert "Added general memory" in add_result
+
+    memories = await get_general_memories(chat_id, limit=5)
+    assert any("Coffee" in m and "dark roast" in m for m in memories)
+    memory_id = int(memories[0].split(",")[0].removeprefix("id="))
+
+    update_result = await agent._ponder_update_general_memory(
+        {"memory_id": memory_id, "summary": "Group prefers medium roast."},
+        chat_id,
+    )
+    assert f"Updated general memory id={memory_id}" in update_result
+    memories = await get_general_memories(chat_id, limit=5)
+    assert any("medium roast" in m for m in memories)
+
+    delete_result = await agent._ponder_delete_general_memory(
+        {"memory_id": memory_id},
+        chat_id,
+    )
+    assert f"Deleted general memory id={memory_id}" in delete_result
+    memories = await get_general_memories(chat_id, limit=5)
+    assert not any(f"id={memory_id}" in m for m in memories)
+
+    missing = await agent._ponder_delete_general_memory(str(memory_id), chat_id)
+    assert "not found" in missing
+
+
+@pytest.mark.asyncio
+async def test_ponder_media_summary_tools(temp_db_path):
+    chat_id = 13
+    media_id = "photo_abc123"
+    await save_media_description(media_id, "A red bicycle parked outside.")
+
+    search_result = await agent._ponder_search_media_summaries("bicycle", chat_id)
+    assert media_id in search_result
+    assert "red bicycle" in search_result
+
+    update_result = await agent._ponder_update_media_summary(
+        {"media_unique_id": media_id, "description": "A blue bicycle by the curb."},
+        chat_id,
+    )
+    assert "Updated media summary" in update_result
+    found = await search_media_descriptions("blue bicycle")
+    assert any(media_id in row for row in found)
+
+    clear_result = await agent._ponder_clear_media_summary(media_id, chat_id)
+    assert "Cleared media summary" in clear_result
+    assert await search_media_descriptions("blue bicycle") == []
+
+
+@pytest.mark.asyncio
+async def test_ponder_memory_tools_reject_invalid_input(temp_db_path):
+    chat_id = 15
+    assert "Invalid" in await agent._ponder_update_user_thought({}, chat_id)
+    assert "Invalid" in await agent._ponder_add_general_memory({"topic": "x"}, chat_id)
+    assert "Invalid" in await agent._ponder_update_general_memory({"memory_id": 1}, chat_id)
+    assert "Invalid" in await agent._ponder_delete_general_memory("", chat_id)
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_add_general_memory_via_tool(temp_db_path):
+    chat_id = 21
+    responses = [
+        {
+            "thought": "store fact",
+            "tool": "add_general_memory",
+            "tool_input": {
+                "topic": "Launch date",
+                "summary": "Project ships on Friday.",
+                "importance": 5,
+            },
+        },
+        {"thought": "done", "answer": "Remembered the launch date."},
+    ]
+    call_count = 0
+
+    async def mock_create(**kwargs):
+        nonlocal call_count
+        payload = responses[min(call_count, len(responses) - 1)]
+        call_count += 1
+        return _mock_llm_json_response(payload)
+
+    with (
+        patch("bot.agent.client.chat.completions.create", side_effect=mock_create),
+        patch("bot.agent._prefetch_linked_sources", AsyncMock(return_value=[])),
+    ):
+        result = await agent.run_ponder_agent(
+            "remember that the project ships on Friday",
+            chat_id=chat_id,
+        )
+
+    assert "Remembered the launch date" in result
+    memories = await get_general_memories(chat_id, limit=5)
+    assert any("Launch date" in m and "Friday" in m for m in memories)
+
+
+@pytest.mark.asyncio
+async def test_ponder_tools_include_memory_mutations():
+    for name in (
+        "update_user_thought",
+        "add_general_memory",
+        "update_general_memory",
+        "delete_general_memory",
+        "search_media_summaries",
+        "clear_media_summary",
+        "update_media_summary",
+    ):
+        assert name in agent.PONDER_TOOLS
+        assert agent.PONDER_TOOLS[name]["context"] == "chat_id"

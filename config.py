@@ -43,9 +43,20 @@ def _default_ytdlp_package_dir() -> str:
     return os.path.join(os.path.dirname(__file__), "data", "python-packages")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-flash-2.5")
 LLM_PONDER_MODEL = os.getenv("LLM_PONDER_MODEL", "deepseek/deepseek-v4-flash")
+
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
+
+
+LLM_PONDER_MAX_STEPS = _bounded_env_int("LLM_PONDER_MAX_STEPS", 10, 1, 20)
 
 LLM_PROMPT_CACHE = os.getenv("LLM_PROMPT_CACHE", "true").lower() not in {"0", "false", "no"}
 REACTION_CHANCE = 0.05

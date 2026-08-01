@@ -47,6 +47,29 @@ def test_set_env_value_updates_file_atomically(env_file):
     assert os.environ["LLM_MODEL"] == "google/gemini-flash-2.5"
 
 
+def test_set_env_value_updates_ponder_step_budget_at_runtime(env_file):
+    env_file.write_text("LLM_PONDER_MAX_STEPS=10\n", encoding="utf-8")
+    import config
+    import bot.agent as agent
+
+    restart_required, message = env_config.set_env_value("LLM_PONDER_MAX_STEPS", "14")
+
+    assert restart_required is False
+    assert "Updated LLM_PONDER_MAX_STEPS" in message
+    assert "LLM_PONDER_MAX_STEPS=14" in env_file.read_text(encoding="utf-8")
+    assert config.LLM_PONDER_MAX_STEPS == 14
+    assert agent.LLM_PONDER_MAX_STEPS == 14
+
+
+@pytest.mark.parametrize("value", ["0", "21", "many"])
+def test_set_env_value_rejects_invalid_ponder_step_budget(env_file, value):
+    ok, message = env_config.set_env_value("LLM_PONDER_MAX_STEPS", value)
+
+    assert ok is False
+    assert "integer from 1 to 20" in message
+    assert not env_file.exists()
+
+
 def test_set_env_value_preserves_file_mode(env_file):
     env_file.write_text("LLM_MODEL=old\n", encoding="utf-8")
     env_file.chmod(0o600)

@@ -60,6 +60,7 @@ async def init_db():
                 last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_used_at DATETIME,
                 use_count INTEGER NOT NULL DEFAULT 0,
+                is_favorite INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(chat_id, media_unique_id)
             )
         """)
@@ -69,6 +70,7 @@ async def init_db():
         """)
 
         await _migrate_saved_media_schema(db)
+        await _ensure_saved_media_favorite_column(db)
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_saved_media_chat_used 
             ON saved_media(chat_id, last_used_at DESC, use_count ASC)
@@ -581,6 +583,7 @@ async def _migrate_saved_media_schema(db) -> None:
             last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             last_used_at DATETIME,
             use_count INTEGER NOT NULL DEFAULT 0,
+            is_favorite INTEGER NOT NULL DEFAULT 0,
             UNIQUE(chat_id, media_unique_id)
         )
     """)
@@ -605,6 +608,16 @@ async def _migrate_saved_media_schema(db) -> None:
         ON saved_media(chat_id, last_used_at DESC, use_count ASC)
     """)
 
+
+async def _ensure_saved_media_favorite_column(db) -> None:
+    async with db.execute("PRAGMA table_info(saved_media)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if "is_favorite" not in columns:
+        logging.info("Migrating DB: adding saved media favorites")
+        await db.execute(
+            "ALTER TABLE saved_media ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0"
+        )
+
 async def _prune_saved_media(db, chat_id: int, per_chat_limit: int, global_limit: int) -> None:
     per_chat_limit = max(1, per_chat_limit)
     global_limit = max(1, global_limit)
@@ -616,7 +629,7 @@ async def _prune_saved_media(db, chat_id: int, per_chat_limit: int, global_limit
         WHERE chat_id = ? AND id NOT IN (
             SELECT id FROM saved_media
             WHERE chat_id = ?
-            ORDER BY last_seen_at DESC, id DESC
+            ORDER BY is_favorite DESC, last_seen_at DESC, id DESC
             LIMIT ?
         )
         """,
@@ -629,7 +642,7 @@ async def _prune_saved_media(db, chat_id: int, per_chat_limit: int, global_limit
         DELETE FROM saved_media
         WHERE id NOT IN (
             SELECT id FROM saved_media
-            ORDER BY last_seen_at DESC, id DESC
+            ORDER BY is_favorite DESC, last_seen_at DESC, id DESC
             LIMIT ?
         )
         """,
@@ -672,21 +685,44 @@ async def save_reusable_media(
 async def get_saved_media_options(
     chat_id: int,
     limit: int = SAVED_MEDIA_PROMPT_LIMIT,
+    exclude_media_ids: set[str] | None = None,
+    media_types: set[Literal["photo", "sticker", "animation"]] | None = None,
 ) -> list[dict]:
     # Clamp limit to 1..SAVED_MEDIA_PROMPT_LIMIT
     limit = max(1, min(SAVED_MEDIA_PROMPT_LIMIT, limit))
-    
+    excluded = sorted(media_id for media_id in (exclude_media_ids or set()) if media_id)
+    exclusion_sql = ""
+    params: list[object] = [chat_id]
+    if excluded:
+        placeholders = ", ".join("?" for _ in excluded)
+        exclusion_sql = f"AND media_unique_id NOT IN ({placeholders})"
+        params.extend(excluded)
+    selected_types = sorted(media_types or set())
+    if selected_types:
+        placeholders = ", ".join("?" for _ in selected_types)
+        exclusion_sql += f" AND media_type IN ({placeholders})"
+        params.extend(selected_types)
+    params.append(limit)
+
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """
-            SELECT media_unique_id, media_type, file_id, description, use_count, last_seen_at, last_used_at
+            f"""
+            SELECT media_unique_id, media_type, file_id, description, use_count,
+                   is_favorite, last_seen_at, last_used_at
             FROM saved_media
             WHERE chat_id = ?
-            ORDER BY last_seen_at DESC, id DESC
+            {exclusion_sql}
+            ORDER BY
+                is_favorite DESC,
+                CASE WHEN last_used_at IS NULL THEN 0 ELSE 1 END,
+                use_count ASC,
+                last_used_at ASC,
+                last_seen_at DESC,
+                id DESC
             LIMIT ?
             """,
-            (chat_id, limit)
+            params,
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -697,7 +733,8 @@ async def get_saved_media_by_unique_id(chat_id: int, media_unique_id: str) -> di
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
-            SELECT id, media_unique_id, media_type, file_id, description, use_count, last_seen_at, last_used_at
+            SELECT id, media_unique_id, media_type, file_id, description, use_count,
+                   is_favorite, last_seen_at, last_used_at
             FROM saved_media
             WHERE chat_id = ? AND media_unique_id = ?
             """,
@@ -719,6 +756,23 @@ async def mark_saved_media_used(chat_id: int, media_unique_id: str) -> None:
             (chat_id, media_unique_id)
         )
         await db.commit()
+
+
+async def set_saved_media_favorite(
+    chat_id: int, media_unique_id: str, favorite: bool
+) -> bool:
+    """Persist the bot's own taste; Telegram bots have no account Favorites API."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            UPDATE saved_media
+            SET is_favorite = ?
+            WHERE chat_id = ? AND media_unique_id = ? AND media_type = 'sticker'
+            """,
+            (int(favorite), chat_id, media_unique_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
 
 async def add_whitelist(entity_id: int, entity_type: str, added_by: int):

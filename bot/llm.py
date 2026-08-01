@@ -16,6 +16,7 @@ from bot.memory import (
     clear_media_description,
     save_media_description,
     update_saved_media_description,
+    set_saved_media_favorite,
     search_media_descriptions,
     get_config,
     set_config,
@@ -81,6 +82,7 @@ class LLMToolCall(BaseModel):
         "clear_media_summary",
         "update_media_summary",
         "search_media_summaries",
+        "set_sticker_favorite",
     ]
     arguments: dict[str, Any]
 
@@ -92,6 +94,7 @@ MEMORY_MUTATION_TOOLS = frozenset({
     "delete_general_memory",
     "clear_media_summary",
     "update_media_summary",
+    "set_sticker_favorite",
 })
 READ_ONLY_TOOLS = frozenset({
     "search_media_summaries",
@@ -193,6 +196,7 @@ You have access to the following tools:
 6. update_media_summary(media_unique_id: str, description: str): Replace the cached summary text for one piece of media.
 7. search_media_summaries(query: str): Search cached media summaries by description text. Read-only; use before clear/update when you need to find the right id.
 8. ponder(query: str): Research a topic deeply before replying, or perform administrative actions. Use this when you need current/real-time information (news, events, prices), when asked to recall everything about a user, when the admin asks to change your persona or behavior settings, or when the question requires knowledge beyond what's in your memory. The query should be a clear research question or admin request in English. You will receive the results and can then compose your reply. Only use ONE ponder call per response. If you want to tell the user to wait, include a message in the "messages" array — it will be sent immediately before the research begins.
+9. set_sticker_favorite(media_unique_id: str, favorite: bool): Mark or unmark a saved sticker as one of your favorites. Favorite a sticker when it genuinely becomes part of your recurring taste/personality or when explicitly asked; do not favorite every usable sticker. Use only an exact id from message attributes or `<saved_media>`.
 
 ADMIN AWARENESS (mandatory):
 - The focused message may carry `is_admin="true"` — that means the sender is the bot admin.
@@ -231,8 +235,12 @@ Output your response as a JSON object with exactly these top-level fields, in th
 
 RULES FOR SAVED MEDIA IN MESSAGES:
 - Send saved photos/stickers/gifs inline in `messages` as objects: {"saved_media_id": "<exact id from saved_media>"}.
-- Mix text strings and saved-media objects in whatever order fits — each entry is sent as its own Telegram message, like a human would.
-- Follow `<behavior_settings><media_reply_guidance>` when deciding whether to include saved media.
+- Saved media is optional. Obey `<saved_media_policy max_items>` (normally one; a lively sticker exchange may allow more), and only use items whose descriptions match a specific emotional beat or joke.
+- Prefer a well-chosen media-only reaction when it says enough by itself. Do not tack a generic sticker onto an already complete text reply as decoration.
+- Do not use media merely because options are available. Silence or a short text reply is more natural when none is an excellent fit.
+- Never echo media from the focused message or repeat media visible in recent working memory; those items are normally withheld from `<saved_media>`.
+- A favorite is part of your established taste, not an instruction to use it. Prefer it over an equally fitting non-favorite, but still require contextual fit.
+- `<behavior_settings><media_reply_guidance>` may make media more or less frequent, but it never overrides contextual fit, the current policy limit, or repetition avoidance.
 - NEVER invent IDs or output Telegram file_id values. Use only the exact `id` attribute from the `<saved_media>` options.
 - Media-only replies are valid when `messages` contains only saved-media objects.
 
@@ -385,6 +393,7 @@ Output:
 def _sanitize_response_messages(
     messages: list,
     saved_media_options: list[dict] | None,
+    max_saved_media: int = 1,
 ) -> tuple[list, dict | None]:
     """Validate and normalize messages; drop unknown saved media ids."""
     sanitized: list = []
@@ -418,6 +427,11 @@ def _sanitize_response_messages(
         if not selected_option:
             continue
 
+        media_count = sum(isinstance(value, LLMSavedMediaMessage) for value in sanitized)
+        if media_count >= max(0, max_saved_media):
+            logging.warning("Dropping extra saved media from one response: %s", media_id)
+            continue
+
         sanitized.append(LLMSavedMediaMessage(saved_media_id=media_id))
         if first_media is None:
             first_media = {
@@ -448,6 +462,7 @@ def build_context_prompt(
     focus_message_id: int | None = None,
     saved_media_options: list[dict] | None = None,
     behavior_settings: dict | None = None,
+    saved_media_policy: dict | None = None,
 ) -> str:
     context_parts = []
     context_parts.append("<conversation_context>")
@@ -508,12 +523,24 @@ def build_context_prompt(
             m_id = _xml_attr(option["media_unique_id"])
             m_type = _xml_attr(option["media_type"])
             m_use = _xml_attr(option["use_count"])
+            m_favorite = _xml_attr(bool(option.get("is_favorite")))
             desc = option["description"]
             if len(desc) > 300:
                 desc = desc[:300] + "..."
             m_desc = _xml_cdata(desc)
-            context_parts.append(f'    <media id={m_id} type={m_type} use_count={m_use}>{m_desc}</media>')
+            context_parts.append(
+                f'    <media id={m_id} type={m_type} use_count={m_use} favorite={m_favorite}>'
+                f'{m_desc}</media>'
+            )
         context_parts.append("  </saved_media>")
+
+    if saved_media_policy:
+        context_parts.append(
+            f'  <saved_media_policy mode={_xml_attr(saved_media_policy.get("mode", "normal"))} '
+            f'max_items={_xml_attr(saved_media_policy.get("max_items", 1))}>'
+            f'{_xml_cdata(saved_media_policy.get("guidance", ""))}'
+            f'</saved_media_policy>'
+        )
 
     if behavior_settings:
         context_parts.append(
@@ -593,6 +620,16 @@ async def _apply_tool_call(
             results = await search_media_descriptions(str(args.get("query", "")))
             write["status"] = "succeeded"
             write["results"] = results
+        elif name == "set_sticker_favorite":
+            favorite = args.get("favorite", True)
+            if not isinstance(favorite, bool):
+                raise ValueError("favorite must be a boolean")
+            ok = await set_saved_media_favorite(
+                chat_id,
+                str(args["media_unique_id"]),
+                favorite,
+            )
+            write["status"] = "succeeded" if ok else "not_found"
         else:
             write["status"] = "skipped"
     except Exception as mem_error:
@@ -615,6 +652,7 @@ async def generate_response(
     saved_media_options: list[dict] | None = None,
     extra_context: str | None = None,
     settings_chat_id: int | None = None,
+    saved_media_policy: dict | None = None,
 ) -> dict | None:
     if settings_chat_id is None:
         settings_chat_id = chat_id
@@ -627,6 +665,7 @@ async def generate_response(
         focus_message_id,
         saved_media_options,
         behavior_settings,
+        saved_media_policy,
     )
     if extra_context:
         context_str = context_str + "\n" + extra_context
@@ -756,7 +795,9 @@ async def generate_response(
                     logging.warning("Unknown tool call: %s", name)
 
                 sanitized_messages, response_media = _sanitize_response_messages(
-                    parsed.messages, saved_media_options
+                    parsed.messages,
+                    saved_media_options,
+                    max_saved_media=int((saved_media_policy or {}).get("max_items", 1)),
                 )
                 parsed.messages = sanitized_messages
                 reply_to_message_id = parsed.reply_to_message_id

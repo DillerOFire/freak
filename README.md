@@ -12,7 +12,7 @@ Think of it as a moody, opinionated chat member with memory — not a question-a
 - **Emoji reactions** — independently tunable chance to drop a reaction on a message.
 - **Memory** — per-user "thoughts" and shared general memories, searchable with `/memory`. The bot recalls relevant context when replying.
 - **Media handling** — downloads video/audio via `yt-dlp`, analyzes images and video frames with a vision model, and can reuse saved GIFs/photos/stickers as replies.
-- **Ponder research agent** — when the main LLM wants more context, it spawns a sandboxed ReAct agent with `web_search`, `fetch_web_page`, and `recall_memories` tools. SSRF-guarded, no private network access.
+- **Ponder research agent** — when the main LLM wants more context, it spawns a sandboxed ReAct agent with `web_search`, `fetch_web_page`, memory read/write tools, and admin config tools. SSRF-guarded, no private network access.
 - **Per-chat settings** — reply chance, reaction chance, cooldown, bot-to-bot ping-pong cap. Set globally or per chat via a button panel.
 - **Daily schedules** — send a message or run an LLM prompt every day at a given time.
 - **Whitelist** — only respond in chats/users you allow.
@@ -76,6 +76,7 @@ The model defaults are sensible; override them only if you want different ones:
 | `LLM_BASE_URL` | OpenAI-compatible API base URL | `https://openrouter.ai/api/v1` |
 | `LLM_MODEL` | Main persona / chat LLM | `google/gemini-flash-2.5` |
 | `LLM_PONDER_MODEL` | Research agent | `deepseek/deepseek-v4-flash` |
+| `LLM_PONDER_MAX_STEPS` | Maximum ponder research/tool iterations | `10` |
 | `LLM_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
 
 Docker-only overrides (set in `docker-compose.yml` or `.env`):

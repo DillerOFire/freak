@@ -144,6 +144,10 @@ async def _complete_ponder_followup(
         f" Do NOT call ponder again.</instruction>"
     )
 
+    saved_media_policy = _derive_saved_media_policy(list(current_history))
+    saved_media_options = _without_recent_saved_media(
+        saved_media_options, list(current_history)
+    )
     response2 = await generate_response(
         list(current_history),
         user_thoughts,
@@ -155,6 +159,7 @@ async def _complete_ponder_followup(
         saved_media_options=saved_media_options,
         extra_context=extra_context,
         settings_chat_id=settings_chat_id,
+        saved_media_policy=saved_media_policy,
     )
 
     if response2:
@@ -186,6 +191,7 @@ def add_message_to_history(
     reply_to_username: str | None = None,
     reply_to_text: str | None = None,
     media_unique_id: str | None = None,
+    is_saved_media_reply: bool = False,
 ):
     # Initialize chat history if needed
     if chat_id not in chat_history:
@@ -203,7 +209,87 @@ def add_message_to_history(
     }
     if media_unique_id:
         entry["media_unique_id"] = media_unique_id
+    if is_saved_media_reply:
+        entry["is_saved_media_reply"] = True
     chat_history[chat_id].append(entry)
+
+
+def _recent_saved_media_ids(history: list[dict], max_messages: int = 8) -> set[str]:
+    """Media in the active conversational window should not be echoed or repeated."""
+    return {
+        str(message["media_unique_id"])
+        for message in history[-max_messages:]
+        if message.get("media_unique_id")
+    }
+
+
+def _without_recent_saved_media(
+    saved_media_options: list[dict], history: list[dict]
+) -> list[dict]:
+    policy = _derive_saved_media_policy(history)
+    if not policy["enabled"]:
+        return []
+    recent_ids = _recent_saved_media_ids(history)
+    return [
+        option
+        for option in saved_media_options
+        if option.get("media_unique_id") not in recent_ids
+    ]
+
+
+def _is_sticker_message(message: dict) -> bool:
+    text = str(message.get("text") or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "sent a sticker:",
+            "sent an animated sticker:",
+            "sent saved sticker:",
+        )
+    )
+
+
+def _derive_saved_media_policy(history: list[dict]) -> dict:
+    """Adapt media pacing to the conversation instead of using a fixed cooldown."""
+    recent = history[-6:]
+    sticker_count = sum(_is_sticker_message(message) for message in recent)
+    focused_is_sticker = bool(recent and _is_sticker_message(recent[-1]))
+    sticker_exchange = focused_is_sticker or sticker_count >= 2
+
+    last_saved_index = next(
+        (
+            index
+            for index in range(len(history) - 1, -1, -1)
+            if history[index].get("is_saved_media_reply")
+        ),
+        None,
+    )
+    messages_since_saved = (
+        len(history) if last_saved_index is None else len(history) - last_saved_index - 1
+    )
+    enabled = sticker_exchange or last_saved_index is None or messages_since_saved >= 3
+    max_items = 2 if sticker_exchange and sticker_count >= 3 else 1
+
+    if sticker_exchange:
+        guidance = (
+            "This is a sticker-led exchange. A media-only reply is natural; continue it "
+            "without forcing text. Prefer stickers and vary the emotional beat."
+        )
+        mode = "sticker_exchange"
+    elif enabled:
+        guidance = "Normal conversation: use media sparingly and only for a precise fit."
+        mode = "normal"
+    else:
+        guidance = "Recent bot media already made the point; respond without saved media for now."
+        mode = "restraint"
+
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "max_items": max_items if enabled else 0,
+        "stickers_only": sticker_exchange,
+        "guidance": guidance,
+    }
 
 
 async def get_message_media_description(
@@ -514,6 +600,8 @@ async def _send_llm_response(
                             reply_to_id=current_reply_to,
                             reply_to_username=None,
                             reply_to_text=None,
+                            media_unique_id=media_id,
+                            is_saved_media_reply=True,
                         )
                 else:
                     logging.error(f"Saved media row missing for id: {media_id}")
@@ -716,7 +804,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         general_memories = await get_relevant_general_memories(chat_id, memory_query, limit=5)
 
         # Fetch saved media options
-        saved_media_options = await get_saved_media_options(chat_id)
+        history_snapshot = list(current_history)
+        saved_media_policy = _derive_saved_media_policy(history_snapshot)
+        if not saved_media_policy["enabled"]:
+            saved_media_options = []
+        else:
+            recent_media_ids = _recent_saved_media_ids(history_snapshot)
+            saved_media_options = await get_saved_media_options(
+                chat_id,
+                exclude_media_ids=recent_media_ids,
+                media_types={"sticker"} if saved_media_policy["stickers_only"] else None,
+            )
         settings_chat_id = resolve_settings_chat_id(update.effective_chat)
 
         # Generate response
@@ -730,6 +828,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             memory_query=memory_query,
             saved_media_options=saved_media_options,
             settings_chat_id=settings_chat_id,
+            saved_media_policy=saved_media_policy,
         )
 
         if response:

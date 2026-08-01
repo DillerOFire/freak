@@ -21,6 +21,7 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "ADMIN_ID",
         "LLM_MODEL",
         "LLM_PONDER_MODEL",
+        "LLM_PONDER_MAX_STEPS",
         "LLM_VISION_MODEL",
         "LLM_PROMPT_CACHE",
         "LLM_PONDER_BASE_URL",
@@ -254,6 +255,13 @@ def set_env_value(key: str, value: str) -> tuple[bool, str]:
         return False, f"{key} is managed by the deployment and cannot be changed here."
     if key not in EDITABLE_ENV_KEYS:
         return False, f"Unknown or non-editable key: {key}"
+    if key == "LLM_PONDER_MAX_STEPS":
+        try:
+            step_budget = int(value)
+        except ValueError:
+            return False, "LLM_PONDER_MAX_STEPS must be an integer from 1 to 20."
+        if not 1 <= step_budget <= 20:
+            return False, "LLM_PONDER_MAX_STEPS must be an integer from 1 to 20."
 
     path = resolve_env_file_path()
     ok, message = _check_writable(path)
@@ -295,6 +303,12 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.agent as agent
 
         agent.LLM_PONDER_MODEL = value
+    elif key == "LLM_PONDER_MAX_STEPS":
+        step_budget = int(value)
+        config.LLM_PONDER_MAX_STEPS = step_budget
+        import bot.agent as agent
+
+        agent.LLM_PONDER_MAX_STEPS = step_budget
     elif key == "LLM_PROMPT_CACHE":
         enabled = value.lower() not in {"0", "false", "no"}
         config.LLM_PROMPT_CACHE = enabled

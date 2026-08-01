@@ -218,6 +218,44 @@ async def test_saved_media_crud_and_limits(temp_db_path):
 
 
 @pytest.mark.asyncio
+async def test_saved_media_options_rotate_used_items_and_support_exclusions(temp_db_path):
+    chat_id = 54321
+    await memory.save_reusable_media(chat_id, "older_unused", "f1", "sticker", "old unused", 1)
+    await memory.save_reusable_media(chat_id, "newer_used", "f2", "sticker", "new but used", 1)
+    await memory.mark_saved_media_used(chat_id, "newer_used")
+
+    options = await memory.get_saved_media_options(chat_id, limit=2)
+    assert [option["media_unique_id"] for option in options] == [
+        "older_unused",
+        "newer_used",
+    ]
+
+    options = await memory.get_saved_media_options(
+        chat_id, limit=2, exclude_media_ids={"older_unused"}
+    )
+    assert [option["media_unique_id"] for option in options] == ["newer_used"]
+
+
+@pytest.mark.asyncio
+async def test_saved_sticker_favorites_persist_rank_first_and_filter_by_type(temp_db_path):
+    chat_id = 65432
+    await memory.save_reusable_media(chat_id, "photo", "p1", "photo", "photo", 1)
+    await memory.save_reusable_media(chat_id, "plain", "s1", "sticker", "plain", 1)
+    await memory.save_reusable_media(chat_id, "favorite", "s2", "sticker", "best reaction", 1)
+
+    assert await memory.set_saved_media_favorite(chat_id, "favorite", True) is True
+    assert await memory.set_saved_media_favorite(chat_id, "photo", True) is False
+
+    options = await memory.get_saved_media_options(chat_id, media_types={"sticker"})
+    assert [option["media_unique_id"] for option in options] == ["favorite", "plain"]
+    assert options[0]["is_favorite"] == 1
+
+    assert await memory.set_saved_media_favorite(chat_id, "favorite", False) is True
+    row = await memory.get_saved_media_by_unique_id(chat_id, "favorite")
+    assert row["is_favorite"] == 0
+
+
+@pytest.mark.asyncio
 async def test_saved_media_global_limit(temp_db_path):
     # Save four rows across two chats with per_chat_limit=10, global_limit=3
     await memory.save_reusable_media(11, "m1", "f1", "photo", "desc", 111, per_chat_limit=10, global_limit=3)
