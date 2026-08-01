@@ -22,6 +22,7 @@ from bot.memory import (
     set_config,
     list_pending_scheduled_actions,
     list_active_event_states,
+    get_relevant_research_notes,
 )
 from bot.logic import (
     get_behavior_settings,
@@ -194,9 +195,10 @@ The examples below illustrate JSON shape and tool usage only — do not copy the
 
 When you receive the conversation context enclosed in XML-style tags:
 1. Analyze the messages inside `<working_memory>`.
-2. Review the context in `<core_memory>` and `<retrieved_semantic_memory>`.
+2. Review the context in `<core_memory>`, `<retrieved_semantic_memory>`, and `<related_research>` (prior ponder briefs for this chat when they match the current topic).
 3. Update your thoughts about a user if you learn something new or your opinion changes, using the `update_user_thought` tool call.
 4. Add to general memory if a new topic is discussed, using the `add_general_memory` tool call. Specify `importance` from 1 (low) to 5 (high) depending on how likely it is to be useful later.
+4b. If `<related_research>` covers a related follow-up, use it instead of re-pondering when the brief still answers the question. Call `ponder` again for fresh/live facts, contradictions, or missing detail.
 5. Decide if you should reply to the conversation.
    - You don't always have to reply.
    - If you reply, set `reply_to_message_id` to the integer ID of the message you are replying to. If it's a general/unsolicited message, set it to null.
@@ -593,6 +595,7 @@ def build_context_prompt(
     saved_media_policy: dict | None = None,
     pending_scheduled_actions: list[dict] | None = None,
     active_event_states: list[dict] | None = None,
+    related_research: list[dict] | None = None,
 ) -> str:
     context_parts = []
     context_parts.append("<conversation_context>")
@@ -645,6 +648,19 @@ def build_context_prompt(
             u_mem = _xml_cdata(mem)
             context_parts.append(f"    <memory>{u_mem}</memory>")
         context_parts.append("  </retrieved_semantic_memory>")
+
+    # 4b. Prior ponder research briefs related to the current topic
+    if related_research:
+        context_parts.append("  <related_research>")
+        for note in related_research:
+            q = _xml_attr(note.get("query", ""))
+            created = _xml_attr(note.get("created_at", ""))
+            note_id = _xml_attr(note.get("id", ""))
+            body = _xml_cdata(str(note.get("result", "")))
+            context_parts.append(
+                f'    <note id={note_id} query={q} created_at={created}>{body}</note>'
+            )
+        context_parts.append("  </related_research>")
 
     # Saved media options block
     if saved_media_options:
@@ -838,6 +854,19 @@ async def generate_response(
     pending_actions = await list_pending_scheduled_actions(chat_id, limit=15)
     active_states = await list_active_event_states(chat_id, limit=15)
 
+    research_query = memory_query or focus_text or ""
+    if not research_query and messages_context:
+        research_query = "\n".join(
+            str(msg.get("text") or "") for msg in messages_context[-6:]
+        )
+    related_research: list[dict] = []
+    try:
+        related_research = await get_relevant_research_notes(
+            chat_id, research_query, limit=2
+        )
+    except Exception:
+        logging.exception("Failed to load related research notes for chat %s", chat_id)
+
     context_str = build_context_prompt(
         messages_context,
         user_thoughts,
@@ -848,6 +877,7 @@ async def generate_response(
         saved_media_policy,
         pending_scheduled_actions=pending_actions,
         active_event_states=active_states,
+        related_research=related_research,
     )
     if extra_context:
         context_str = context_str + "\n" + extra_context

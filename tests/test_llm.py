@@ -686,3 +686,18 @@ def test_build_context_prompt_includes_behavior_settings():
     assert "<behavior_settings" in prompt
     assert "<reply_chance>0.0500</reply_chance>" in prompt
     assert "Send gifs often." in prompt
+
+
+def test_build_context_prompt_includes_related_research():
+    related = [
+        {
+            "id": 7,
+            "query": "latest OpenAI model",
+            "result": "Model X launched with 1M context.",
+            "created_at": "2026-08-01 12:00:00",
+        }
+    ]
+    prompt = llm.build_context_prompt([], {}, [], related_research=related)
+    assert "<related_research>" in prompt
+    assert 'query="latest OpenAI model"' in prompt
+    assert "Model X launched with 1M context." in prompt

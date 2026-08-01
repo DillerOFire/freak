@@ -8,8 +8,10 @@ from bot import agent
 from bot.memory import (
     add_general_memory,
     get_general_memories,
+    get_relevant_research_notes,
     get_user_thought,
     save_media_description,
+    save_research_note,
     search_media_descriptions,
     update_user_thought,
 )
@@ -1049,3 +1051,38 @@ async def test_ponder_tools_include_memory_mutations():
     ):
         assert name in agent.PONDER_TOOLS
         assert agent.PONDER_TOOLS[name]["context"] == "chat_id"
+
+
+@pytest.mark.asyncio
+async def test_run_ponder_agent_persists_and_loads_prior_research(temp_db_path):
+    chat_id = 5151
+    prior = (
+        "Python 3.13 adds free-threading experimental support and improves error messages. "
+        "Many packages still need wheels for the free-threaded build."
+    )
+    await save_research_note(chat_id, "Python 3.13 free threading features", prior)
+
+    answer = (
+        "Follow-up: free-threading is still experimental; use the regular build for production. "
+        "Error message improvements are available on all builds."
+    )
+    mock_response = _mock_llm_json_response({"thought": "reuse prior", "answer": answer})
+
+    with patch.object(
+        agent.client.chat.completions, "create", AsyncMock(return_value=mock_response)
+    ) as create_mock:
+        result = await agent.run_ponder_agent(
+            "Is free threading ready for production in Python 3.13?",
+            chat_id=chat_id,
+        )
+
+    assert result == answer
+    request = create_mock.call_args.kwargs["messages"][1]["content"]
+    assert "prior_research" in request
+    assert "free-threading experimental" in request
+
+    related = await get_relevant_research_notes(
+        chat_id, "Python free threading production readiness"
+    )
+    assert related
+    assert "Follow-up" in related[0]["result"] or "free-threading" in related[0]["result"]

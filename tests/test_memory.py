@@ -319,6 +319,47 @@ async def test_media_description_clear_update_and_search(temp_db_path):
 
 
 @pytest.mark.asyncio
+async def test_research_notes_save_and_related_retrieve(temp_db_path):
+    chat_id = 4242
+    other_chat = 9999
+    brief = (
+        "OpenAI released model X last week with longer context and lower pricing. "
+        "It competes with Gemini and Claude on coding tasks. Sources consulted: https://example.com/x"
+    )
+
+    note_id = await memory.save_research_note(
+        chat_id, "What is the latest OpenAI model release?", brief
+    )
+    assert note_id is not None
+
+    # Failure / tiny results are not stored
+    assert await memory.save_research_note(chat_id, "x", "short") is None
+    assert (
+        await memory.save_research_note(chat_id, "x", "Pondering failed: boom") is None
+    )
+
+    related = await memory.get_relevant_research_notes(
+        chat_id, "tell me more about the OpenAI model release pricing"
+    )
+    assert len(related) == 1
+    assert related[0]["id"] == note_id
+    assert "longer context" in related[0]["result"]
+
+    # Unrelated chat must not see the note
+    assert await memory.get_relevant_research_notes(other_chat, "OpenAI model") == []
+
+    # Same normalized query updates in place
+    updated_brief = brief + " Updated with new price cuts announced yesterday."
+    same_id = await memory.save_research_note(
+        chat_id, "what is the latest openai model release?", updated_brief
+    )
+    assert same_id == note_id
+    notes = await memory.get_recent_research_notes(chat_id, limit=5)
+    assert len(notes) == 1
+    assert "price cuts" in notes[0]["result"]
+
+
+@pytest.mark.asyncio
 async def test_update_saved_media_description(temp_db_path):
     await memory.save_reusable_media(
         chat_id=42,

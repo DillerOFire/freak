@@ -22,6 +22,12 @@ MAX_MEDIA_DESCRIPTION_LEN = 2000
 MAX_MEDIA_UNIQUE_ID_LEN = 128
 _MEDIA_UNIQUE_ID_RE = re.compile(r"^[\w-]+$")
 
+# Durable cache of ponder research briefs (per chat).
+MAX_RESEARCH_RESULT_LEN = 8000
+MAX_RESEARCH_QUERY_LEN = 500
+MAX_RESEARCH_NOTES_PER_CHAT = 40
+RESEARCH_RETRIEVE_LIMIT = 2
+
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -159,6 +165,32 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_event_states_chat_active
             ON event_states(chat_id, active, expires_at)
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS research_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                query TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_accessed DATETIME,
+                access_count INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_research_notes_chat_created
+            ON research_notes(chat_id, created_at DESC)
+        """)
+        await db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS research_notes_fts USING fts5(
+                query,
+                result,
+                content='research_notes',
+                content_rowid='id'
+            )
+        """)
+        await db.execute(
+            "INSERT INTO research_notes_fts(research_notes_fts) VALUES('rebuild');"
+        )
 
         # Migration: Add chat_id to general_memory if not exists
         async with db.execute("PRAGMA table_info(general_memory)") as cursor:
@@ -341,6 +373,191 @@ async def get_relevant_general_memories(chat_id: int, query: str, limit: int = 5
     except aiosqlite.Error as e:
         logging.error(f"FTS query error in get_relevant_general_memories: {e}")
         return await get_general_memories(chat_id, limit)
+
+
+def _normalize_research_query(query: str) -> str:
+    return " ".join((query or "").strip().lower().split())
+
+
+def _is_saveable_research_result(result: str) -> bool:
+    text = (result or "").strip()
+    if len(text) < 40:
+        return False
+    lowered = text.lower()
+    failure_prefixes = (
+        "pondering failed",
+        "could not complete verified research",
+        "tool error:",
+        "error:",
+    )
+    return not any(lowered.startswith(prefix) for prefix in failure_prefixes)
+
+
+async def _prune_research_notes(db: aiosqlite.Connection, chat_id: int) -> None:
+    async with db.execute(
+        """
+        SELECT id FROM research_notes
+        WHERE chat_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT -1 OFFSET ?
+        """,
+        (chat_id, MAX_RESEARCH_NOTES_PER_CHAT),
+    ) as cursor:
+        stale_ids = [row[0] for row in await cursor.fetchall()]
+    if not stale_ids:
+        return
+    placeholders = ",".join("?" for _ in stale_ids)
+    await db.execute(
+        f"DELETE FROM research_notes WHERE id IN ({placeholders})",
+        stale_ids,
+    )
+    for note_id in stale_ids:
+        await db.execute(
+            "INSERT INTO research_notes_fts(research_notes_fts, rowid) VALUES('delete', ?)",
+            (note_id,),
+        )
+
+
+async def save_research_note(chat_id: int, query: str, result: str) -> int | None:
+    """Persist a successful ponder brief for later related-question hop-up."""
+    query = (query or "").strip()[:MAX_RESEARCH_QUERY_LEN]
+    result = (result or "").strip()[:MAX_RESEARCH_RESULT_LEN]
+    if not query or not _is_saveable_research_result(result):
+        return None
+
+    normalized = _normalize_research_query(query)
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Update in place when the same normalized query already exists for this chat.
+        async with db.execute(
+            """
+            SELECT id, query FROM research_notes
+            WHERE chat_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 80
+            """,
+            (chat_id,),
+        ) as cursor:
+            existing_rows = await cursor.fetchall()
+
+        existing_id = None
+        for row_id, existing_query in existing_rows:
+            if _normalize_research_query(existing_query) == normalized:
+                existing_id = row_id
+                break
+
+        if existing_id is not None:
+            await db.execute(
+                """
+                UPDATE research_notes
+                SET query = ?, result = ?, created_at = CURRENT_TIMESTAMP,
+                    last_accessed = CURRENT_TIMESTAMP,
+                    access_count = access_count + 1
+                WHERE id = ?
+                """,
+                (query, result, existing_id),
+            )
+            await db.execute(
+                "INSERT INTO research_notes_fts(research_notes_fts, rowid) VALUES('delete', ?)",
+                (existing_id,),
+            )
+            await db.execute(
+                "INSERT INTO research_notes_fts(rowid, query, result) VALUES (?, ?, ?)",
+                (existing_id, query, result),
+            )
+            await _prune_research_notes(db, chat_id)
+            await db.commit()
+            return existing_id
+
+        cursor = await db.execute(
+            """
+            INSERT INTO research_notes (chat_id, query, result, last_accessed, access_count)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 0)
+            """,
+            (chat_id, query, result),
+        )
+        rowid = cursor.lastrowid
+        await db.execute(
+            "INSERT INTO research_notes_fts(rowid, query, result) VALUES (?, ?, ?)",
+            (rowid, query, result),
+        )
+        await _prune_research_notes(db, chat_id)
+        await db.commit()
+        return rowid
+
+
+def _format_research_note(
+    note_id: int, query: str, result: str, created_at: str | None
+) -> dict[str, str | int]:
+    return {
+        "id": note_id,
+        "query": query,
+        "result": result,
+        "created_at": created_at or "",
+    }
+
+
+async def get_recent_research_notes(
+    chat_id: int, limit: int = RESEARCH_RETRIEVE_LIMIT
+) -> list[dict[str, str | int]]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT id, query, result, created_at
+            FROM research_notes
+            WHERE chat_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (chat_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_format_research_note(row[0], row[1], row[2], row[3]) for row in rows]
+
+
+async def get_relevant_research_notes(
+    chat_id: int,
+    query: str,
+    limit: int = RESEARCH_RETRIEVE_LIMIT,
+) -> list[dict[str, str | int]]:
+    """FTS-hop prior ponder briefs only when they match the current text."""
+    query_str = _memory_query_terms(query)
+    if not query_str:
+        return []
+
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute(
+                """
+                SELECT rn.id, rn.query, rn.result, rn.created_at
+                FROM research_notes rn
+                JOIN research_notes_fts fts ON rn.id = fts.rowid
+                WHERE rn.chat_id = ? AND research_notes_fts MATCH ?
+                ORDER BY bm25(research_notes_fts), rn.created_at DESC
+                LIMIT ?
+                """,
+                (chat_id, query_str, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if not rows:
+                return []
+
+            ids = [row[0] for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            await db.execute(
+                f"""
+                UPDATE research_notes
+                SET access_count = access_count + 1,
+                    last_accessed = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                """,
+                ids,
+            )
+            await db.commit()
+            return [_format_research_note(row[0], row[1], row[2], row[3]) for row in rows]
+    except aiosqlite.Error as e:
+        logging.error(f"FTS query error in get_relevant_research_notes: {e}")
+        return []
 
 
 async def get_user_memory_by_target(target: str) -> tuple[int, str, str] | None:
