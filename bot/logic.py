@@ -41,7 +41,11 @@ def _sender_id(message) -> int | None:
 
 
 def is_private_chat(chat) -> bool:
-    return getattr(chat, "type", None) == "private"
+    chat_type = getattr(chat, "type", None)
+    if chat_type is None:
+        return False
+    # ChatType is a str Enum in PTB; compare robustly against "private".
+    return str(chat_type) == "private"
 
 
 def resolve_settings_chat_id(chat) -> int:

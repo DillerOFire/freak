@@ -12,7 +12,9 @@ services:
       RUN_MODE: docker
       ENV_FILE: /data/.env
       TELEMETRY_DASHBOARD_HOST: "0.0.0.0"
+      WEB_SETTINGS_HOST: "0.0.0.0"
     volumes:
       - ./data:/data
     ports:
       - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}:${TELEMETRY_DASHBOARD_PORT:-8765}"
+      - "127.0.0.1:${WEB_SETTINGS_PORT:-8780}:${WEB_SETTINGS_PORT:-8780}"

@@ -4,9 +4,9 @@ import logging
 import shlex
 
 from datetime import datetime
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ContextTypes
-from config import COOKIES_DIR, ADMIN_ID
+from config import COOKIES_DIR, ADMIN_ID, WEB_SETTINGS_URL
 from bot.jobs import (
     schedule_daily_message,
     schedule_daily_task,
@@ -598,67 +598,131 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
 
-    if query.from_user.id != ADMIN_ID:
-        await query.answer("Admin only.", show_alert=True)
-        return
+    answered = False
 
-    if not query.message or not query.data:
-        await query.answer()
-        return
+    async def _answer(text: str | None = None, **kwargs) -> None:
+        nonlocal answered
+        if answered:
+            return
+        answered = True
+        try:
+            if text is None:
+                await query.answer(**kwargs)
+            else:
+                await query.answer(text, **kwargs)
+        except Exception as e:
+            logging.warning("settings_callback query.answer failed: %s", e)
 
-    chat_id = resolve_settings_chat_id(query.message.chat)
-    action, _, value = query.data.partition(":")
-    if action != "settings":
-        await query.answer()
-        return
-
-    if value == "toggle_pause":
-        await set_paused(not get_paused())
-    elif value == "toggle_utils":
-        await set_utils_disabled(chat_id, not await get_utils_disabled(chat_id))
-    elif value.startswith("reply="):
-        await set_reply_chance(chat_id, float(value.removeprefix("reply=")))
-    elif value.startswith("reaction="):
-        await set_reaction_chance(chat_id, float(value.removeprefix("reaction=")))
-    elif value.startswith("cooldown="):
-        await set_cooldown_threshold(chat_id, int(value.removeprefix("cooldown=")))
-    elif value.startswith("pingpong="):
-        await set_max_ping_pong(chat_id, int(value.removeprefix("pingpong=")))
-    elif value.startswith("adj_reply="):
-        cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
-        delta = float(value.removeprefix("adj_reply="))
-        new_val = max(0.0, min(1.0, round(reply_chance + delta, 2)))
-        await set_reply_chance(chat_id, new_val)
-    elif value.startswith("adj_reaction="):
-        cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
-        delta = float(value.removeprefix("adj_reaction="))
-        new_val = max(0.0, min(1.0, round(reaction_chance + delta, 2)))
-        await set_reaction_chance(chat_id, new_val)
-    elif value.startswith("adj_cooldown="):
-        cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
-        delta = int(value.removeprefix("adj_cooldown="))
-        new_val = max(0, cooldown + delta)
-        await set_cooldown_threshold(chat_id, new_val)
-    elif value.startswith("adj_pingpong="):
-        max_ping_pong = await get_max_ping_pong(chat_id)
-        delta = int(value.removeprefix("adj_pingpong="))
-        new_val = max(0, max_ping_pong + delta)
-        await set_max_ping_pong(chat_id, new_val)
-    elif value == "noop":
-        await query.answer()
-        return
-    elif value != "refresh":
-        await query.answer("Unknown setting.", show_alert=True)
-        return
-
-    text, keyboard = await _build_settings_panel(chat_id)
-    import telegram
     try:
-        await query.edit_message_text(text, reply_markup=keyboard)
-    except telegram.error.BadRequest as e:
-        if "Message is not modified" not in str(e):
-            raise
-    await query.answer("Settings updated.")
+        if not query.from_user or query.from_user.id != ADMIN_ID:
+            await _answer("Admin only.", show_alert=True)
+            return
+
+        if not query.data:
+            await _answer()
+            return
+
+        # Prefer effective_chat — query.message may be inaccessible / lack .chat.
+        chat = update.effective_chat
+        if chat is None and query.message is not None:
+            chat = getattr(query.message, "chat", None)
+        chat_id = resolve_settings_chat_id(chat)
+
+        action, _, value = query.data.partition(":")
+        if action != "settings":
+            await _answer()
+            return
+
+        status = "Settings updated."
+        if value == "toggle_pause":
+            new_paused = not get_paused()
+            await set_paused(new_paused)
+            status = "Bot paused." if new_paused else "Bot resumed."
+            logging.info("settings toggle_pause paused=%s", new_paused)
+        elif value == "toggle_utils":
+            new_disabled = not await get_utils_disabled(chat_id)
+            await set_utils_disabled(chat_id, new_disabled)
+            scope = "globally" if chat_id == GLOBAL_SETTINGS_CHAT_ID else "for this chat"
+            status = (
+                f"Utils disabled {scope}."
+                if new_disabled
+                else f"Utils enabled {scope}."
+            )
+            logging.info(
+                "settings toggle_utils chat_id=%s utils_disabled=%s",
+                chat_id,
+                new_disabled,
+            )
+        elif value.startswith("reply="):
+            await set_reply_chance(chat_id, float(value.removeprefix("reply=")))
+        elif value.startswith("reaction="):
+            await set_reaction_chance(chat_id, float(value.removeprefix("reaction=")))
+        elif value.startswith("cooldown="):
+            await set_cooldown_threshold(chat_id, int(value.removeprefix("cooldown=")))
+        elif value.startswith("pingpong="):
+            await set_max_ping_pong(chat_id, int(value.removeprefix("pingpong=")))
+        elif value.startswith("adj_reply="):
+            cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+            delta = float(value.removeprefix("adj_reply="))
+            new_val = max(0.0, min(1.0, round(reply_chance + delta, 2)))
+            await set_reply_chance(chat_id, new_val)
+        elif value.startswith("adj_reaction="):
+            cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+            delta = float(value.removeprefix("adj_reaction="))
+            new_val = max(0.0, min(1.0, round(reaction_chance + delta, 2)))
+            await set_reaction_chance(chat_id, new_val)
+        elif value.startswith("adj_cooldown="):
+            cooldown, reply_chance, reaction_chance = await get_logic_config(chat_id)
+            delta = int(value.removeprefix("adj_cooldown="))
+            new_val = max(0, cooldown + delta)
+            await set_cooldown_threshold(chat_id, new_val)
+        elif value.startswith("adj_pingpong="):
+            max_ping_pong = await get_max_ping_pong(chat_id)
+            delta = int(value.removeprefix("adj_pingpong="))
+            new_val = max(0, max_ping_pong + delta)
+            await set_max_ping_pong(chat_id, new_val)
+        elif value == "noop":
+            await _answer()
+            return
+        elif value != "refresh":
+            await _answer("Unknown setting.", show_alert=True)
+            return
+
+        text, keyboard = await _build_settings_panel(chat_id)
+        import telegram
+
+        edited = False
+        if query.message is not None and hasattr(query, "edit_message_text"):
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard)
+                edited = True
+            except telegram.error.BadRequest as e:
+                if "Message is not modified" in str(e):
+                    edited = True
+                else:
+                    logging.error("settings_callback edit_message_text failed: %s", e)
+
+        if not edited:
+            # Fallback when the original panel can't be edited (inaccessible/old).
+            target_chat = update.effective_chat or chat
+            if target_chat is not None:
+                await context.bot.send_message(
+                    chat_id=target_chat.id,
+                    text=text,
+                    reply_markup=keyboard,
+                )
+                status = f"{status} (sent a fresh settings panel)"
+            else:
+                await _answer(
+                    "Updated, but could not refresh the settings message.",
+                    show_alert=True,
+                )
+                return
+
+        await _answer(status)
+    except Exception as e:
+        logging.exception("settings_callback failed")
+        await _answer(f"Error: {e}", show_alert=True)
 
 
 async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
@@ -674,15 +738,17 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
     else:
         header = f"Settings for Chat {chat_id}:"
 
+    utils_label = "disabled" if utils_disabled else "enabled"
     text = (
         f"{header}\n\n"
         f"Reply Chance: {reply_chance * 100:.0f}%\n"
         f"Reaction Chance: {reaction_chance * 100:.0f}%\n"
         f"Cooldown Threshold: {cooldown} messages\n"
         f"Max Ping Pong: {max_ping_pong} replies\n"
-        f"Bot Paused: {paused}\n"
-        f"Utils Disabled: {utils_disabled}\n\n"
-        "Use buttons to adjust values, or commands for exact values."
+        f"Bot Paused: {'yes' if paused else 'no'}\n"
+        f"Utils (media downloads): {utils_label}\n\n"
+        "Use buttons to adjust values, or commands for exact values.\n"
+        "Tip: in a private chat these are global defaults for all chats."
     )
     keyboard = InlineKeyboardMarkup(
         [
@@ -730,10 +796,38 @@ async def _build_settings_panel(chat_id: int) -> tuple[str, InlineKeyboardMarkup
 
 def _build_bot_env_panel() -> tuple[str, InlineKeyboardMarkup]:
     text = format_env_panel()
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Refresh", callback_data="bot_env:refresh")]]
-    )
+    rows = [[InlineKeyboardButton("Refresh", callback_data="bot_env:refresh")]]
+    if WEB_SETTINGS_URL.startswith("https://"):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "Open web settings", web_app=WebAppInfo(url=WEB_SETTINGS_URL)
+                )
+            ]
+        )
+    keyboard = InlineKeyboardMarkup(rows)
     return text, keyboard
+
+
+async def web_settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Open the authenticated settings Web App from an admin private chat."""
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(_DM_ONLY_MESSAGE)
+        return
+    if not WEB_SETTINGS_URL.startswith("https://"):
+        await update.message.reply_text(
+            "Web settings are not configured. Set WEB_SETTINGS_URL to the public "
+            "HTTPS URL of the settings listener, then restart the bot."
+        )
+        return
+    await update.message.reply_text(
+        "Open the admin settings Web App:",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Open web settings", web_app=WebAppInfo(WEB_SETTINGS_URL))]]
+        ),
+    )
 
 
 async def bot_env_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -821,14 +915,26 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Downloading audio... this might take a moment.")
 
     # Import ytdlp helper
-    from bot.media_utils import download_audio_ytdlp
+    from bot.media_utils import (
+        download_audio_ytdlp,
+        notify_admin_cookie_failure,
+        service_name_from_cookies_path,
+    )
 
     cookies_path = None
     if "youtube.com" in url or "youtu.be" in url:
         cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
 
-    info = await asyncio.to_thread(download_audio_ytdlp, url, cookies_path)
-    if info:
+    dl = await asyncio.to_thread(download_audio_ytdlp, url, cookies_path)
+    if dl.cookie_issue:
+        await notify_admin_cookie_failure(
+            context.bot,
+            url=url,
+            result=dl,
+            service=service_name_from_cookies_path(cookies_path),
+        )
+    if dl.info:
+        info = dl.info
         audio_path = info["audio_path"]
         title = info["title"]
         uploader = info.get("uploader", "Unknown")
@@ -1018,6 +1124,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 <b>Admin configuration</b>
 - <code>/settings</code> - Show and change chat behavior with buttons.
+- <code>/web_settings</code> - Open the Telegram Web App editor (admin DM; requires WEB_SETTINGS_URL).
 - <code>/bot_env</code> - View .env settings (admin DM only). Use with <code>/set_env</code>.
 - <code>/set_env &lt;KEY&gt; &lt;value&gt;</code> - Update a .env setting (admin DM only).
 - <code>/set_reply_chance &lt;0.0-1.0&gt;</code> - Set chance to reply to random messages.

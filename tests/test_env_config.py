@@ -47,6 +47,28 @@ def test_set_env_value_updates_file_atomically(env_file):
     assert os.environ["LLM_MODEL"] == "google/gemini-flash-2.5"
 
 
+def test_set_env_values_validates_every_field_before_writing(env_file):
+    env_file.write_text("LLM_MODEL=old-model\n", encoding="utf-8")
+
+    restart_required, message = env_config.set_env_values(
+        {"LLM_MODEL": "new-model", "WEB_SETTINGS_PORT": "not-a-port"}
+    )
+
+    assert restart_required is False
+    assert "WEB_SETTINGS_PORT" in message
+    assert env_file.read_text(encoding="utf-8") == "LLM_MODEL=old-model\n"
+
+
+def test_set_env_values_requires_an_https_web_settings_url(env_file):
+    restart_required, message = env_config.set_env_values(
+        {"WEB_SETTINGS_URL": "http://bot.example.test"}
+    )
+
+    assert restart_required is False
+    assert "public HTTPS URL" in message
+    assert not env_file.exists()
+
+
 def test_set_env_value_updates_ponder_step_budget_at_runtime(env_file):
     env_file.write_text("LLM_PONDER_MAX_STEPS=10\n", encoding="utf-8")
     import config
@@ -110,6 +132,33 @@ def test_apply_env_to_runtime_updates_llm_model(monkeypatch):
     assert restart_required is False
     assert config.LLM_MODEL == "google/gemini-flash-2.5"
     assert llm.LLM_MODEL == "google/gemini-flash-2.5"
+
+
+def test_apply_env_to_runtime_updates_default_llm_base_urls(monkeypatch):
+    import config
+    import bot.agent as agent
+    import bot.llm as llm
+    import bot.vision as vision
+
+    old_base_url = config.LLM_BASE_URL
+    monkeypatch.setattr(config, "LLM_BASE_URL", old_base_url)
+    monkeypatch.setattr(config, "LLM_PONDER_BASE_URL", old_base_url)
+    monkeypatch.setattr(config, "LLM_VISION_BASE_URL", old_base_url)
+    monkeypatch.setattr(llm.client, "base_url", llm.client.base_url)
+    monkeypatch.setattr(agent.client, "base_url", agent.client.base_url)
+    monkeypatch.setattr(vision.client, "base_url", vision.client.base_url)
+
+    restart_required = env_config.apply_env_to_runtime(
+        "LLM_BASE_URL", "https://gateway.example.test/v1"
+    )
+
+    assert restart_required is False
+    assert config.LLM_BASE_URL == "https://gateway.example.test/v1"
+    assert config.LLM_PONDER_BASE_URL == "https://gateway.example.test/v1"
+    assert config.LLM_VISION_BASE_URL == "https://gateway.example.test/v1"
+    assert str(llm.client.base_url) == "https://gateway.example.test/v1/"
+    assert str(agent.client.base_url) == "https://gateway.example.test/v1/"
+    assert str(vision.client.base_url) == "https://gateway.example.test/v1/"
 
 
 def test_set_env_value_updates_prompt_cache_runtime(env_file, monkeypatch):

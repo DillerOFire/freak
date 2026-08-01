@@ -5,10 +5,6 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
-LLM_PONDER_BASE_URL = os.getenv("LLM_PONDER_BASE_URL", LLM_BASE_URL)
-LLM_VISION_BASE_URL = os.getenv("LLM_VISION_BASE_URL", LLM_BASE_URL)
-
 
 def _default_env_file_path() -> Path:
     explicit = os.getenv("ENV_FILE", "").strip()
@@ -34,6 +30,10 @@ def _load_env_files() -> None:
 
 
 _load_env_files()
+
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+LLM_PONDER_BASE_URL = os.getenv("LLM_PONDER_BASE_URL", LLM_BASE_URL)
+LLM_VISION_BASE_URL = os.getenv("LLM_VISION_BASE_URL", LLM_BASE_URL)
 
 
 def _default_ytdlp_package_dir() -> str:
@@ -77,6 +77,17 @@ TELEMETRY_DASHBOARD_ENABLED = os.getenv("TELEMETRY_DASHBOARD_ENABLED", "true").l
 TELEMETRY_DASHBOARD_HOST = os.getenv("TELEMETRY_DASHBOARD_HOST", "127.0.0.1")
 TELEMETRY_DASHBOARD_PORT = int(os.getenv("TELEMETRY_DASHBOARD_PORT", "8765"))
 TELEMETRY_DASHBOARD_TOKEN = os.getenv("TELEMETRY_DASHBOARD_TOKEN")
+
+# Telegram Web App used for the admin settings editor.  Telegram only opens
+# Web Apps over public HTTPS, so WEB_SETTINGS_URL should be the public URL of
+# the reverse proxy in front of the local listener below.  Keep the listener
+# on loopback unless a proxy/container network needs a different bind address.
+WEB_SETTINGS_URL = os.getenv("WEB_SETTINGS_URL", "").strip()
+WEB_SETTINGS_HOST = os.getenv("WEB_SETTINGS_HOST", "127.0.0.1")
+WEB_SETTINGS_PORT = _bounded_env_int("WEB_SETTINGS_PORT", 8780, 1, 65535)
+WEB_SETTINGS_INIT_DATA_MAX_AGE = _bounded_env_int(
+    "WEB_SETTINGS_INIT_DATA_MAX_AGE", 3600, 60, 86400
+)
 
 # Firecrawl (optional): default search and page-to-markdown extractor used by
 # the ponder agent. When unset, searches use DDGS and fetching skips this stage.

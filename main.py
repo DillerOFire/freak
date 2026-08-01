@@ -1,4 +1,5 @@
 import logging
+import config
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 from config import TELEGRAM_BOT_TOKEN, TELEMETRY_DASHBOARD_ENABLED, TELEMETRY_DASHBOARD_HOST, TELEMETRY_DASHBOARD_PORT, TELEMETRY_DASHBOARD_TOKEN
 from bot.handlers import handle_message
@@ -34,12 +35,14 @@ from bot.commands import (
     version_command,
     bot_env_command,
     bot_env_callback,
+    web_settings_command,
 )
 from bot.jobs import load_jobs
 from bot.memory import init_db
 from bot.logic import init_logic
 from bot.telemetry import init_telemetry_db, start_telemetry_dashboard
 from bot.env_config import ensure_env_file_seeded
+from bot.settings_web import start_settings_web_server, stop_settings_web_server
 
 
 # Configure logging
@@ -70,12 +73,23 @@ async def post_init(application):
             TELEMETRY_DASHBOARD_HOST,
             TELEMETRY_DASHBOARD_PORT,
         )
+    if config.WEB_SETTINGS_URL:
+        runner = await start_settings_web_server()
+        application.bot_data["settings_web_runner"] = runner
+
+
+async def post_shutdown(application):
+    await stop_settings_web_server(application.bot_data.get("settings_web_runner"))
 
 
 def main():
     # Build Application
     application = (
-        ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+        ApplicationBuilder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
     )
 
     # Add Handlers
@@ -140,6 +154,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("set_env", set_env_command))
     application.add_handler(CommandHandler("bot_env", bot_env_command))
+    application.add_handler(CommandHandler("web_settings", web_settings_command))
     application.add_handler(CommandHandler("version", version_command))
 
     logging.info("Bot started polling...")

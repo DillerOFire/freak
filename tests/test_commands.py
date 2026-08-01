@@ -96,6 +96,8 @@ async def test_settings_callback_applies_reply_preset(mock_admin_update, mock_co
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
     mock_admin_update.callback_query = query
+    mock_admin_update.effective_chat.type = "group"
+    mock_admin_update.effective_chat.id = 12345
 
     with (
         patch("bot.commands.set_reply_chance", new_callable=AsyncMock) as mock_set_reply,
@@ -122,6 +124,8 @@ async def test_settings_callback_adjusts_max_ping_pong(mock_admin_update, mock_c
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
     mock_admin_update.callback_query = query
+    mock_admin_update.effective_chat.type = "group"
+    mock_admin_update.effective_chat.id = 12345
 
     with (
         patch("bot.commands.get_max_ping_pong", new_callable=AsyncMock) as mock_get_max,
@@ -163,6 +167,8 @@ async def test_settings_callback_adjusts_values(mock_admin_update, mock_context)
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
     mock_admin_update.callback_query = query
+    mock_admin_update.effective_chat.type = "group"
+    mock_admin_update.effective_chat.id = 12345
 
     with (
         patch("bot.commands.get_logic_config", new_callable=AsyncMock) as mock_config,
@@ -219,14 +225,18 @@ async def test_music_command(mock_update, mock_context):
         patch("os.remove"),
     ):
         mock_utils.return_value = False
-        mock_download.return_value = {
-            "audio_path": "test.mp3",
-            "title": "Test Song",
-            "description": "Desc",
-            "thumbnail_path": "thumb.jpg",
-            "duration": 100,
-            "uploader": "Artist",
-        }
+        from bot.media_utils import YtDlpResult
+
+        mock_download.return_value = YtDlpResult(
+            info={
+                "audio_path": "test.mp3",
+                "title": "Test Song",
+                "description": "Desc",
+                "thumbnail_path": "thumb.jpg",
+                "duration": 100,
+                "uploader": "Artist",
+            }
+        )
 
         mock_update.message.reply_audio = AsyncMock()
         mock_update.message.reply_text = AsyncMock()
@@ -348,6 +358,8 @@ async def test_settings_callback_in_dm_uses_global_config(mock_admin_update, moc
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
     mock_admin_update.callback_query = query
+    mock_admin_update.effective_chat.type = "private"
+    mock_admin_update.effective_chat.id = 12345
 
     with (
         patch("bot.commands.get_logic_config", new_callable=AsyncMock) as mock_config,
@@ -360,6 +372,38 @@ async def test_settings_callback_in_dm_uses_global_config(mock_admin_update, moc
         await commands.settings_callback(mock_admin_update, mock_context)
 
     mock_set_reply.assert_called_once_with(0, 0.06)
+
+
+@pytest.mark.asyncio
+async def test_settings_callback_toggle_utils_in_dm(mock_admin_update, mock_context):
+    """Disable utils from a DM settings panel and surface a toast."""
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.message.chat_id = 12345
+    query.message.chat.type = "private"
+    query.data = "settings:toggle_utils"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    mock_admin_update.callback_query = query
+    mock_admin_update.effective_chat.type = "private"
+    mock_admin_update.effective_chat.id = 12345
+
+    with (
+        patch("bot.commands.get_utils_disabled", new_callable=AsyncMock) as mock_get,
+        patch("bot.commands.set_utils_disabled", new_callable=AsyncMock) as mock_set,
+        patch("bot.commands._build_settings_panel", new_callable=AsyncMock) as mock_panel,
+    ):
+        mock_get.return_value = False
+        mock_panel.return_value = (
+            "Global default settings\nUtils (media downloads): disabled",
+            None,
+        )
+
+        await commands.settings_callback(mock_admin_update, mock_context)
+
+    mock_set.assert_called_once_with(0, True)
+    query.edit_message_text.assert_called_once()
+    query.answer.assert_called_once_with("Utils disabled globally.")
 
 
 @pytest.mark.asyncio
@@ -427,6 +471,20 @@ async def test_bot_env_command_rejects_group_chat(mock_admin_update, mock_contex
 
 
 @pytest.mark.asyncio
+async def test_web_settings_command_opens_telegram_web_app(mock_admin_update, mock_context):
+    mock_admin_update.effective_chat.type = "private"
+    mock_admin_update.message.reply_text = AsyncMock()
+
+    with patch("bot.commands.WEB_SETTINGS_URL", "https://bot.example.test"):
+        await commands.web_settings_command(mock_admin_update, mock_context)
+
+    _, kwargs = mock_admin_update.message.reply_text.call_args
+    button = kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Open web settings"
+    assert button.web_app.url == "https://bot.example.test"
+
+
+@pytest.mark.asyncio
 async def test_bot_env_callback_refreshes_panel(mock_admin_update, mock_context):
     query = MagicMock()
     query.from_user.id = 12345
@@ -441,4 +499,3 @@ async def test_bot_env_callback_refreshes_panel(mock_admin_update, mock_context)
 
     query.edit_message_text.assert_called_once()
     query.answer.assert_called_once_with("Environment refreshed.")
-

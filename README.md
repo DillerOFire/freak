@@ -80,6 +80,27 @@ The model defaults are sensible; override them only if you want different ones:
 | `LLM_PONDER_MAX_STEPS` | Maximum ponder research/tool iterations | `10` |
 | `LLM_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
 
+### Telegram Web App settings
+
+Set `WEB_SETTINGS_URL` to the public **HTTPS** URL of the embedded settings
+listener, then open `/web_settings` from the admin's private chat with the
+bot. The page edits the same persisted environment file, persona prompt, and
+global behavior settings as the bot commands.
+
+```ini
+WEB_SETTINGS_URL=https://bot.example.com
+WEB_SETTINGS_HOST=127.0.0.1
+WEB_SETTINGS_PORT=8780
+WEB_SETTINGS_INIT_DATA_MAX_AGE=3600
+```
+
+Put TLS in front of the listener (for example, with Caddy, nginx, or Traefik)
+and proxy both `/` and `/api/` to `WEB_SETTINGS_HOST:WEB_SETTINGS_PORT`.
+Telegram Web Apps require HTTPS; do not put the plain listener directly on the
+public internet. The API accepts only fresh, Telegram-signed Web App data from
+the configured `ADMIN_ID`. Saved API keys are never returned to the browser:
+the page shows only their masked state and accepts a replacement value.
+
 Docker-only overrides (set in `docker-compose.yml` or `.env`):
 
 | Variable | Purpose | Default |
@@ -88,6 +109,7 @@ Docker-only overrides (set in `docker-compose.yml` or `.env`):
 | `BOT_DB_PATH` | SQLite database location | `bot_memory.db` next to the code; `/data/bot_memory.db` in the image |
 | `COOKIES_DIR` | Where `cookies.txt` files live | `cookies/` next to the code; `/data/cookies` in the image |
 | `TELEMETRY_DASHBOARD_HOST` | Dashboard bind address | `127.0.0.1`; set `0.0.0.0` in Docker so the port-forwarded healthcheck reaches it |
+| `WEB_SETTINGS_HOST` | Web App settings listener bind address | `127.0.0.1`; set `0.0.0.0` in Docker when a reverse proxy needs the mapped port |
 
 ### 4. Run it
 
@@ -162,10 +184,12 @@ services:
     environment:
       RUN_MODE: docker
       TELEMETRY_DASHBOARD_HOST: "0.0.0.0"
+      WEB_SETTINGS_HOST: "0.0.0.0"
     volumes:
       - ./data:/data
     ports:
       - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}:${TELEMETRY_DASHBOARD_PORT:-8765}"
+      - "127.0.0.1:${WEB_SETTINGS_PORT:-8780}:${WEB_SETTINGS_PORT:-8780}"
 ```
 
 The `./data` volume is where the SQLite DB and cookies persist across container recreations. `RUN_MODE=docker` turns off the in-process `git pull` / yt-dlp self-update jobs — the image owns that lifecycle now.
@@ -291,6 +315,8 @@ Send `/help` in Telegram for the live list. Highlights:
 
 **Admin config**
 - `/settings` — button panel for all tunables.
+- `/web_settings` — open the Telegram Web App editor in an admin DM (requires `WEB_SETTINGS_URL`).
+- `/bot_env`, `/set_env <KEY> <value>` — inspect masked editable environment values or update one in an admin DM.
 - `/set_reply_chance`, `/set_reaction_chance`, `/set_cooldown`, `/set_max_ping_pong` — exact values.
 - `/update_prompt <text>`, `/show_prompt` — edit the persona.
 - `/stop` / `/start` — pause / resume the bot.

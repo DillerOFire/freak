@@ -8,6 +8,7 @@ import re
 import stat
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -19,6 +20,7 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "TELEGRAM_BOT_TOKEN",
         "LLM_API_KEY",
         "ADMIN_ID",
+        "LLM_BASE_URL",
         "LLM_MODEL",
         "LLM_PONDER_MODEL",
         "LLM_PONDER_MAX_STEPS",
@@ -34,6 +36,10 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "TELEMETRY_DASHBOARD_TOKEN",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "WEB_SETTINGS_URL",
+        "WEB_SETTINGS_HOST",
+        "WEB_SETTINGS_PORT",
+        "WEB_SETTINGS_INIT_DATA_MAX_AGE",
         "UV_EXECUTABLE",
     }
 )
@@ -68,10 +74,68 @@ RESTART_REQUIRED_KEYS: frozenset[str] = frozenset(
         "TELEMETRY_DASHBOARD_PORT",
         "TELEMETRY_DASHBOARD_ENABLED",
         "TELEMETRY_DASHBOARD_TOKEN",
+        "WEB_SETTINGS_URL",
+        "WEB_SETTINGS_HOST",
+        "WEB_SETTINGS_PORT",
+        "WEB_SETTINGS_INIT_DATA_MAX_AGE",
     }
 )
 
 _KEY_PATTERN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_BOOL_VALUES = frozenset({"0", "1", "false", "true", "no", "yes", "off", "on"})
+MAX_ENV_VALUE_LENGTH = 4096
+
+
+class EnvUpdateError(ValueError):
+    """A user-facing validation failure while editing the managed env file."""
+
+
+def _validate_int(value: str, *, key: str, minimum: int, maximum: int) -> None:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise EnvUpdateError(f"{key} must be an integer from {minimum} to {maximum}.") from exc
+    if not minimum <= parsed <= maximum:
+        raise EnvUpdateError(f"{key} must be an integer from {minimum} to {maximum}.")
+
+
+def validate_env_value(key: str, value: str) -> tuple[str, str]:
+    """Normalize and validate one user-editable environment value."""
+    normalized_key = key.strip().upper()
+    if normalized_key in PROTECTED_ENV_KEYS:
+        raise EnvUpdateError(
+            f"{normalized_key} is managed by the deployment and cannot be changed here."
+        )
+    if normalized_key not in EDITABLE_ENV_KEYS:
+        raise EnvUpdateError(f"Unknown or non-editable key: {normalized_key}")
+    if not isinstance(value, str):
+        raise EnvUpdateError(f"{normalized_key} must be a text value.")
+    if not value or "\x00" in value or "\n" in value or "\r" in value:
+        raise EnvUpdateError(f"{normalized_key} must be a non-empty single-line value.")
+    if len(value) > MAX_ENV_VALUE_LENGTH:
+        raise EnvUpdateError(
+            f"{normalized_key} is too long (maximum {MAX_ENV_VALUE_LENGTH} characters)."
+        )
+
+    if normalized_key == "LLM_PONDER_MAX_STEPS":
+        _validate_int(value, key=normalized_key, minimum=1, maximum=20)
+    elif normalized_key == "ADMIN_ID":
+        _validate_int(value, key=normalized_key, minimum=1, maximum=2**63 - 1)
+    elif normalized_key in {"TELEMETRY_DASHBOARD_PORT", "WEB_SETTINGS_PORT"}:
+        _validate_int(value, key=normalized_key, minimum=1, maximum=65535)
+    elif normalized_key == "WEB_SETTINGS_INIT_DATA_MAX_AGE":
+        _validate_int(value, key=normalized_key, minimum=60, maximum=86400)
+    elif normalized_key == "WEB_SETTINGS_URL":
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise EnvUpdateError(
+                "WEB_SETTINGS_URL must be a public HTTPS URL, for example https://bot.example.com."
+            )
+    elif normalized_key in {"LLM_PROMPT_CACHE", "TELEMETRY_DASHBOARD_ENABLED"}:
+        if value.lower() not in _BOOL_VALUES:
+            raise EnvUpdateError(f"{normalized_key} must be a boolean value.")
+
+    return normalized_key, value
 
 
 def resolve_env_file_path() -> Path:
@@ -248,20 +312,22 @@ def ensure_env_file_seeded() -> None:
     logging.info("Seeded env file at %s", path)
 
 
-def set_env_value(key: str, value: str) -> tuple[bool, str]:
-    """Persist one env key. Returns (restart_required, message)."""
-    key = key.strip().upper()
-    if key in PROTECTED_ENV_KEYS:
-        return False, f"{key} is managed by the deployment and cannot be changed here."
-    if key not in EDITABLE_ENV_KEYS:
-        return False, f"Unknown or non-editable key: {key}"
-    if key == "LLM_PONDER_MAX_STEPS":
-        try:
-            step_budget = int(value)
-        except ValueError:
-            return False, "LLM_PONDER_MAX_STEPS must be an integer from 1 to 20."
-        if not 1 <= step_budget <= 20:
-            return False, "LLM_PONDER_MAX_STEPS must be an integer from 1 to 20."
+def set_env_values(updates: dict[str, str]) -> tuple[bool, str]:
+    """Atomically persist validated environment updates.
+
+    All values are validated before the file is touched. This makes a single
+    Web App Save action all-or-nothing when a field contains an invalid value.
+    """
+    if not updates:
+        return False, "No environment changes supplied."
+
+    normalized_updates: dict[str, str] = {}
+    try:
+        for key, value in updates.items():
+            normalized_key, normalized_value = validate_env_value(key, value)
+            normalized_updates[normalized_key] = normalized_value
+    except EnvUpdateError as exc:
+        return False, str(exc)
 
     path = resolve_env_file_path()
     ok, message = _check_writable(path)
@@ -277,14 +343,26 @@ def set_env_value(key: str, value: str) -> tuple[bool, str]:
             ("blank", None, None),
         ]
 
-    content = _serialize_env_lines(lines, {key: value})
+    content = _serialize_env_lines(lines, normalized_updates)
     _atomic_write_text(path, content)
 
     load_dotenv(path, override=True)
-    restart_required = apply_env_to_runtime(key, value)
+    restart_required = False
+    for key, value in normalized_updates.items():
+        restart_required = apply_env_to_runtime(key, value) or restart_required
     if restart_required:
-        return True, f"Updated {key}. Restart the bot to apply this change."
-    return False, f"Updated {key}."
+        return True, "Updated environment settings. Restart the bot to apply all changes."
+    return False, "Updated environment settings."
+
+
+def set_env_value(key: str, value: str) -> tuple[bool, str]:
+    """Persist one env key. Returns (restart_required, message)."""
+    normalized_key = key.strip().upper()
+    restart_required, message = set_env_values({normalized_key: value})
+    if message.startswith("Updated environment settings"):
+        suffix = " Restart the bot to apply this change." if restart_required else "."
+        return restart_required, f"Updated {normalized_key}.{suffix.lstrip('.')}"
+    return restart_required, message
 
 
 def apply_env_to_runtime(key: str, value: str) -> bool:
@@ -298,6 +376,20 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.llm as llm
 
         llm.LLM_MODEL = value
+    elif key == "LLM_BASE_URL":
+        old_base_url = config.LLM_BASE_URL
+        config.LLM_BASE_URL = value
+        import bot.llm as llm
+        import bot.vision as vision
+        import bot.agent as agent
+
+        llm.client.base_url = value
+        if config.LLM_PONDER_BASE_URL == old_base_url:
+            config.LLM_PONDER_BASE_URL = value
+            agent.client.base_url = value
+        if config.LLM_VISION_BASE_URL == old_base_url:
+            config.LLM_VISION_BASE_URL = value
+            vision.client.base_url = value
     elif key == "LLM_PONDER_MODEL":
         config.LLM_PONDER_MODEL = value
         import bot.agent as agent
@@ -379,6 +471,14 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.agent as agent
 
         agent.FIRECRAWL_API_URL = value
+    elif key == "WEB_SETTINGS_URL":
+        config.WEB_SETTINGS_URL = value
+    elif key == "WEB_SETTINGS_HOST":
+        config.WEB_SETTINGS_HOST = value
+    elif key == "WEB_SETTINGS_PORT":
+        config.WEB_SETTINGS_PORT = int(value)
+    elif key == "WEB_SETTINGS_INIT_DATA_MAX_AGE":
+        config.WEB_SETTINGS_INIT_DATA_MAX_AGE = int(value)
 
     return key in RESTART_REQUIRED_KEYS
 
