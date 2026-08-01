@@ -119,6 +119,7 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     target_path = os.path.join(COOKIES_DIR, f"{service}.txt")
+    from bot.media_utils import save_netscape_cookies
 
     # Check for file attachment
     document = update.message.document
@@ -128,13 +129,28 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
     if document:
         file = await document.get_file()
         try:
-            await file.download_to_drive(target_path)
+            raw_bytes = await file.download_as_bytearray()
+            cookie_content = raw_bytes.decode("utf-8", errors="replace")
+            count, _names, session = save_netscape_cookies(target_path, cookie_content)
+            session_note = (
+                f"session cookies: {', '.join(session)}"
+                if session
+                else "WARNING: no session cookies (SID/LOGIN_INFO/…) detected"
+            )
             await update.message.reply_text(
-                f"Cookies for {service} updated successfully (from file)."
+                f"Cookies for {service} updated (from file): {count} rows. {session_note}."
             )
             logging.info(
-                f"Cookies updated for {service} by user {update.effective_user.id}"
+                "Cookies updated service=%s user_id=%s rows=%d session=%s source=file",
+                service,
+                update.effective_user.id,
+                count,
+                ",".join(session) if session else "none",
             )
+            return
+        except ValueError as e:
+            logging.error("Rejected cookies for %s: %s", service, e)
+            await update.message.reply_text(f"Rejected cookies file: {e}")
             return
         except Exception as e:
             logging.error(f"Failed to save cookies for {service}: {e}")
@@ -142,18 +158,30 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
             return
 
     # Check for text content
-    parts = update.message.text.split(maxsplit=2)
+    parts = (update.message.text or "").split(maxsplit=2)
     if len(parts) >= 3:
         cookie_content = parts[2]
         try:
-            with open(target_path, "w", encoding="utf-8") as f:
-                f.write(cookie_content)
+            count, _names, session = save_netscape_cookies(target_path, cookie_content)
+            session_note = (
+                f"session cookies: {', '.join(session)}"
+                if session
+                else "WARNING: no session cookies (SID/LOGIN_INFO/…) detected"
+            )
             await update.message.reply_text(
-                f"Cookies for {service} updated successfully (from text)."
+                f"Cookies for {service} updated (from text): {count} rows. {session_note}."
             )
             logging.info(
-                f"Cookies updated for {service} by user {update.effective_user.id}"
+                "Cookies updated service=%s user_id=%s rows=%d session=%s source=text",
+                service,
+                update.effective_user.id,
+                count,
+                ",".join(session) if session else "none",
             )
+            return
+        except ValueError as e:
+            logging.error("Rejected cookies for %s: %s", service, e)
+            await update.message.reply_text(f"Rejected cookies text: {e}")
             return
         except Exception as e:
             logging.error(f"Failed to save cookies for {service}: {e}")
@@ -912,6 +940,8 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = args[0]
+    user = update.effective_user
+    user_id = user.id if user else None
     await update.message.reply_text("Downloading audio... this might take a moment.")
 
     # Import ytdlp helper
@@ -925,6 +955,13 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "youtube.com" in url or "youtu.be" in url:
         cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
 
+    logging.info(
+        "Audio download attempt chat_id=%s user_id=%s url=%s cookies=%s",
+        chat_id,
+        user_id,
+        url,
+        cookies_path or "none",
+    )
     dl = await asyncio.to_thread(download_audio_ytdlp, url, cookies_path)
     if dl.cookie_issue:
         await notify_admin_cookie_failure(
@@ -953,6 +990,13 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 duration=duration,
                 thumbnail=thumb,
             )
+            logging.info(
+                "Audio download ok chat_id=%s user_id=%s url=%s title=%s",
+                chat_id,
+                user_id,
+                url,
+                title,
+            )
 
             # Cleanup
             if thumb:
@@ -961,7 +1005,13 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(audio_path)
 
         except Exception as e:
-            logging.error(f"Failed to send audio file: {e}")
+            logging.error(
+                "Failed to send audio chat_id=%s user_id=%s url=%s: %s",
+                chat_id,
+                user_id,
+                url,
+                e,
+            )
             await update.message.reply_text("Failed to send audio file.")
             # Cleanup on fail
             if thumbnail_path and os.path.exists(thumbnail_path):
@@ -969,6 +1019,14 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(audio_path):
                 os.remove(audio_path)
     else:
+        logging.error(
+            "Audio download failed chat_id=%s user_id=%s cookie_issue=%s url=%s error=%s",
+            chat_id,
+            user_id,
+            dl.cookie_issue,
+            url,
+            dl.error,
+        )
         await update.message.reply_text("Failed to download audio.")
 
 

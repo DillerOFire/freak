@@ -692,11 +692,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if urls:
         # Check if utils are disabled
         if await get_utils_disabled(chat_id):
-            logging.info(f"Utils disabled in chat {chat_id}, ignoring URLs.")
+            logging.info(
+                "Utils disabled chat_id=%s user_id=%s, ignoring URLs",
+                chat_id,
+                user.id,
+            )
         else:
+            is_admin = user.id == ADMIN_ID
+            chat_type = getattr(update.effective_chat, "type", None)
             for url in urls:
-                logging.info(f"Detected URL: {url}")
-
                 # Determine service for cookies
                 cookies_path = None
                 if "youtube.com" in url or "youtu.be" in url:
@@ -728,6 +732,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif "rutube.ru" in url:
                     cookies_path = os.path.join(COOKIES_DIR, "rutube.txt")
 
+                logging.info(
+                    "Media download attempt chat_id=%s chat_type=%s user_id=%s "
+                    "is_admin=%s url=%s cookies=%s",
+                    chat_id,
+                    chat_type,
+                    user.id,
+                    is_admin,
+                    url,
+                    cookies_path or "none",
+                )
+
                 dl = await asyncio.to_thread(download_video_ytdlp, url, cookies_path)
                 if dl.cookie_issue:
                     await notify_admin_cookie_failure(
@@ -743,12 +758,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             video=open(dl.path, "rb"),
                             reply_to_message_id=update.message.message_id,
                         )
+                        logging.info(
+                            "Media download ok chat_id=%s user_id=%s is_admin=%s "
+                            "url=%s path=%s",
+                            chat_id,
+                            user.id,
+                            is_admin,
+                            url,
+                            dl.path,
+                        )
                         os.remove(dl.path)
                         return  # Stop processing if we handled a video download
                     except Exception as e:
-                        logging.error(f"Failed to send video: {e}")
+                        logging.error(
+                            "Failed to send video chat_id=%s user_id=%s url=%s: %s",
+                            chat_id,
+                            user.id,
+                            url,
+                            e,
+                        )
                         if os.path.exists(dl.path):
                             os.remove(dl.path)
+                else:
+                    logging.error(
+                        "Media download failed chat_id=%s chat_type=%s user_id=%s "
+                        "is_admin=%s cookie_issue=%s cookies_present=%s url=%s error=%s",
+                        chat_id,
+                        chat_type,
+                        user.id,
+                        is_admin,
+                        dl.cookie_issue,
+                        dl.cookies_present,
+                        url,
+                        dl.error,
+                    )
 
     if media_description:
         text = f"{media_description}\n{text}".strip()

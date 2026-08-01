@@ -3,8 +3,12 @@ FROM python:3.11-slim
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Install system dependencies (git for updates, ffmpeg for media processing)
-RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg curl \
+# Install system dependencies (git for updates, ffmpeg for media processing).
+# Deno is required by modern yt-dlp for YouTube JS challenge / EJS solving.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ffmpeg curl ca-certificates unzip \
+    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
+    && deno --version \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for the running process

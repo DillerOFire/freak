@@ -168,6 +168,71 @@ def test_detect_cookie_issue_markers():
     )
 
 
+def test_normalize_netscape_cookies_converts_spaces_to_tabs():
+    raw = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com  TRUE  /  TRUE  1820105380  SID  secretvalue\n"
+        ".youtube.com\tTRUE\t/\tFALSE\t0\tPREF\thl=en\n"
+    )
+    text, names = media_utils.normalize_netscape_cookies(raw)
+    assert names == ["SID", "PREF"]
+    lines = [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
+    assert all("\t" in ln for ln in lines)
+    assert " secretvalue" not in lines[0]  # tabs, not multi-spaces as separators
+    assert lines[0].split("\t")[5] == "SID"
+    assert lines[0].split("\t")[6] == "secretvalue"
+
+
+def test_save_netscape_cookies_rejects_empty(tmp_path):
+    path = tmp_path / "youtube.txt"
+    with pytest.raises(ValueError, match="No valid Netscape"):
+        media_utils.save_netscape_cookies(str(path), "# only a comment\n")
+
+
+def test_save_netscape_cookies_reports_session(tmp_path):
+    path = tmp_path / "youtube.txt"
+    raw = (
+        ".youtube.com TRUE / TRUE 1820105380 SID abc\n"
+        ".youtube.com TRUE / TRUE 1820105380 LOGIN_INFO def\n"
+        ".youtube.com TRUE / TRUE 0 VISITOR_INFO1_LIVE xyz\n"
+    )
+    count, names, session = media_utils.save_netscape_cookies(str(path), raw)
+    assert count == 3
+    assert "SID" in names and "LOGIN_INFO" in names
+    assert "SID" in session and "LOGIN_INFO" in session
+    written = path.read_text(encoding="utf-8")
+    assert "\tSID\t" in written
+
+
+def test_download_video_uses_cookie_copy_not_source(mock_ytdlp, tmp_path):
+    """yt-dlp must receive a temp cookiefile so it cannot wipe the stored jar."""
+    instance = mock_ytdlp.return_value.__enter__.return_value
+    instance.download.return_value = None
+    cookies = tmp_path / "youtube.txt"
+    cookies.write_text(
+        ".youtube.com\tTRUE\t/\tTRUE\t1820105380\tSID\tabc\n", encoding="utf-8"
+    )
+    original = cookies.read_text(encoding="utf-8")
+
+    with (
+        patch("glob.glob", return_value=["/tmp/out.mp4"]),
+        patch("tempfile.gettempdir", return_value="/tmp"),
+        patch("uuid.uuid4", return_value="test_uuid"),
+    ):
+        result = media_utils.download_video_ytdlp(
+            "https://youtube.com/watch?v=abc", str(cookies)
+        )
+
+    assert result.ok
+    opts = mock_ytdlp.call_args[0][0]
+    assert opts["cookiefile"] != str(cookies)
+    assert opts["cookiefile"].endswith(".txt")
+    assert "js_runtimes" in opts
+    assert "remote_components" in opts
+    # Stored jar unchanged
+    assert cookies.read_text(encoding="utf-8") == original
+
+
 def test_cookie_refresh_instructions_include_service_links_and_tools():
     text = media_utils.cookie_refresh_instructions("youtube")
     assert "https://www.youtube.com" in text

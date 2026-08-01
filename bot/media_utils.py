@@ -85,6 +85,128 @@ def service_name_from_cookies_path(cookies_path: str | None) -> str:
     return base or "unknown"
 
 
+# Cookie names that usually mean a logged-in browser session (not just visitor IDs).
+_SESSION_COOKIE_NAMES = frozenset(
+    {
+        "sid",
+        "hsid",
+        "ssid",
+        "apisid",
+        "sapisid",
+        "login_info",
+        "__secure-1psid",
+        "__secure-3psid",
+        "sessionid",
+        "auth_token",
+        "auth_multi",
+        "twid",
+        "li_at",
+        "csrftoken",
+    }
+)
+
+
+def normalize_netscape_cookies(content: str) -> tuple[str, list[str]]:
+    """
+    Normalize a Netscape cookies.txt body to tab-separated rows.
+
+    Many browser extensions export space-separated fields. yt-dlp requires
+    tabs and skips space-separated rows with "invalid length 1".
+    Returns (normalized_text, list_of_cookie_names).
+    """
+    out_lines: list[str] = []
+    names: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip("\r")
+        if not line.strip():
+            out_lines.append("")
+            continue
+        if line.lstrip().startswith("#"):
+            out_lines.append(line.rstrip())
+            continue
+
+        if "\t" in line:
+            fields = line.split("\t")
+        else:
+            # Space-separated export: first 6 fields are fixed; value is the rest.
+            fields = line.split()
+            if len(fields) > 7:
+                fields = fields[:6] + [" ".join(fields[6:])]
+
+        if len(fields) < 7:
+            logging.warning(
+                "Skipping cookie line with %d fields (need 7): %s…",
+                len(fields),
+                line[:80],
+            )
+            continue
+
+        domain, flag, path, secure, expires, name, value = fields[:7]
+        # Normalize boolean flags to TRUE/FALSE as Netscape expects.
+        flag = "TRUE" if flag.upper() == "TRUE" else "FALSE"
+        secure = "TRUE" if secure.upper() == "TRUE" else "FALSE"
+        out_lines.append(
+            "\t".join([domain, flag, path, secure, expires, name, value])
+        )
+        names.append(name)
+
+    text = "\n".join(out_lines)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if not text.startswith("#"):
+        text = "# Netscape HTTP Cookie File\n" + text
+    return text, names
+
+
+def save_netscape_cookies(path: str, content: str) -> tuple[int, list[str], list[str]]:
+    """
+    Normalize and write cookies.txt. Returns (count, all_names, session_names).
+    Raises ValueError if no valid cookie rows remain after normalization.
+    """
+    normalized, names = normalize_netscape_cookies(content)
+    if not names:
+        raise ValueError(
+            "No valid Netscape cookie rows found. Export cookies.txt with "
+            "TAB-separated fields (e.g. “Get cookies.txt LOCALLY”)."
+        )
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(normalized)
+    session = [n for n in names if n.lower() in _SESSION_COOKIE_NAMES]
+    return len(names), names, session
+
+
+def _prepare_cookiefile_copy(cookies_path: str) -> tuple[str, int, list[str]]:
+    """
+    Build a temp Netscape cookiefile for yt-dlp.
+
+    Uses a copy so yt-dlp cannot rewrite/empty the stored jar on download.
+    Normalizes space-separated exports to tabs.
+    """
+    with open(cookies_path, encoding="utf-8", errors="replace") as f:
+        raw = f.read()
+    normalized, names = normalize_netscape_cookies(raw)
+    fd, tmp_path = tempfile.mkstemp(prefix="ytdlp-cookies-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(normalized)
+    return tmp_path, len(names), names
+
+
+def _base_ydl_opts() -> dict:
+    """Shared yt-dlp options including JS runtime for YouTube EJS challenges."""
+    return {
+        "quiet": True,
+        "noplaylist": True,
+        # Deno is installed in the Docker image; node listed as optional fallback.
+        "js_runtimes": {"deno": {}, "node": {}},
+        # Allow fetching challenge solver scripts when the package needs them.
+        "remote_components": {"ejs:github"},
+        "logger": YtDlpLogger(),
+    }
+
+
 # Per-service guidance for refreshing Netscape cookies.txt used by yt-dlp.
 # Keep links stable; prefer official/extension store pages and yt-dlp wiki.
 _SERVICE_COOKIE_GUIDES: dict[str, dict] = {
@@ -344,23 +466,38 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
     temp_filename = f"{uuid.uuid4()}.mp4"
     temp_path = os.path.join(temp_dir, temp_filename)
 
-    # Output template for yt-dlp
-
     outtmpl = temp_path
 
-    ydl_opts = {
-        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best",
-        "outtmpl": outtmpl,
-        "max_filesize": 50 * 1024 * 1024,  # 50MB
-        "quiet": True,
-        "noplaylist": True,
-        # Enable remote components to solve n-challenge (requires ejs)
-        "remote_components": {"ejs:github"},
-        "logger": YtDlpLogger(),
-    }
+    ydl_opts = _base_ydl_opts()
+    ydl_opts.update(
+        {
+            "format": (
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
+                "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
+            ),
+            "outtmpl": outtmpl,
+            "max_filesize": 50 * 1024 * 1024,  # 50MB
+        }
+    )
 
+    cookie_tmp: str | None = None
     if cookies_present:
-        ydl_opts["cookiefile"] = cookies_path
+        try:
+            cookie_tmp, n_cookies, cookie_names = _prepare_cookiefile_copy(cookies_path)
+            ydl_opts["cookiefile"] = cookie_tmp
+            session = [n for n in cookie_names if n.lower() in _SESSION_COOKIE_NAMES]
+            logging.info(
+                "yt-dlp video cookies source=%s rows=%d session=%s",
+                cookies_path,
+                n_cookies,
+                ",".join(session) if session else "none",
+            )
+            if n_cookies == 0:
+                logging.warning(
+                    "Cookie file %s has zero valid rows after normalize", cookies_path
+                )
+        except Exception as e:
+            logging.error("Failed to prepare cookiefile %s: %s", cookies_path, e)
     elif cookies_path:
         logging.warning(
             "Cookies expected at %s but file is missing; downloading without cookies",
@@ -391,13 +528,19 @@ def download_video_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
 
     except Exception as e:
         error = str(e)
-        logging.error(f"yt-dlp failed for {url}: {e}")
+        logging.error("yt-dlp video failed url=%s error=%s", url, e)
         return YtDlpResult(
             error=error,
             cookie_issue=_detect_cookie_issue(error, cookies_path, cookies_present),
             cookies_path=cookies_path,
             cookies_present=cookies_present,
         )
+    finally:
+        if cookie_tmp and os.path.exists(cookie_tmp):
+            try:
+                os.remove(cookie_tmp)
+            except OSError:
+                pass
 
 
 def download_audio_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
@@ -414,29 +557,37 @@ def download_audio_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
     base_path = os.path.splitext(temp_path)[0]
     outtmpl = base_path + ".%(ext)s"
 
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": outtmpl,
-        "max_filesize": 50 * 1024 * 1024,  # 50MB
-        "quiet": True,
-        "noplaylist": True,
-        "writethumbnail": True,  # Download thumbnail
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            },
-            # Embed thumbnail in the audio file if possible (optional, but good)
-            # {'key': 'EmbedThumbnail'},
-            # We will handle thumbnail separately for Telegram
-        ],
-        "remote_components": {"ejs:github"},
-        "logger": YtDlpLogger(),
-    }
+    ydl_opts = _base_ydl_opts()
+    ydl_opts.update(
+        {
+            "format": "bestaudio/best",
+            "outtmpl": outtmpl,
+            "max_filesize": 50 * 1024 * 1024,  # 50MB
+            "writethumbnail": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                },
+            ],
+        }
+    )
 
+    cookie_tmp: str | None = None
     if cookies_present:
-        ydl_opts["cookiefile"] = cookies_path
+        try:
+            cookie_tmp, n_cookies, cookie_names = _prepare_cookiefile_copy(cookies_path)
+            ydl_opts["cookiefile"] = cookie_tmp
+            session = [n for n in cookie_names if n.lower() in _SESSION_COOKIE_NAMES]
+            logging.info(
+                "yt-dlp audio cookies source=%s rows=%d session=%s",
+                cookies_path,
+                n_cookies,
+                ",".join(session) if session else "none",
+            )
+        except Exception as e:
+            logging.error("Failed to prepare cookiefile %s: %s", cookies_path, e)
     elif cookies_path:
         logging.warning(
             "Cookies expected at %s but file is missing; downloading without cookies",
@@ -473,9 +624,6 @@ def download_audio_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
                 thumbnail_path = possible_thumb
                 break
 
-        # If not found locally, maybe we can use the URL from info (but sending URL to telegram might fail if it's not direct)
-        # For now, if no local thumbnail, we just send None.
-
         return YtDlpResult(
             info={
                 "audio_path": audio_path,
@@ -491,13 +639,19 @@ def download_audio_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
 
     except Exception as e:
         error = str(e)
-        logging.error(f"yt-dlp audio download failed for {url}: {e}")
+        logging.error("yt-dlp audio failed url=%s error=%s", url, e)
         return YtDlpResult(
             error=error,
             cookie_issue=_detect_cookie_issue(error, cookies_path, cookies_present),
             cookies_path=cookies_path,
             cookies_present=cookies_present,
         )
+    finally:
+        if cookie_tmp and os.path.exists(cookie_tmp):
+            try:
+                os.remove(cookie_tmp)
+            except OSError:
+                pass
 
 
 def extract_frames_from_video(video_path: str, max_frames: int = 5) -> list[bytes]:
