@@ -13,6 +13,7 @@ Think of it as a moody, opinionated chat member with memory — not a question-a
 - **Memory** — per-user "thoughts" and shared general memories, searchable with `/memory`. The bot recalls relevant context when replying.
 - **Media handling** — downloads video/audio via `yt-dlp`, analyzes images and video frames with a vision model, and can reuse saved GIFs/photos/stickers as replies.
 - **Ponder research agent** — when the main LLM wants more context, it spawns a sandboxed ReAct agent with `web_search`, `fetch_web_page`, memory read/write tools, and admin config tools. SSRF-guarded, no private network access.
+- **Human-like schedules & moods** — the RP bot can schedule delayed replies, proactive messages, later research, or free-form tasks (`schedule_action`), and set temporary event states (`set_event_state`: angry until tomorrow, ignore someone for an hour, etc.). Reasons and context are stored so future replies stay continuous. A 30s job poller fires due actions.
 - **Per-chat settings** — reply chance, reaction chance, cooldown, bot-to-bot ping-pong cap. Set globally or per chat via a button panel.
 - **Daily schedules** — send a message or run an LLM prompt every day at a given time.
 - **Whitelist** — only respond in chats/users you allow.
@@ -307,14 +308,15 @@ main.py            Entry point: handlers, polling, post_init
 config.py          Loads .env and exports settings
 bot/
   handlers.py      Message pipeline: logic → media → LLM → (ponder) → reply
-  logic.py         Reply/react decision logic (cooldowns, chances, ping-pong)
-  memory.py        SQLite access (users, general memory, whitelist, config)
-  llm.py           LLM calls + tool-call routing to ponder
+  logic.py         Reply/react decision logic (cooldowns, chances, ping-pong, ignore states)
+  memory.py        SQLite access (users, general memory, schedules, event states, whitelist, config)
+  llm.py           LLM calls + tool-call routing (memory, schedule/state, ponder)
+  schedule.py      Time parsing + execution of LLM-scheduled actions
   agent.py         Sandboxed ponder ReAct agent (web_search, fetch, recall)
   media_utils.py   yt-dlp download + video frame extraction
   vision.py        Image / frame analysis via vision model
   commands.py      Bot command handlers
-  jobs.py          Scheduled daily tasks + update checker
+  jobs.py          Daily tasks + update checker + 30s poller for deferred LLM actions
   system.py        Self-update helpers (git pull, yt-dlp upgrade, restart)
   messages.py      Reaction emoji pool
   telemetry/        Optional usage dashboard

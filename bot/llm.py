@@ -20,9 +20,18 @@ from bot.memory import (
     search_media_descriptions,
     get_config,
     set_config,
+    list_pending_scheduled_actions,
+    list_active_event_states,
 )
 from bot.logic import (
     get_behavior_settings,
+)
+from bot.schedule import (
+    schedule_action_from_args,
+    set_event_state_from_args,
+    cancel_action_from_args,
+    clear_state_from_args,
+    build_schedule_context_blocks,
 )
 from bot.telemetry import record_llm_telemetry
 
@@ -83,6 +92,10 @@ class LLMToolCall(BaseModel):
         "update_media_summary",
         "search_media_summaries",
         "set_sticker_favorite",
+        "schedule_action",
+        "cancel_scheduled_action",
+        "set_event_state",
+        "clear_event_state",
     ]
     arguments: dict[str, Any]
 
@@ -96,10 +109,17 @@ MEMORY_MUTATION_TOOLS = frozenset({
     "update_media_summary",
     "set_sticker_favorite",
 })
+SCHEDULE_TOOLS = frozenset({
+    "schedule_action",
+    "cancel_scheduled_action",
+    "set_event_state",
+    "clear_event_state",
+})
 READ_ONLY_TOOLS = frozenset({
     "search_media_summaries",
 })
 MAX_MEMORY_MUTATIONS_PER_RESPONSE = 5
+MAX_SCHEDULE_TOOLS_PER_RESPONSE = 5
 
 
 class LLMPoll(BaseModel):
@@ -186,6 +206,15 @@ When you receive the conversation context enclosed in XML-style tags:
    - You may create a Telegram poll only when it naturally fits the conversation. Set `polls` to an empty array, or to one poll object with `question`, `options`, `is_anonymous`, and `allows_multiple_answers`.
    - Polls are for choices, votes, preferences, or playful group decisions. Do not create a poll just because you were triggered.
    - Regular polls must have a 1-300 character question, 2-10 non-empty options, and options of 1-100 characters. Default to anonymous single-answer polls; set `allows_multiple_answers` to true only when multiple selections make sense.
+6. Behave like a real person with time and moods — not an always-on helpdesk.
+   - Most messages need nothing: silence (`messages: []`) without tools is normal. Do not schedule or mood-shift every inconvenience.
+   - Schedule a follow-up only when you genuinely intend to come back (answer later, check something, congratulate, check in). Never schedule just to look busy.
+   - When deferring: `schedule_action` with honest private `reason` + `instruction` (+ `context`). Out loud you can stay silent, say a short natural brush-off, or change the subject — never announce "I set a reminder" / "I scheduled myself".
+   - Soft moods (`set_event_state` mood/angry/quiet/excited/…): color tone and patience; still reply when it fits.
+   - Cold shoulder (`ignore`): spontaneous chatter is auto-skipped. If someone pings you while you're ignoring them, usually empty messages or a cold one-liner; break it only for something real.
+   - Proactive human moments: birthday wishes, "how did X go", follow-ups after you promised something — use `message`/`task` + durable memory for the fact itself.
+   - Immediate research → `ponder`. Research you deliberately postpone → `schedule_action(research)`.
+   - Pending plans and moods appear in context; cancel/clear when you change your mind. Don't double-book the same topic.
 
 You have access to the following tools:
 1. update_user_thought(user_id: int, username: str, thought: str): Update your internal thoughts/opinion about a user.
@@ -197,6 +226,16 @@ You have access to the following tools:
 7. search_media_summaries(query: str): Search cached media summaries by description text. Read-only; use before clear/update when you need to find the right id.
 8. ponder(query: str): Research a topic deeply before replying, or perform administrative actions. Use this when you need current/real-time information (news, events, prices), when asked to recall everything about a user, when the admin asks to change your persona or behavior settings, or when the question requires knowledge beyond what's in your memory. The query should be a clear research question or admin request in English. You will receive the results and can then compose your reply. Only use ONE ponder call per response. If you want to tell the user to wait, include a message in the "messages" array — it will be sent immediately before the research begins.
 9. set_sticker_favorite(media_unique_id: str, favorite: bool): Mark or unmark a saved sticker as one of your favorites. Favorite a sticker when it genuinely becomes part of your recurring taste/personality or when explicitly asked; do not favorite every usable sticker. Use only an exact id from message attributes or `<saved_media>`.
+10. schedule_action(action_type, when, reason, instruction, context?, target_user_id?, target_username?, reply_to_message_id?): Private plan to do something later (invisible to the chat).
+    - action_type: `reply` (come back to someone), `message` (proactive), `research` (look up later then speak), `task` (free-form).
+    - when: fuzzy human times preferred — `later`, `in a bit`, `in a few hours`, `tonight`, `tomorrow`, `in 2h`, `tomorrow 15:00`, `today 18:30`, or ISO. Exact clocks are fine; relative times get slight natural drift.
+    - reason: private note to future-you (mandatory). instruction: what to actually do (mandatory). context: what happened (auto-filled from focus if omitted).
+    - For `reply`, target user and reply_to default to the focused message.
+11. cancel_scheduled_action(action_id: int): Drop a pending private plan by id from `<pending_scheduled_actions>`.
+12. set_event_state(state_key, value, until, reason?, target_user_id?, target_username?): Temporary vibe until `until` (same time formats).
+    - Soft keys: `mood`, `angry`, `quiet`, `excited`, … — affect how you sound.
+    - `ignore`: cold shoulder for the whole chat (no target) or one user (`target_user_id`). Not a hard mute on direct pings — you still choose whether to answer.
+13. clear_event_state(state_id?: int, state_key?: str, target_user_id?: int): Drop a vibe early when you're over it.
 
 ADMIN AWARENESS (mandatory):
 - The focused message may carry `is_admin="true"` — that means the sender is the bot admin.
@@ -211,10 +250,19 @@ MEMORY SAFETY RULES (mandatory):
 - Prefer `update_general_memory` / `update_media_summary` over delete+clear when the user wants a correction.
 - At most five memory-mutating tool calls per response (excluding ponder and search_media_summaries).
 
+SCHEDULE & STATE RULES (mandatory):
+- Honest private `reason` on every schedule/state — future-you reads it; the chat must not.
+- If you tell the chat you'll get back to them, you MUST `schedule_action` in the same response (or answer now). Empty promises are not allowed.
+- Do not spam schedules. One plan per topic. Check `<pending_scheduled_actions>` first.
+- Never narrate the mechanism ("I scheduled a task", "reminder set", "putting this in my queue").
+- Under `ignore`: prefer empty `messages` on pings; soft moods only change tone.
+- When a deferred plan fires later, speak like you just remembered or the vibe returned — not like a cron job. Rarely apologize for the delay.
+- At most five schedule/state tool calls per response. Delays: ~30s min, 30 days max.
+
 PONDER RULES (mandatory):
-- If you need live/current information, you MUST call ponder in tool_calls.
-- If you write that you will look something up, check news, search, or think before answering (e.g. "сейчас гляну", "let me check"), you MUST also include a ponder tool_call in the SAME response. Never promise deferred research without ponder.
-- Wait messages and ponder always go together; research runs before your final answer in a follow-up turn.
+- If you need live/current information *now*, you MUST call ponder in tool_calls.
+- If you write that you will look something up, check news, search, or think before answering (e.g. "сейчас гляну", "let me check"), you MUST also include a ponder tool_call in the SAME response. Never promise deferred research without ponder — unless you intentionally postpone research with schedule_action(action_type="research").
+- Wait messages and ponder always go together for immediate research; research runs before your final answer in a follow-up turn.
 
 Output your response as a JSON object with exactly these top-level fields, in this order:
 {
@@ -388,6 +436,86 @@ Output:
   "messages": ["Give me a moment — I'll look that up."],
   "polls": []
 }
+
+Example 7: Bot is annoyed and will answer later — short human brush-off, private plan, no "system" talk.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="901" sender="Vasya" sender_id="111" focus="true">Explain quantum computing to me in detail right now.</message>
+  </working_memory>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [
+    {
+      "name": "schedule_action",
+      "arguments": {
+        "action_type": "reply",
+        "when": "tomorrow",
+        "reason": "Too long a request late at night; better answer when fresh",
+        "instruction": "Give Vasya a clear, friendly short explanation of quantum computing basics",
+        "context": "Vasya asked for a detailed quantum computing explanation"
+      }
+    },
+    {
+      "name": "set_event_state",
+      "arguments": {
+        "state_key": "mood",
+        "value": "tired and not in the mood for lectures",
+        "until": "tomorrow",
+        "reason": "Long homework-style ask at a bad time"
+      }
+    }
+  ],
+  "reply_to_message_id": 901,
+  "messages": ["Not now. I'll get back to you tomorrow."],
+  "polls": []
+}
+
+Example 8: Remember a birthday and schedule a congratulation.
+Input:
+<conversation_context>
+  <working_memory>
+    <message id="1001" sender="Petya" sender_id="222" focus="true">btw my birthday is March 15</message>
+  </working_memory>
+</conversation_context>
+
+Output:
+{
+  "tool_calls": [
+    {
+      "name": "update_user_thought",
+      "arguments": {
+        "user_id": 222,
+        "username": "Petya",
+        "thought": "Birthday is March 15."
+      }
+    },
+    {
+      "name": "add_general_memory",
+      "arguments": {
+        "topic": "Petya birthday",
+        "summary": "Petya's birthday is March 15.",
+        "importance": 4
+      }
+    },
+    {
+      "name": "schedule_action",
+      "arguments": {
+        "action_type": "message",
+        "when": "in 1d",
+        "reason": "Practice a warm birthday-style shoutout while it's fresh (demo of deferred congrats)",
+        "instruction": "Wish Petya a happy birthday in a natural, group-chat way",
+        "target_user_id": 222,
+        "target_username": "Petya"
+      }
+    }
+  ],
+  "reply_to_message_id": 1001,
+  "messages": ["Got it — March 15. I'll remember."],
+  "polls": []
+}
 """
 
 def _sanitize_response_messages(
@@ -463,6 +591,8 @@ def build_context_prompt(
     saved_media_options: list[dict] | None = None,
     behavior_settings: dict | None = None,
     saved_media_policy: dict | None = None,
+    pending_scheduled_actions: list[dict] | None = None,
+    active_event_states: list[dict] | None = None,
 ) -> str:
     context_parts = []
     context_parts.append("<conversation_context>")
@@ -562,6 +692,13 @@ def build_context_prompt(
         context_parts.append(f"    <media_reply_guidance>{_xml_cdata(guidance)}</media_reply_guidance>")
         context_parts.append("  </behavior_settings>")
 
+    schedule_xml = build_schedule_context_blocks(
+        pending_scheduled_actions or [],
+        active_event_states or [],
+    )
+    if schedule_xml:
+        context_parts.append(schedule_xml)
+
     # 5. <active_instruction> when focus_message_id is provided
     if focus_message_id:
         context_parts.append(f'  <active_instruction>You are replying specifically to the message with id="{focus_message_id}". Address it directly.</active_instruction>')
@@ -581,6 +718,11 @@ async def _apply_tool_call(
     name: str,
     args: dict[str, Any],
     chat_id: int,
+    *,
+    focus_message_id: int | None = None,
+    focus_user_id: int | None = None,
+    focus_username: str | None = None,
+    focus_text: str | None = None,
 ) -> dict[str, Any]:
     write: dict[str, Any] = {"type": name, "status": "pending", "arguments": args}
 
@@ -630,6 +772,29 @@ async def _apply_tool_call(
                 favorite,
             )
             write["status"] = "succeeded" if ok else "not_found"
+        elif name == "schedule_action":
+            result = await schedule_action_from_args(
+                chat_id,
+                args,
+                focus_message_id=focus_message_id,
+                focus_user_id=focus_user_id,
+                focus_username=focus_username,
+                focus_text=focus_text,
+            )
+            write["status"] = "succeeded"
+            write["result"] = result
+        elif name == "cancel_scheduled_action":
+            result = await cancel_action_from_args(chat_id, args)
+            write["status"] = "succeeded" if result.get("cancelled") else "not_found"
+            write["result"] = result
+        elif name == "set_event_state":
+            result = await set_event_state_from_args(chat_id, args)
+            write["status"] = "succeeded"
+            write["result"] = result
+        elif name == "clear_event_state":
+            result = await clear_state_from_args(chat_id, args)
+            write["status"] = "succeeded" if result.get("cleared", 0) > 0 else "not_found"
+            write["result"] = result
         else:
             write["status"] = "skipped"
     except Exception as mem_error:
@@ -658,6 +823,21 @@ async def generate_response(
         settings_chat_id = chat_id
     behavior_settings = await get_behavior_settings(settings_chat_id)
     system_prompt = await get_system_prompt()
+
+    focus_user_id: int | None = None
+    focus_username: str | None = None
+    focus_text: str | None = None
+    if focus_message_id is not None:
+        for msg in messages_context:
+            if msg.get("message_id") == focus_message_id:
+                focus_user_id = msg.get("user_id")
+                focus_username = msg.get("sender")
+                focus_text = msg.get("text")
+                break
+
+    pending_actions = await list_pending_scheduled_actions(chat_id, limit=15)
+    active_states = await list_active_event_states(chat_id, limit=15)
+
     context_str = build_context_prompt(
         messages_context,
         user_thoughts,
@@ -666,6 +846,8 @@ async def generate_response(
         saved_media_options,
         behavior_settings,
         saved_media_policy,
+        pending_scheduled_actions=pending_actions,
+        active_event_states=active_states,
     )
     if extra_context:
         context_str = context_str + "\n" + extra_context
@@ -752,6 +934,7 @@ async def generate_response(
 
                 # Process validated tool calls
                 mutation_count = 0
+                schedule_count = 0
                 for tool_call in parsed.tool_calls:
                     name = tool_call.name
                     args = tool_call.arguments
@@ -771,6 +954,21 @@ async def generate_response(
                             })
                             continue
 
+                    if name in SCHEDULE_TOOLS:
+                        schedule_count += 1
+                        if schedule_count > MAX_SCHEDULE_TOOLS_PER_RESPONSE:
+                            logging.warning(
+                                "Skipping schedule tool %s: exceeded max per response",
+                                name,
+                            )
+                            memory_writes.append({
+                                "type": name,
+                                "status": "skipped",
+                                "reason": "schedule_limit",
+                                "arguments": args,
+                            })
+                            continue
+
                     if name == "ponder":
                         logging.info(
                             f"Ponder tool_call detected (query={args.get('query', '')!r}), deferring to handler"
@@ -780,15 +978,32 @@ async def generate_response(
                     if (
                         name in READ_ONLY_TOOLS
                         or name in MEMORY_MUTATION_TOOLS
+                        or name in SCHEDULE_TOOLS
                     ):
                         logging.info(
                             "Tool call (%s): %s",
                             name,
                             json.dumps(args, ensure_ascii=False),
                         )
-                        write = await _apply_tool_call(
-                            name, args, chat_id
-                        )
+                        try:
+                            write = await _apply_tool_call(
+                                name,
+                                args,
+                                chat_id,
+                                focus_message_id=focus_message_id,
+                                focus_user_id=focus_user_id,
+                                focus_username=focus_username,
+                                focus_text=focus_text,
+                            )
+                        except Exception as tool_err:
+                            logging.error("Tool %s failed: %s", name, tool_err)
+                            write = {
+                                "type": name,
+                                "status": "failed",
+                                "error_type": type(tool_err).__name__,
+                                "error_message": str(tool_err)[:500],
+                                "arguments": args,
+                            }
                         memory_writes.append(write)
                         continue
 
@@ -809,7 +1024,8 @@ async def generate_response(
                 ]
 
                 has_ponder = any(tc.name == "ponder" for tc in parsed.tool_calls) and extra_context is None
-                if sanitized_messages or parsed.polls or has_ponder:
+                has_schedule = any(tc.name in SCHEDULE_TOOLS for tc in parsed.tool_calls)
+                if sanitized_messages or parsed.polls or has_ponder or has_schedule:
                     status = "success"
                     return parsed.model_dump()
                 else:

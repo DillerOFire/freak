@@ -872,7 +872,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
     # Reaction Logic
-    if await should_react(chat_id):
+    if await should_react(chat_id, user.id):
         logging.info("Decided to react...")
         emoji = await generate_reaction(text)
         if emoji:

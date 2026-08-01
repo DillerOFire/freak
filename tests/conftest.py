@@ -47,3 +47,7 @@ def mock_context():
     context = MagicMock()
     context.bot.username = "@test_bot"
     return context
+
+
+# Re-export chat simulator helpers for convenience (optional import path).
+# Prefer: `from tests.chat_sim import ChatSimulator, default_users`

@@ -68,11 +68,18 @@ There are two LLM-backed components with distinct roles. **Adding a tool to the 
 | **Model** | `LLM_MODEL` (conversational) | `LLM_PONDER_MODEL` (cheaper/faster) |
 | **Invoked** | On every eligible message | Only when the RP bot calls `ponder` |
 | **Memory tools** | ✅ Inline — `update_user_thought`, `add_general_memory`, `update/delete_general_memory`, `clear/update_media_summary`, `search_media_summaries` | ✅ Same set plus `recall_memories` — can store research findings and fulfill forget/update requests during ponder |
+| **Schedule / event-state tools** | ✅ Inline — `schedule_action`, `cancel_scheduled_action`, `set_event_state`, `clear_event_state` (human-like deferred replies, moods, ignore) | ❌ No — scheduling is persona behavior on the RP bot |
 | **Web tools** | ❌ No | ✅ `web_search`, `fetch_web_page` |
 | **Persona/behavior/admin tools** | ❌ No — sees `is_admin` in context to refuse non-admins inline and route admin requests via `ponder` | ✅ `get/update/reset_persona_prompt`, `get/update_behavior_settings` (admin-gated via `requesting_user_id`) |
 | **`ponder` tool** | ✅ Single deferred call per response | ❌ Cannot call itself |
 
-**Rule of thumb:** The RP bot is a roleplay character with a memory. It does NOT modify its own config — it asks the ponder agent to do that. If a new tool mutates bot configuration, persona, or behavior, it goes in `bot/agent.py`'s `PONDER_TOOLS`. Conversational memory tools live on both: the RP bot uses them inline during chat; the ponder agent uses them while researching or when a memory edit is routed through `ponder`.
+**Rule of thumb:** The RP bot is a roleplay character with a memory and human-like timing. It does NOT modify its own config — it asks the ponder agent to do that. If a new tool mutates bot configuration, persona, or global behavior knobs, it goes in `bot/agent.py`'s `PONDER_TOOLS`. Conversational memory tools live on both. Deferred actions and temporary moods (`bot/schedule.py` + DB tables `scheduled_actions` / `event_states`) are RP-bot tools only; a job poller in `bot/jobs.py` executes due actions every 30s.
+
+### Scheduled actions & event states
+
+- **`scheduled_actions`**: LLM can defer a `reply`, proactive `message`, delayed `research` (ponder then speak), or free-form `task`. Each row stores `reason`, `instruction`, and `context` so future-you knows why it waited. Relative times get slight human jitter; vague phrases (`later`, `tonight`) are supported. When a plan fires, recent chat history is included and the model is told to speak like it remembered — not like a cron job.
+- **`event_states`**: Time-bounded moods (`angry`, `mood`, …) injected into prompt context. `ignore` is a **soft** cold shoulder: spontaneous replies are blocked, but direct @mentions / replies still reach the LLM so it can stay silent, snub, or break silence (admin always bypasses).
+- Pending actions and active states are injected into every RP prompt as `<pending_scheduled_actions>` / `<active_event_states>` with human-relative times (`in about 2 hours`).
 
 ### Database
 

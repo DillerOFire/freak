@@ -9,6 +9,16 @@ def reset_reply_state(chat_id=12345):
     logic.bot_reply_locks.pop(chat_id, None)
     logic.bot_ping_pong_counts.pop(chat_id, None)
 
+
+def _no_ignore():
+    """Patch event-state ignore off for unit tests that don't use a temp DB."""
+    return patch(
+        "bot.logic.is_user_ignored",
+        new_callable=AsyncMock,
+        return_value=(False, None),
+    )
+
+
 @pytest.mark.asyncio
 async def test_should_reply_direct_mention(mock_update):
     """Test that the bot replies to direct mentions."""
@@ -17,7 +27,10 @@ async def test_should_reply_direct_mention(mock_update):
     mock_update.message.from_user.is_bot = False
 
     # Mock memory functions
-    with patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config:
+    with (
+        patch("bot.logic.get_logic_config", new_callable=AsyncMock) as mock_config,
+        _no_ignore(),
+    ):
         mock_config.return_value = (10, 0.0, 0.0)  # High cooldown, 0 chance
 
         reply = await logic.should_reply(mock_update.message, "@test_bot", 12345)

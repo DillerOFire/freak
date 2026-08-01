@@ -114,6 +114,51 @@ async def init_db():
                 task_content TEXT
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL CHECK(action_type IN ('reply', 'message', 'research', 'task')),
+                execute_at TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                instruction TEXT NOT NULL,
+                context TEXT,
+                target_user_id INTEGER,
+                target_username TEXT,
+                reply_to_message_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'done', 'cancelled', 'failed')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                completed_at TEXT,
+                error_message TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scheduled_actions_due
+            ON scheduled_actions(status, execute_at)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scheduled_actions_chat
+            ON scheduled_actions(chat_id, status, execute_at)
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS event_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                state_key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                reason TEXT,
+                target_user_id INTEGER,
+                target_username TEXT,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                active INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_event_states_chat_active
+            ON event_states(chat_id, active, expires_at)
+        """)
 
         # Migration: Add chat_id to general_memory if not exists
         async with db.execute("PRAGMA table_info(general_memory)") as cursor:
@@ -936,3 +981,391 @@ async def get_daily_task(chat_id: int):
             "SELECT * FROM daily_tasks WHERE chat_id = ?", (chat_id,)
         ) as cursor:
             return await cursor.fetchone()
+
+
+# ---------------------------------------------------------------------------
+# Scheduled actions (LLM-driven deferred messages / research / tasks)
+# ---------------------------------------------------------------------------
+
+MAX_PENDING_SCHEDULED_ACTIONS_PER_CHAT = 20
+MAX_ACTIVE_EVENT_STATES_PER_CHAT = 15
+SCHEDULED_ACTION_TYPES = frozenset({"reply", "message", "research", "task"})
+
+
+def _row_to_dict(row) -> dict:
+    return dict(row) if row is not None else {}
+
+
+async def count_pending_scheduled_actions(chat_id: int) -> int:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM scheduled_actions WHERE chat_id = ? AND status = 'pending'",
+            (chat_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def add_scheduled_action(
+    chat_id: int,
+    *,
+    action_type: str,
+    execute_at: str,
+    reason: str,
+    instruction: str,
+    context: str | None = None,
+    target_user_id: int | None = None,
+    target_username: str | None = None,
+    reply_to_message_id: int | None = None,
+) -> int:
+    if action_type not in SCHEDULED_ACTION_TYPES:
+        raise ValueError(f"Invalid action_type: {action_type}")
+    reason = (reason or "").strip()[:1000]
+    instruction = (instruction or "").strip()[:2000]
+    context = (context or "").strip()[:4000] or None
+    if not reason:
+        raise ValueError("reason is required")
+    if not instruction:
+        raise ValueError("instruction is required")
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO scheduled_actions (
+                chat_id, action_type, execute_at, reason, instruction, context,
+                target_user_id, target_username, reply_to_message_id, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                chat_id,
+                action_type,
+                execute_at,
+                reason,
+                instruction,
+                context,
+                target_user_id,
+                target_username,
+                reply_to_message_id,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def get_scheduled_action(action_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM scheduled_actions WHERE id = ?", (action_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_dict(row) if row else None
+
+
+async def list_pending_scheduled_actions(
+    chat_id: int | None = None, *, limit: int = 50
+) -> list[dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        if chat_id is None:
+            query = """
+                SELECT * FROM scheduled_actions
+                WHERE status = 'pending'
+                ORDER BY execute_at ASC
+                LIMIT ?
+            """
+            params: tuple = (limit,)
+        else:
+            query = """
+                SELECT * FROM scheduled_actions
+                WHERE chat_id = ? AND status = 'pending'
+                ORDER BY execute_at ASC
+                LIMIT ?
+            """
+            params = (chat_id, limit)
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_dict(r) for r in rows]
+
+
+async def get_due_scheduled_actions(now_iso: str, *, limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM scheduled_actions
+            WHERE status = 'pending' AND execute_at <= ?
+            ORDER BY execute_at ASC
+            LIMIT ?
+            """,
+            (now_iso, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_dict(r) for r in rows]
+
+
+async def claim_scheduled_action(action_id: int) -> bool:
+    """Mark pending action as running. Returns False if already claimed/cancelled."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            UPDATE scheduled_actions
+            SET status = 'running'
+            WHERE id = ? AND status = 'pending'
+            """,
+            (action_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def complete_scheduled_action(
+    action_id: int, *, status: str = "done", error_message: str | None = None
+) -> None:
+    if status not in ("done", "failed", "cancelled"):
+        raise ValueError(f"Invalid terminal status: {status}")
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            UPDATE scheduled_actions
+            SET status = ?, completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                error_message = ?
+            WHERE id = ?
+            """,
+            (status, (error_message or "")[:500] or None, action_id),
+        )
+        await db.commit()
+
+
+async def cancel_scheduled_action(action_id: int, chat_id: int | None = None) -> bool:
+    async with aiosqlite.connect(DB_NAME) as db:
+        if chat_id is None:
+            cursor = await db.execute(
+                """
+                UPDATE scheduled_actions
+                SET status = 'cancelled',
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ? AND status = 'pending'
+                """,
+                (action_id,),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                UPDATE scheduled_actions
+                SET status = 'cancelled',
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ? AND chat_id = ? AND status = 'pending'
+                """,
+                (action_id, chat_id),
+            )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Event states (time-bounded moods / ignore / attitude)
+# ---------------------------------------------------------------------------
+
+async def count_active_event_states(chat_id: int) -> int:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM event_states
+            WHERE chat_id = ? AND active = 1 AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            """,
+            (chat_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def add_event_state(
+    chat_id: int,
+    *,
+    state_key: str,
+    value: str,
+    expires_at: str,
+    reason: str | None = None,
+    target_user_id: int | None = None,
+    target_username: str | None = None,
+) -> int:
+    state_key = (state_key or "").strip().lower()[:64]
+    value = (value or "").strip()[:1000]
+    reason = (reason or "").strip()[:1000] or None
+    if not state_key:
+        raise ValueError("state_key is required")
+    if not value:
+        raise ValueError("value is required")
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Replace existing active state with same key + target scope in this chat
+        if target_user_id is None:
+            await db.execute(
+                """
+                UPDATE event_states SET active = 0
+                WHERE chat_id = ? AND state_key = ? AND target_user_id IS NULL AND active = 1
+                """,
+                (chat_id, state_key),
+            )
+        else:
+            await db.execute(
+                """
+                UPDATE event_states SET active = 0
+                WHERE chat_id = ? AND state_key = ? AND target_user_id = ? AND active = 1
+                """,
+                (chat_id, state_key, target_user_id),
+            )
+        cursor = await db.execute(
+            """
+            INSERT INTO event_states (
+                chat_id, state_key, value, reason, target_user_id, target_username,
+                expires_at, active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                chat_id,
+                state_key,
+                value,
+                reason,
+                target_user_id,
+                target_username,
+                expires_at,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def list_active_event_states(
+    chat_id: int | None = None, *, limit: int = 50
+) -> list[dict]:
+    """Return non-expired active states. Pass chat_id=None for all chats (job cleanup)."""
+    now_clause = "expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        if chat_id is None:
+            query = f"""
+                SELECT * FROM event_states
+                WHERE active = 1 AND {now_clause}
+                ORDER BY expires_at ASC
+                LIMIT ?
+            """
+            params: tuple = (limit,)
+        else:
+            query = f"""
+                SELECT * FROM event_states
+                WHERE chat_id = ? AND active = 1 AND {now_clause}
+                ORDER BY expires_at ASC
+                LIMIT ?
+            """
+            params = (chat_id, limit)
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_dict(r) for r in rows]
+
+
+async def get_event_state(state_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM event_states WHERE id = ?", (state_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_dict(row) if row else None
+
+
+async def clear_event_state(
+    state_id: int | None = None,
+    *,
+    chat_id: int | None = None,
+    state_key: str | None = None,
+    target_user_id: int | None = None,
+) -> int:
+    """Deactivate event state(s). Returns number of rows cleared."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        if state_id is not None:
+            if chat_id is None:
+                cursor = await db.execute(
+                    "UPDATE event_states SET active = 0 WHERE id = ? AND active = 1",
+                    (state_id,),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    UPDATE event_states SET active = 0
+                    WHERE id = ? AND chat_id = ? AND active = 1
+                    """,
+                    (state_id, chat_id),
+                )
+            await db.commit()
+            return cursor.rowcount
+
+        if chat_id is None or not state_key:
+            raise ValueError("Provide state_id, or chat_id + state_key")
+
+        state_key = state_key.strip().lower()
+        if target_user_id is None:
+            cursor = await db.execute(
+                """
+                UPDATE event_states SET active = 0
+                WHERE chat_id = ? AND state_key = ? AND active = 1
+                """,
+                (chat_id, state_key),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                UPDATE event_states SET active = 0
+                WHERE chat_id = ? AND state_key = ? AND target_user_id = ? AND active = 1
+                """,
+                (chat_id, state_key, target_user_id),
+            )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def expire_event_states(now_iso: str | None = None) -> int:
+    """Mark expired active states as inactive. Returns count expired."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        if now_iso:
+            cursor = await db.execute(
+                """
+                UPDATE event_states SET active = 0
+                WHERE active = 1 AND expires_at <= ?
+                """,
+                (now_iso,),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                UPDATE event_states SET active = 0
+                WHERE active = 1
+                  AND expires_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                """
+            )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def is_user_ignored(chat_id: int, user_id: int | None) -> tuple[bool, str | None]:
+    """
+    Check ignore event states for chat-wide or user-specific ignore.
+    Returns (is_ignored, reason).
+    """
+    try:
+        states = await list_active_event_states(chat_id, limit=50)
+    except Exception as e:
+        logging.warning("is_user_ignored failed for chat %s: %s", chat_id, e)
+        return False, None
+    ignore_keys = {"ignore", "ignoring", "silent", "silent_treatment"}
+    for state in states:
+        key = (state.get("state_key") or "").lower()
+        if key not in ignore_keys:
+            continue
+        target = state.get("target_user_id")
+        if target is None:
+            return True, state.get("reason") or state.get("value")
+        if user_id is not None and int(target) == int(user_id):
+            return True, state.get("reason") or state.get("value")
+    return False, None

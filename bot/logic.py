@@ -1,6 +1,13 @@
 import random
 import logging
-from bot.memory import get_chat_config, set_chat_config, get_config, set_config
+from bot.memory import (
+    get_chat_config,
+    set_chat_config,
+    get_config,
+    set_config,
+    is_user_ignored,
+)
+from config import ADMIN_ID
 
 # Cooldown state
 # We track the number of messages seen since the last reply per chat
@@ -261,6 +268,43 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
         f"Checking if should reply in {chat_id}: {messages_since_last_reply[chat_id]}"
     )
 
+    chat_type = getattr(getattr(message, "chat", None), "type", None)
+
+    # Direct engagement flags (used for soft ignore — humans still *see* pings)
+    text = getattr(message, "text", None) or ""
+    is_mention = bool(text and bot_username in text)
+    reply_to_message = getattr(message, "reply_to_message", None)
+    reply_to_user = getattr(reply_to_message, "from_user", None)
+    is_reply_to_bot = bool(
+        reply_to_message
+        and getattr(reply_to_user, "username", None) == bot_username.replace("@", "")
+    )
+    is_private = chat_type == "private" and not sender_is_bot
+    is_direct = is_mention or is_reply_to_bot or is_private
+
+    # LLM-set temporary ignore. Admin always gets through.
+    # Soft ignore: block spontaneous engagement, but still let direct pings reach the
+    # LLM so it can stay silent, snub, or break the cold shoulder when something matters.
+    if sender_id != ADMIN_ID:
+        ignored, ignore_reason = await is_user_ignored(chat_id, sender_id)
+        if ignored and not is_direct:
+            logging.info(
+                "Soft-ignore: skipping spontaneous reply in chat %s from %s (%s)",
+                chat_id,
+                sender_id,
+                ignore_reason,
+            )
+            messages_since_last_reply[chat_id] += 1
+            return False
+        if ignored and is_direct:
+            logging.info(
+                "Soft-ignore: allowing direct ping to LLM in chat %s from %s (%s)",
+                chat_id,
+                sender_id,
+                ignore_reason,
+            )
+            # Fall through so the model can choose silence / cold reply / break ignore.
+
     if sender_is_bot and sender_id in bot_reply_locks.get(chat_id, {}):
         logging.info(
             f"Ignoring bot message from {sender_id} in chat {chat_id}: reply lock active"
@@ -279,28 +323,21 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
         messages_since_last_reply[chat_id] += 1
         return False
 
-    chat_type = getattr(getattr(message, "chat", None), "type", None)
-    if chat_type == "private" and not sender_is_bot:
+    if is_private:
         logging.info(f"Trigger: Private chat message in {chat_id}")
         messages_since_last_reply[chat_id] = 0
         return True
 
     # Check for direct mention
-    if message.text:  # Check for direct mention
-        if bot_username in message.text:
-            logging.info(f"Trigger: Mentioned in chat {chat_id}")
-            messages_since_last_reply[chat_id] = 0
-            if sender_is_bot:
-                _mark_bot_replied(chat_id, sender_id)
-            return True
+    if is_mention:
+        logging.info(f"Trigger: Mentioned in chat {chat_id}")
+        messages_since_last_reply[chat_id] = 0
+        if sender_is_bot:
+            _mark_bot_replied(chat_id, sender_id)
+        return True
 
     # Check for reply to bot's message
-    reply_to_message = getattr(message, "reply_to_message", None)
-    reply_to_user = getattr(reply_to_message, "from_user", None)
-    if (
-        reply_to_message
-        and getattr(reply_to_user, "username", None) == bot_username.replace("@", "")
-    ):
+    if is_reply_to_bot:
         logging.info(f"Trigger: Replied to in chat {chat_id}")
         messages_since_last_reply[chat_id] = 0
         if sender_is_bot:
@@ -328,8 +365,13 @@ async def should_reply(message, bot_username: str, chat_id: int) -> bool:
     return False
 
 
-async def should_react(chat_id: int) -> bool:
+async def should_react(chat_id: int, user_id: int | None = None) -> bool:
     _, _, reaction_chance = await get_logic_config(chat_id)
+
+    # While ignoring someone/everyone, don't sprinkle reactions either
+    ignored, _ = await is_user_ignored(chat_id, user_id)
+    if ignored:
+        return False
 
     # Random chance for reaction
     if random.random() < reaction_chance:

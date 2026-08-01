@@ -4,6 +4,7 @@ from datetime import datetime
 from telegram.ext import Application, ContextTypes
 from bot.memory import get_all_daily_messages, get_all_daily_tasks, get_relevant_general_memories
 from bot.llm import generate_response
+from bot.schedule import process_due_scheduled_actions
 from config import ADMIN_ID
 from bot.system import (
     update_ytdlp_package,
@@ -244,6 +245,28 @@ def remove_job_if_exists(name: str, application: Application):
         job.schedule_removal()
 
 
+async def process_scheduled_actions_job(context: ContextTypes.DEFAULT_TYPE):
+    """Poll DB for due LLM-scheduled actions and event-state expiry."""
+    try:
+        processed = await process_due_scheduled_actions(context.application)
+        if processed:
+            logging.info("Processed %s scheduled action(s)", processed)
+    except Exception as e:
+        logging.error("Error processing scheduled actions: %s", e)
+
+
+def schedule_llm_action_poller(application: Application):
+    """Run every 30s to fire deferred LLM actions (reply later, congrats, research)."""
+    remove_job_if_exists("llm_scheduled_actions_poller", application)
+    application.job_queue.run_repeating(
+        process_scheduled_actions_job,
+        interval=30,
+        first=15,
+        name="llm_scheduled_actions_poller",
+    )
+    logging.info("LLM scheduled-actions poller registered (every 30s)")
+
+
 async def load_jobs(application: Application):
     logging.info("Loading scheduled jobs from database...")
 
@@ -256,6 +279,8 @@ async def load_jobs(application: Application):
         if not IN_CONTAINER:
             schedule_ytdlp_update_check(application)
             schedule_bot_update_check(application)
+
+        schedule_llm_action_poller(application)
 
         messages = await get_all_daily_messages()
 
