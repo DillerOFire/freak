@@ -92,10 +92,14 @@ async def test_settings_update_rejects_non_admin():
             await settings_web.apply_settings_update({"paused": True}, requesting_user_id=99)
 
 
-def test_rendered_settings_includes_fullscreen_persona_controls():
+def test_rendered_settings_includes_fullscreen_persona_editor_overlay():
     html = settings_web.render_settings_html()
 
-    assert "requestFullscreen" in html
+    assert "persona-overlay" in html
+    assert "edit-fullscreen" in html
+    assert "viewport-fit=cover" in html
+    assert "env(safe-area-inset-top" in html
+    assert "requestFullscreen" not in html
     assert "reset-persona" in html
     assert "/api/default_persona" in html
 
