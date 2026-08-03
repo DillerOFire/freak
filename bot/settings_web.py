@@ -397,6 +397,7 @@ def render_settings_html() -> str:
     button:disabled { opacity: .55; cursor: wait; } .hidden { display: none; }
     .field-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; } .field-label .secondary { padding: 6px 9px; font-size: 12px; }
     #persona-overlay { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; flex-direction: column; gap: 12px; padding: calc(env(safe-area-inset-top, 0px) + 12px) 14px calc(env(safe-area-inset-bottom, 0px) + 12px); }
+    #persona-overlay.hidden { display: none; }
     .overlay-header, .overlay-footer { display: flex; align-items: center; gap: 10px; } .overlay-header h2 { margin: 0; } .overlay-header .secondary { margin-left: auto; } .overlay-footer #overlay-save { margin-left: auto; }
     #persona-overlay-textarea { flex: 1; min-height: 0; width: 100%; resize: none; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 15px; line-height: 1.5; }
     @media (max-width: 599px) { main { padding: 10px 10px 84px; } .card { padding: 14px; } #persona { min-height: 320px; } .persona-actions { display: grid; grid-template-columns: 1fr 1fr; } .persona-actions #save { grid-column: 1 / -1; margin-left: 0; } .overlay-footer { flex-wrap: wrap; } .overlay-footer #overlay-save { margin-left: 0; } }

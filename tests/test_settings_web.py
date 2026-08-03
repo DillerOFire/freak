@@ -96,6 +96,7 @@ def test_rendered_settings_includes_fullscreen_persona_editor_overlay():
     html = settings_web.render_settings_html()
 
     assert "persona-overlay" in html
+    assert "#persona-overlay.hidden" in html
     assert "edit-fullscreen" in html
     assert "viewport-fit=cover" in html
     assert "env(safe-area-inset-top" in html
