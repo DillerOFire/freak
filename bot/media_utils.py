@@ -1,29 +1,44 @@
+import asyncio
 import cv2
-import tempfile
 import logging
 import os
+import re
+import shutil
+import tempfile
+import threading
 import time
 import yt_dlp
-import glob
-import uuid
 from dataclasses import dataclass
-from urllib.parse import quote
+from enum import StrEnum
+from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 from telegram import File, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-from config import ADMIN_ID, WEB_SETTINGS_URL
+from config import (
+    ADMIN_ID,
+    COOKIES_DIR,
+    WEB_SETTINGS_URL,
+    YTDLP_DOWNLOAD_TIMEOUT_SEC,
+    YTDLP_MAX_CONCURRENT_DOWNLOADS,
+    YTDLP_QUEUE_TIMEOUT_SEC,
+    YTDLP_SOCKET_TIMEOUT_SEC,
+)
+
+TELEGRAM_MEDIA_LIMIT_BYTES = 50 * 1024 * 1024
 
 # Rate-limit cookie failure DMs per service (seconds).
 _COOKIE_NOTIFY_COOLDOWN_SEC = 15 * 60
 _last_cookie_notify_at: dict[str, float] = {}
 
-# Substrings in yt-dlp errors that usually mean cookies/auth need refresh.
+# Substrings in yt-dlp errors that strongly indicate cookies/auth need refresh.
 _COOKIE_FAILURE_MARKERS = (
     "sign in",
     "login required",
     "please log in",
-    "cookies",
-    "cookie",
+    "cookies are required",
+    "invalid cookies",
+    "cookie authentication",
     "http error 401",
     "http error 403",
     "403: forbidden",
@@ -38,10 +53,20 @@ _COOKIE_FAILURE_MARKERS = (
     "join this channel",
     "not a bot",
     "bot check",
-    "authentication",
-    "unable to download video data",
-    "requested format is not available",
+    "authentication required",
 )
+
+
+class YtDlpFailureKind(StrEnum):
+    NETWORK = "network"
+    AUTH = "auth"
+    FORMAT = "format"
+    TOO_LARGE = "too_large"
+    TIMEOUT = "timeout"
+    QUEUE_FULL = "queue_full"
+    POSTPROCESS = "postprocess"
+    UNSUPPORTED = "unsupported"
+    INTERNAL = "internal"
 
 
 @dataclass
@@ -51,13 +76,84 @@ class YtDlpResult:
     path: str | None = None
     info: dict | None = None
     error: str | None = None
+    failure_kind: YtDlpFailureKind | None = None
+    # Compatibility for older callers/tests; failure_kind is authoritative.
     cookie_issue: bool = False
     cookies_path: str | None = None
     cookies_present: bool = False
+    work_dir: str | None = None
+    extractor: str | None = None
+    elapsed_seconds: float = 0.0
+    size_bytes: int | None = None
+    ytdlp_version: str = ""
+
+    def __post_init__(self) -> None:
+        if self.cookie_issue and self.failure_kind is None:
+            self.failure_kind = YtDlpFailureKind.AUTH
+        self.cookie_issue = self.failure_kind == YtDlpFailureKind.AUTH
 
     @property
     def ok(self) -> bool:
         return self.path is not None or self.info is not None
+
+    def cleanup(self) -> None:
+        """Remove every artifact owned by this result; safe to call repeatedly."""
+        if self.work_dir:
+            shutil.rmtree(self.work_dir, ignore_errors=True)
+            self.work_dir = None
+
+
+@dataclass(frozen=True)
+class MediaServicePolicy:
+    name: str
+    hosts: tuple[str, ...]
+    cookie_service: str
+
+
+_MEDIA_SERVICE_POLICIES = (
+    MediaServicePolicy("youtube", ("youtube.com", "youtu.be"), "youtube"),
+    MediaServicePolicy("instagram", ("instagram.com",), "instagram"),
+    MediaServicePolicy("x", ("x.com", "twitter.com"), "x"),
+    MediaServicePolicy("tiktok", ("tiktok.com",), "tiktok"),
+    MediaServicePolicy("facebook", ("facebook.com",), "facebook"),
+    MediaServicePolicy("reddit", ("reddit.com",), "reddit"),
+    MediaServicePolicy("pinterest", ("pinterest.com",), "pinterest"),
+    MediaServicePolicy("spotify", ("spotify.com",), "spotify"),
+    MediaServicePolicy("soundcloud", ("soundcloud.com",), "soundcloud"),
+    MediaServicePolicy("bandcamp", ("bandcamp.com",), "bandcamp"),
+    MediaServicePolicy("mixcloud", ("mixcloud.com",), "mixcloud"),
+    MediaServicePolicy("twitch", ("twitch.tv",), "twitch"),
+    MediaServicePolicy("vk", ("vk.com", "vkvideo.ru"), "vk"),
+    MediaServicePolicy("rutube", ("rutube.ru",), "rutube"),
+)
+
+
+def resolve_media_service(url: str) -> MediaServicePolicy | None:
+    """Resolve an exact host/subdomain to its shared download policy."""
+    try:
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return None
+    for policy in _MEDIA_SERVICE_POLICIES:
+        if any(host == domain or host.endswith(f".{domain}") for domain in policy.hosts):
+            return policy
+    return None
+
+
+def cookies_path_for_url(url: str) -> str | None:
+    policy = resolve_media_service(url)
+    if not policy:
+        return None
+    return os.path.join(COOKIES_DIR, f"{policy.cookie_service}.txt")
+
+
+def extract_supported_media_urls(text: str) -> list[str]:
+    urls: list[str] = []
+    for raw_url in re.findall(r"https?://[^\s<>()]+", text):
+        url = raw_url.rstrip(".,!?;:'\"]}")
+        if resolve_media_service(url):
+            urls.append(url)
+    return urls
 
 
 def _cookies_present(cookies_path: str | None) -> bool:
@@ -72,10 +168,26 @@ def _detect_cookie_issue(
         return False
     err = error.lower()
     marker_hit = any(marker in err for marker in _COOKIE_FAILURE_MARKERS)
-    # Service expected cookies but file is missing, and download failed.
-    if cookies_path and not cookies_present:
-        return True
     return marker_hit
+
+
+def _classify_ytdlp_failure(error: str | None) -> YtDlpFailureKind:
+    message = (error or "").lower()
+    if "freak-size-limit" in message or "larger than max-filesize" in message:
+        return YtDlpFailureKind.TOO_LARGE
+    if "freak-download-timeout" in message or "timed out" in message:
+        return YtDlpFailureKind.TIMEOUT
+    if any(marker in message for marker in _COOKIE_FAILURE_MARKERS):
+        return YtDlpFailureKind.AUTH
+    if "unsupported url" in message or "no suitable extractor" in message:
+        return YtDlpFailureKind.UNSUPPORTED
+    if "requested format is not available" in message or "no video formats" in message:
+        return YtDlpFailureKind.FORMAT
+    if "ffmpeg" in message or "postprocessing" in message or "post-processing" in message:
+        return YtDlpFailureKind.POSTPROCESS
+    if any(marker in message for marker in ("http error", "network", "connection", "temporary failure")):
+        return YtDlpFailureKind.NETWORK
+    return YtDlpFailureKind.INTERNAL
 
 
 def service_name_from_cookies_path(cookies_path: str | None) -> str:
@@ -196,7 +308,9 @@ def save_netscape_cookies(path: str, content: str) -> tuple[int, list[str], list
     return len(names), names, session
 
 
-def _prepare_cookiefile_copy(cookies_path: str) -> tuple[str, int, list[str]]:
+def _prepare_cookiefile_copy(
+    cookies_path: str, temp_dir: str | None = None
+) -> tuple[str, int, list[str]]:
     """
     Build a temp Netscape cookiefile for yt-dlp.
 
@@ -206,23 +320,82 @@ def _prepare_cookiefile_copy(cookies_path: str) -> tuple[str, int, list[str]]:
     with open(cookies_path, encoding="utf-8", errors="replace") as f:
         raw = f.read()
     normalized, names = normalize_netscape_cookies(raw)
-    fd, tmp_path = tempfile.mkstemp(prefix="ytdlp-cookies-", suffix=".txt")
+    fd, tmp_path = tempfile.mkstemp(
+        prefix="ytdlp-cookies-", suffix=".txt", dir=temp_dir
+    )
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(normalized)
     return tmp_path, len(names), names
 
 
-def _base_ydl_opts() -> dict:
-    """Shared yt-dlp options including JS runtime for YouTube EJS challenges."""
-    return {
+class _DownloadGuard:
+    """Cooperatively enforces the aggregate byte cap and job deadline."""
+
+    def __init__(self, cancel_event: threading.Event | None = None) -> None:
+        self.cancel_event = cancel_event or threading.Event()
+        self.started_at = time.monotonic()
+        self.deadline = self.started_at + YTDLP_DOWNLOAD_TIMEOUT_SEC
+        self._downloaded_by_file: dict[str, int] = {}
+
+    def check(self) -> None:
+        if self.cancel_event.is_set() or time.monotonic() >= self.deadline:
+            raise yt_dlp.utils.DownloadError("FREAK-DOWNLOAD-TIMEOUT")
+
+    def progress_hook(self, status: dict) -> None:
+        self.check()
+        filename = str(status.get("filename") or status.get("tmpfilename") or "stream")
+        downloaded = int(status.get("downloaded_bytes") or 0)
+        self._downloaded_by_file[filename] = max(
+            downloaded, self._downloaded_by_file.get(filename, 0)
+        )
+        if sum(self._downloaded_by_file.values()) > TELEGRAM_MEDIA_LIMIT_BYTES:
+            raise yt_dlp.utils.DownloadError("FREAK-SIZE-LIMIT")
+
+    def match_filter(self, info: dict, *, incomplete: bool) -> str | None:
+        self.check()
+        formats = info.get("requested_formats") or [info]
+        known_sizes = [
+            fmt.get("filesize") or fmt.get("filesize_approx")
+            for fmt in formats
+            if isinstance(fmt, dict)
+        ]
+        if known_sizes and all(size is not None for size in known_sizes):
+            if sum(int(size) for size in known_sizes) > TELEGRAM_MEDIA_LIMIT_BYTES:
+                return "FREAK-SIZE-LIMIT"
+        return None
+
+
+def _base_ydl_opts(guard: _DownloadGuard | None = None) -> dict:
+    """Shared, bounded yt-dlp options including YouTube EJS support."""
+    opts = {
         "quiet": True,
         "noplaylist": True,
+        "socket_timeout": YTDLP_SOCKET_TIMEOUT_SEC,
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_retries": 2,
+        "file_access_retries": 3,
+        "concurrent_fragment_downloads": 2,
+        "retry_sleep_functions": {
+            "http": lambda attempt: min(2 ** max(attempt - 1, 0), 8),
+            "fragment": lambda attempt: min(2 ** max(attempt - 1, 0), 8),
+            "extractor": lambda attempt: min(attempt, 3),
+        },
         # Deno is installed in the Docker image; node listed as optional fallback.
         "js_runtimes": {"deno": {}, "node": {}},
         # Allow fetching challenge solver scripts when the package needs them.
         "remote_components": {"ejs:github"},
         "logger": YtDlpLogger(),
     }
+    if guard:
+        opts.update(
+            {
+                "progress_hooks": [guard.progress_hook],
+                "postprocessor_hooks": [lambda _status: guard.check()],
+                "match_filter": guard.match_filter,
+            }
+        )
+    return opts
 
 
 # Per-service guidance for refreshing Netscape cookies.txt used by yt-dlp.
@@ -485,174 +658,186 @@ class YtDlpLogger:
         logging.error(f"yt-dlp: {msg}")
 
 
-def download_video_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
-    """Downloads a video using yt-dlp with a 50MB limit."""
+def _ytdlp_version() -> str:
+    return str(getattr(yt_dlp.version, "__version__", "unknown"))
 
+
+def _apply_cookie_options(
+    opts: dict, cookies_path: str | None, work_dir: str, media_type: str
+) -> bool:
     cookies_present = _cookies_present(cookies_path)
+    if not cookies_present:
+        if cookies_path:
+            logging.warning("Cookies expected at %s but file is missing", cookies_path)
+        return False
+    try:
+        cookie_tmp, count, names = _prepare_cookiefile_copy(cookies_path, work_dir)
+        if not count:
+            logging.warning("Cookie file %s has zero valid rows", cookies_path)
+            return True
+        opts["cookiefile"] = cookie_tmp
+        session = [name for name in names if name.lower() in _SESSION_COOKIE_NAMES]
+        logging.info(
+            "yt-dlp %s cookies source=%s rows=%d session=%s",
+            media_type,
+            cookies_path,
+            count,
+            ",".join(session) if session else "none",
+        )
+    except Exception as exc:
+        logging.error("Failed to prepare cookiefile %s: %s", cookies_path, exc)
+    return True
 
-    # Create a temporary file path using uuid
-    temp_dir = tempfile.gettempdir()
-    temp_filename = f"{uuid.uuid4()}.mp4"
-    temp_path = os.path.join(temp_dir, temp_filename)
 
-    outtmpl = temp_path
+def _find_artifact(work_dir: str, suffixes: set[str]) -> str | None:
+    candidates = [
+        path
+        for path in Path(work_dir).iterdir()
+        if path.is_file()
+        and path.suffix.lower() in suffixes
+        and not path.name.endswith((".part", ".ytdl"))
+    ]
+    if not candidates:
+        return None
+    return str(max(candidates, key=lambda path: (path.stat().st_mtime_ns, path.stat().st_size)))
 
-    ydl_opts = _base_ydl_opts()
-    ydl_opts.update(
+
+def _failure_result(
+    *,
+    error: str,
+    cookies_path: str | None,
+    cookies_present: bool,
+    work_dir: str | None,
+    started_at: float,
+    failure_kind: YtDlpFailureKind | None = None,
+    extractor: str | None = None,
+) -> YtDlpResult:
+    kind = failure_kind or _classify_ytdlp_failure(error)
+    if work_dir:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    return YtDlpResult(
+        error=error,
+        failure_kind=kind,
+        cookies_path=cookies_path,
+        cookies_present=cookies_present,
+        extractor=extractor,
+        elapsed_seconds=time.monotonic() - started_at,
+        ytdlp_version=_ytdlp_version(),
+    )
+
+
+def download_video_ytdlp(
+    url: str,
+    cookies_path: str | None = None,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> YtDlpResult:
+    """Download one video into an isolated directory with a hard 50 MiB cap."""
+    started_at = time.monotonic()
+    work_dir = tempfile.mkdtemp(prefix="freak-ytdlp-video-")
+    guard = _DownloadGuard(cancel_event)
+    cookies_present = _cookies_present(cookies_path)
+    opts = _base_ydl_opts(guard)
+    opts.update(
         {
             "format": (
+                "bestvideo[height<=720][ext=mp4][filesize<=50M]+"
+                "bestaudio[ext=m4a][filesize<=50M]/"
+                "best[height<=720][ext=mp4][filesize<=50M]/"
+                "best[height<=720][filesize<=50M]/"
+                "best[height<=720][ext=mp4][filesize_approx<=50M]/"
                 "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
                 "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best"
             ),
-            "outtmpl": outtmpl,
-            "max_filesize": 50 * 1024 * 1024,  # 50MB
+            "outtmpl": str(Path(work_dir) / "media.%(ext)s"),
+            "max_filesize": TELEGRAM_MEDIA_LIMIT_BYTES,
         }
     )
-
-    cookie_tmp: str | None = None
-    if cookies_present:
-        try:
-            cookie_tmp, n_cookies, cookie_names = _prepare_cookiefile_copy(cookies_path)
-            ydl_opts["cookiefile"] = cookie_tmp
-            session = [n for n in cookie_names if n.lower() in _SESSION_COOKIE_NAMES]
-            logging.info(
-                "yt-dlp video cookies source=%s rows=%d session=%s",
-                cookies_path,
-                n_cookies,
-                ",".join(session) if session else "none",
-            )
-            if n_cookies == 0:
-                logging.warning(
-                    "Cookie file %s has zero valid rows after normalize", cookies_path
-                )
-        except Exception as e:
-            logging.error("Failed to prepare cookiefile %s: %s", cookies_path, e)
-    elif cookies_path:
-        logging.warning(
-            "Cookies expected at %s but file is missing; downloading without cookies",
-            cookies_path,
-        )
-
+    _apply_cookie_options(opts, cookies_path, work_dir, "video")
+    info: dict = {}
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        # yt-dlp might append the extension if not strictly enforced or if merging happens.
-        # We use glob to find the file regardless of extension.
-        possible_files = glob.glob(f"{temp_path}*")
-        if possible_files:
-            return YtDlpResult(
-                path=possible_files[0],
-                cookies_path=cookies_path,
-                cookies_present=cookies_present,
-            )
-
-        error = "download finished but no output file was produced"
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True) or {}
+        output = _find_artifact(work_dir, {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"})
+        if not output:
+            raise yt_dlp.utils.DownloadError("download finished but no video output was produced")
+        size = os.path.getsize(output)
+        if size > TELEGRAM_MEDIA_LIMIT_BYTES:
+            raise yt_dlp.utils.DownloadError("FREAK-SIZE-LIMIT: final video exceeds 50 MiB")
         return YtDlpResult(
-            error=error,
-            cookie_issue=_detect_cookie_issue(error, cookies_path, cookies_present),
+            path=output,
             cookies_path=cookies_path,
             cookies_present=cookies_present,
+            work_dir=work_dir,
+            extractor=info.get("extractor_key") or info.get("extractor"),
+            elapsed_seconds=time.monotonic() - started_at,
+            size_bytes=size,
+            ytdlp_version=_ytdlp_version(),
         )
-
-    except Exception as e:
-        error = str(e)
-        logging.error("yt-dlp video failed url=%s error=%s", url, e)
-        return YtDlpResult(
+    except Exception as exc:
+        error = str(exc)
+        kind = _classify_ytdlp_failure(error)
+        logging.error(
+            "yt-dlp video failed kind=%s version=%s elapsed=%.2fs url=%s error=%s",
+            kind,
+            _ytdlp_version(),
+            time.monotonic() - started_at,
+            url,
+            error,
+        )
+        return _failure_result(
             error=error,
-            cookie_issue=_detect_cookie_issue(error, cookies_path, cookies_present),
             cookies_path=cookies_path,
             cookies_present=cookies_present,
+            work_dir=work_dir,
+            started_at=started_at,
+            failure_kind=kind,
+            extractor=info.get("extractor_key") or info.get("extractor"),
         )
-    finally:
-        if cookie_tmp and os.path.exists(cookie_tmp):
-            try:
-                os.remove(cookie_tmp)
-            except OSError:
-                pass
 
 
-def download_audio_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
-    """Downloads audio using yt-dlp and returns metadata in result.info."""
-
+def download_audio_ytdlp(
+    url: str,
+    cookies_path: str | None = None,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> YtDlpResult:
+    """Download and convert one audio item in an isolated 50 MiB workspace."""
+    started_at = time.monotonic()
+    work_dir = tempfile.mkdtemp(prefix="freak-ytdlp-audio-")
+    guard = _DownloadGuard(cancel_event)
     cookies_present = _cookies_present(cookies_path)
-
-    # Create a temporary file path using uuid
-    temp_dir = tempfile.gettempdir()
-    temp_filename = f"{uuid.uuid4()}.mp3"
-    temp_path = os.path.join(temp_dir, temp_filename)
-
-    # Output template for yt-dlp
-    base_path = os.path.splitext(temp_path)[0]
-    outtmpl = base_path + ".%(ext)s"
-
-    ydl_opts = _base_ydl_opts()
-    ydl_opts.update(
+    opts = _base_ydl_opts(guard)
+    opts.update(
         {
-            "format": "bestaudio/best",
-            "outtmpl": outtmpl,
-            "max_filesize": 50 * 1024 * 1024,  # 50MB
+            "format": (
+                "bestaudio[filesize<=50M]/bestaudio[filesize_approx<=50M]/"
+                "bestaudio/best"
+            ),
+            "outtmpl": str(Path(work_dir) / "media.%(ext)s"),
+            "max_filesize": TELEGRAM_MEDIA_LIMIT_BYTES,
             "writethumbnail": True,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
                     "preferredquality": "192",
-                },
+                }
             ],
         }
     )
-
-    cookie_tmp: str | None = None
-    if cookies_present:
-        try:
-            cookie_tmp, n_cookies, cookie_names = _prepare_cookiefile_copy(cookies_path)
-            ydl_opts["cookiefile"] = cookie_tmp
-            session = [n for n in cookie_names if n.lower() in _SESSION_COOKIE_NAMES]
-            logging.info(
-                "yt-dlp audio cookies source=%s rows=%d session=%s",
-                cookies_path,
-                n_cookies,
-                ",".join(session) if session else "none",
-            )
-        except Exception as e:
-            logging.error("Failed to prepare cookiefile %s: %s", cookies_path, e)
-    elif cookies_path:
-        logging.warning(
-            "Cookies expected at %s but file is missing; downloading without cookies",
-            cookies_path,
-        )
-
+    _apply_cookie_options(opts, cookies_path, work_dir, "audio")
+    info: dict = {}
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-
-        # The file should be at base_path + ".mp3"
-        audio_path = base_path + ".mp3"
-        if not os.path.exists(audio_path):
-            # Fallback
-            if os.path.exists(temp_path):
-                audio_path = temp_path
-            else:
-                error = "audio download finished but no output file was produced"
-                return YtDlpResult(
-                    error=error,
-                    cookie_issue=_detect_cookie_issue(
-                        error, cookies_path, cookies_present
-                    ),
-                    cookies_path=cookies_path,
-                    cookies_present=cookies_present,
-                )
-
-        # Find thumbnail
-        # yt-dlp writes thumbnail to base_path + .jpg or .webp etc.
-        thumbnail_path = None
-        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-            possible_thumb = base_path + ext
-            if os.path.exists(possible_thumb):
-                thumbnail_path = possible_thumb
-                break
-
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True) or {}
+        audio_path = _find_artifact(work_dir, {".mp3"})
+        if not audio_path:
+            raise yt_dlp.utils.DownloadError("download finished but no audio output was produced")
+        size = os.path.getsize(audio_path)
+        if size > TELEGRAM_MEDIA_LIMIT_BYTES:
+            raise yt_dlp.utils.DownloadError("FREAK-SIZE-LIMIT: final audio exceeds 50 MiB")
+        thumbnail_path = _find_artifact(work_dir, {".jpg", ".jpeg", ".png", ".webp"})
         return YtDlpResult(
             info={
                 "audio_path": audio_path,
@@ -664,23 +849,136 @@ def download_audio_ytdlp(url: str, cookies_path: str = None) -> YtDlpResult:
             },
             cookies_path=cookies_path,
             cookies_present=cookies_present,
+            work_dir=work_dir,
+            extractor=info.get("extractor_key") or info.get("extractor"),
+            elapsed_seconds=time.monotonic() - started_at,
+            size_bytes=size,
+            ytdlp_version=_ytdlp_version(),
         )
-
-    except Exception as e:
-        error = str(e)
-        logging.error("yt-dlp audio failed url=%s error=%s", url, e)
-        return YtDlpResult(
+    except Exception as exc:
+        error = str(exc)
+        kind = _classify_ytdlp_failure(error)
+        logging.error(
+            "yt-dlp audio failed kind=%s version=%s elapsed=%.2fs url=%s error=%s",
+            kind,
+            _ytdlp_version(),
+            time.monotonic() - started_at,
+            url,
+            error,
+        )
+        return _failure_result(
             error=error,
-            cookie_issue=_detect_cookie_issue(error, cookies_path, cookies_present),
             cookies_path=cookies_path,
             cookies_present=cookies_present,
+            work_dir=work_dir,
+            started_at=started_at,
+            failure_kind=kind,
+            extractor=info.get("extractor_key") or info.get("extractor"),
         )
-    finally:
-        if cookie_tmp and os.path.exists(cookie_tmp):
+
+
+class YtDlpManager:
+    """Bounded async facade around yt-dlp's blocking Python API."""
+
+    def __init__(self, max_concurrent: int = YTDLP_MAX_CONCURRENT_DOWNLOADS) -> None:
+        cleanup_stale_ytdlp_artifacts()
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._chat_locks: dict[int, asyncio.Lock] = {}
+
+    def _chat_lock(self, chat_id: int) -> asyncio.Lock:
+        return self._chat_locks.setdefault(chat_id, asyncio.Lock())
+
+    async def _run(self, func, url: str, chat_id: int) -> YtDlpResult:
+        policy = resolve_media_service(url)
+        if not policy:
+            return YtDlpResult(
+                error="Unsupported media URL",
+                failure_kind=YtDlpFailureKind.UNSUPPORTED,
+                ytdlp_version=_ytdlp_version(),
+            )
+        cookies_path = cookies_path_for_url(url)
+        chat_lock = self._chat_lock(chat_id)
+        try:
+            await asyncio.wait_for(chat_lock.acquire(), timeout=YTDLP_QUEUE_TIMEOUT_SEC)
+        except TimeoutError:
+            return YtDlpResult(
+                error="Download queue wait timed out",
+                failure_kind=YtDlpFailureKind.QUEUE_FULL,
+                ytdlp_version=_ytdlp_version(),
+            )
+        try:
             try:
-                os.remove(cookie_tmp)
+                await asyncio.wait_for(
+                    self._semaphore.acquire(), timeout=YTDLP_QUEUE_TIMEOUT_SEC
+                )
+            except TimeoutError:
+                return YtDlpResult(
+                    error="Download queue is busy",
+                    failure_kind=YtDlpFailureKind.QUEUE_FULL,
+                    ytdlp_version=_ytdlp_version(),
+                )
+            try:
+                cancel_event = threading.Event()
+                worker = asyncio.create_task(
+                    asyncio.to_thread(
+                        func, url, cookies_path, cancel_event=cancel_event
+                    )
+                )
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(worker), timeout=YTDLP_DOWNLOAD_TIMEOUT_SEC
+                    )
+                except TimeoutError:
+                    cancel_event.set()
+                    result = await worker
+                    result.cleanup()
+                    return YtDlpResult(
+                        error="Download exceeded its time limit",
+                        failure_kind=YtDlpFailureKind.TIMEOUT,
+                        cookies_path=cookies_path,
+                        cookies_present=_cookies_present(cookies_path),
+                        ytdlp_version=_ytdlp_version(),
+                    )
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    result = await asyncio.shield(worker)
+                    result.cleanup()
+                    raise
+            finally:
+                self._semaphore.release()
+        finally:
+            chat_lock.release()
+
+    async def download_video(self, url: str, chat_id: int) -> YtDlpResult:
+        return await self._run(download_video_ytdlp, url, chat_id)
+
+    async def download_audio(self, url: str, chat_id: int) -> YtDlpResult:
+        return await self._run(download_audio_ytdlp, url, chat_id)
+
+
+def cleanup_stale_ytdlp_artifacts(max_age_seconds: int = 6 * 60 * 60) -> int:
+    """Remove abandoned Freak yt-dlp workspaces left by a crashed process."""
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    temp_root = Path(tempfile.gettempdir())
+    for pattern in ("freak-ytdlp-video-*", "freak-ytdlp-audio-*", "ytdlp-cookies-*"):
+        for path in temp_root.glob(pattern):
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.is_file():
+                    path.unlink()
+                removed += 1
             except OSError:
-                pass
+                logging.warning("Could not remove stale yt-dlp artifact %s", path)
+    if removed:
+        logging.info("Removed %d stale yt-dlp artifact(s)", removed)
+    return removed
+
+
+ytdlp_manager = YtDlpManager()
 
 
 def extract_frames_from_video(video_path: str, max_frames: int = 5) -> list[bytes]:

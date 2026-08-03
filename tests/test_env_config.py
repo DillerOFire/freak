@@ -115,6 +115,22 @@ def test_set_env_value_rejects_invalid_ponder_step_budget(env_file, value):
     assert not env_file.exists()
 
 
+@pytest.mark.parametrize(
+    ("key", "valid", "invalid"),
+    [
+        ("YTDLP_MAX_CONCURRENT_DOWNLOADS", "2", "9"),
+        ("YTDLP_QUEUE_TIMEOUT_SEC", "30", "0"),
+        ("YTDLP_DOWNLOAD_TIMEOUT_SEC", "180", "29"),
+        ("YTDLP_SOCKET_TIMEOUT_SEC", "20", "121"),
+    ],
+)
+def test_validate_ytdlp_management_settings(key, valid, invalid):
+    assert env_config.validate_env_value(key, valid) == (key, valid)
+    with pytest.raises(env_config.EnvUpdateError, match="must be an integer"):
+        env_config.validate_env_value(key, invalid)
+    assert key in env_config.RESTART_REQUIRED_KEYS
+
+
 def test_set_env_value_preserves_file_mode(env_file):
     env_file.write_text("LLM_MODEL=old\n", encoding="utf-8")
     env_file.chmod(0o600)

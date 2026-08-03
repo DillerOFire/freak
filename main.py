@@ -28,6 +28,7 @@ from bot.commands import (
     daily_cancel_task_command,
     daily_list_command,
     update_ytdlp_command,
+    rollback_ytdlp_command,
     update_bot_command,
     help_command,
     set_env_command,
@@ -138,6 +139,7 @@ def main():
     )
     application.add_handler(CommandHandler("daily_list", daily_list_command))
     application.add_handler(CommandHandler("update_ytdlp", update_ytdlp_command))
+    application.add_handler(CommandHandler("rollback_ytdlp", rollback_ytdlp_command))
     application.add_handler(CommandHandler("update_bot", update_bot_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("set_env", set_env_command))

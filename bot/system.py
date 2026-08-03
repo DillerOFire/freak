@@ -1,7 +1,12 @@
+import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
+import sys
+import tempfile
+import time
 from functools import lru_cache
 
 from bot.build_info import format_build_info, load_build_info
@@ -46,17 +51,24 @@ def _uv_cmd(*args: str) -> list[str]:
     return [resolve_uv_executable(), *args]
 
 
-def _run_cmd(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str]:
+def _run_cmd(
+    args: list[str],
+    *,
+    check: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
         capture_output=True,
         text=True,
         check=check,
         cwd=PROJECT_ROOT,
+        env=env,
     )
 
 
 YTDLP_GIT_SOURCE = "git+https://github.com/yt-dlp/yt-dlp.git@master"
+_ytdlp_update_lock = asyncio.Lock()
 
 
 def _ytdlp_output_indicates_update(output: str) -> bool:
@@ -90,49 +102,169 @@ def _format_ytdlp_result(process: subprocess.CompletedProcess[str], *, location:
     return False, f"yt-dlp update failed ({location}):\n{combined}"
 
 
-async def update_ytdlp_package() -> tuple[bool, str]:
-    """
-    Update yt-dlp in the project venv, falling back to a writable package dir
-    when the venv is not writable (common in Docker images built as root).
-    Returns (success, message).
-    """
-    from config import YTDLP_PACKAGE_DIR
-
+def _atomic_symlink(target: str, link_path: str) -> None:
+    """Atomically replace a symlink without exposing a half-written target."""
+    parent = os.path.dirname(link_path)
+    relative_target = os.path.relpath(target, parent)
+    temporary_link = os.path.join(parent, f".{os.path.basename(link_path)}-{time.time_ns()}")
+    os.symlink(relative_target, temporary_link)
     try:
-        logging.info("Attempting to update yt-dlp in project venv...")
+        os.replace(temporary_link, link_path)
+    except Exception:
+        try:
+            os.unlink(temporary_link)
+        except OSError:
+            pass
+        raise
+
+
+def _verify_ytdlp_target(target: str) -> tuple[bool, str]:
+    """Import a staged build in a fresh interpreter and return its version."""
+    if not os.path.isfile(os.path.join(target, "yt_dlp", "__init__.py")):
+        return False, "staged target does not contain yt_dlp"
+    verify_code = (
+        "import sys; "
+        f"sys.path.insert(0, {target!r}); "
+        "import yt_dlp; print(yt_dlp.version.__version__)"
+    )
+    process = _run_cmd([sys.executable, "-c", verify_code], check=False)
+    if process.returncode != 0:
+        detail = _process_text(process.stderr) or _process_text(process.stdout)
+        return False, detail or "staged yt-dlp import failed"
+    version = _process_text(process.stdout).splitlines()[-1].strip()
+    if not version:
+        return False, "staged yt-dlp did not report a version"
+    return True, version
+
+
+def _active_ytdlp_version() -> str:
+    try:
+        import yt_dlp
+
+        return str(yt_dlp.version.__version__)
+    except Exception:
+        return "unknown"
+
+
+def _active_ytdlp_target() -> str | None:
+    """Return the site-packages root that supplied the running yt-dlp."""
+    try:
+        import yt_dlp
+
+        return str(os.path.dirname(os.path.dirname(os.path.realpath(yt_dlp.__file__))))
+    except Exception:
+        return None
+
+
+def _prune_ytdlp_releases(package_root: str, keep: set[str]) -> None:
+    releases_dir = os.path.join(package_root, "releases")
+    candidates = []
+    for name in os.listdir(releases_dir):
+        path = os.path.join(releases_dir, name)
+        if os.path.isdir(path) and path not in keep and not name.startswith(".staging-"):
+            candidates.append(path)
+    candidates.sort(key=os.path.getmtime, reverse=True)
+    for stale in candidates[1:]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+def _install_staged_ytdlp(package_root: str) -> tuple[bool, str]:
+    """Install nightly yt-dlp, verify it, and atomically activate it."""
+    releases_dir = os.path.join(package_root, "releases")
+    os.makedirs(releases_dir, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=".staging-", dir=releases_dir)
+    try:
+        logging.info("Staging nightly yt-dlp update in %s", staging)
         process = _run_cmd(
-            _uv_cmd("pip", "install", "-U", YTDLP_GIT_SOURCE),
-            check=False,
-        )
-        success, message = _format_ytdlp_result(process, location="venv")
-        if success:
-            return success, message
-
-        combined = message.lower()
-        if "permission denied" not in combined and "read-only" not in combined:
-            return False, message
-
-        os.makedirs(YTDLP_PACKAGE_DIR, exist_ok=True)
-        logging.info(
-            "Venv yt-dlp update is not writable; installing to %s",
-            YTDLP_PACKAGE_DIR,
-        )
-        fallback = _run_cmd(
             _uv_cmd(
                 "pip",
                 "install",
                 "-U",
                 "--target",
-                YTDLP_PACKAGE_DIR,
+                staging,
                 YTDLP_GIT_SOURCE,
             ),
             check=False,
         )
-        return _format_ytdlp_result(fallback, location=YTDLP_PACKAGE_DIR)
+        if process.returncode != 0:
+            return _format_ytdlp_result(process, location="staging")
 
-    except Exception as e:
-        logging.error(f"An error occurred while updating yt-dlp: {e}")
-        return False, f"An error occurred: {e}"
+        verified, version_or_error = _verify_ytdlp_target(staging)
+        if not verified:
+            logging.error("Staged yt-dlp verification failed: %s", version_or_error)
+            return False, f"yt-dlp staged verification failed: {version_or_error}"
+
+        version = version_or_error
+        current_version = _active_ytdlp_version()
+        current_link = os.path.join(package_root, "current")
+        if version == current_version and os.path.islink(current_link):
+            return True, f"yt-dlp nightly {version} is already active."
+
+        safe_version = re.sub(r"[^A-Za-z0-9._-]", "_", version)
+        release = os.path.join(releases_dir, f"{safe_version}-{time.time_ns()}")
+        os.replace(staging, release)
+        staging = ""
+
+        previous_target = _active_ytdlp_target()
+        if os.path.islink(current_link):
+            previous_target = os.path.realpath(current_link)
+        if previous_target and os.path.isdir(previous_target):
+            _atomic_symlink(previous_target, os.path.join(package_root, "previous"))
+
+        _atomic_symlink(release, current_link)
+        keep = {release}
+        if previous_target and os.path.commonpath((releases_dir, previous_target)) == releases_dir:
+            keep.add(previous_target)
+        _prune_ytdlp_releases(package_root, keep)
+        logging.info(
+            "Activated yt-dlp nightly version=%s previous=%s path=%s",
+            version,
+            current_version,
+            release,
+        )
+        return True, (
+            f"yt-dlp updated successfully (staged nightly): {current_version} -> {version}. "
+            "The previous build was retained for rollback."
+        )
+    except Exception as exc:
+        logging.exception("Staged yt-dlp update failed")
+        return False, f"yt-dlp staged update failed: {exc}"
+    finally:
+        if staging:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+async def update_ytdlp_package() -> tuple[bool, str]:
+    """Serialize and stage a nightly yt-dlp update outside the event loop."""
+    from config import YTDLP_PACKAGE_DIR
+
+    async with _ytdlp_update_lock:
+        return await asyncio.to_thread(_install_staged_ytdlp, YTDLP_PACKAGE_DIR)
+
+
+def _rollback_staged_ytdlp(package_root: str) -> tuple[bool, str]:
+    current_link = os.path.join(package_root, "current")
+    previous_link = os.path.join(package_root, "previous")
+    if not os.path.islink(previous_link):
+        return False, "No previous staged yt-dlp build is available."
+    previous_target = os.path.realpath(previous_link)
+    verified, previous_version = _verify_ytdlp_target(previous_target)
+    if not verified:
+        return False, f"Previous yt-dlp build failed verification: {previous_version}"
+
+    current_target = os.path.realpath(current_link) if os.path.islink(current_link) else None
+    _atomic_symlink(previous_target, current_link)
+    if current_target and os.path.isdir(current_target):
+        _atomic_symlink(current_target, previous_link)
+    return True, f"yt-dlp rolled back successfully to {previous_version}."
+
+
+async def rollback_ytdlp_package() -> tuple[bool, str]:
+    """Atomically reactivate the previous verified nightly build."""
+    from config import YTDLP_PACKAGE_DIR
+
+    async with _ytdlp_update_lock:
+        return await asyncio.to_thread(_rollback_staged_ytdlp, YTDLP_PACKAGE_DIR)
 
 
 async def check_for_updates() -> bool:

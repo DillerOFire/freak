@@ -80,6 +80,20 @@ The model defaults are sensible; override them only if you want different ones:
 | `LLM_PONDER_MAX_STEPS` | Maximum ponder research/tool iterations | `10` |
 | `LLM_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
 
+Media downloads are always capped at Telegram's 50 MiB file limit. The
+downloader also has bounded concurrency and deadlines:
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `YTDLP_MAX_CONCURRENT_DOWNLOADS` | Maximum downloads/ffmpeg jobs across all chats | `2` |
+| `YTDLP_QUEUE_TIMEOUT_SEC` | Maximum wait for a global or per-chat slot | `30` |
+| `YTDLP_DOWNLOAD_TIMEOUT_SEC` | Cooperative total download deadline | `180` |
+| `YTDLP_SOCKET_TIMEOUT_SEC` | Network socket timeout inside yt-dlp | `20` |
+
+Bare-metal nightly updates are installed into a staging directory, imported in
+a fresh Python process, and atomically activated. The previous verified build
+is retained as a startup fallback. Docker keeps yt-dlp image-owned instead.
+
 ### Telegram Web Apps
 
 Set `WEB_SETTINGS_URL` to the public **HTTPS** URL of the embedded Web App

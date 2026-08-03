@@ -20,12 +20,14 @@ from bot.memory import (
 from bot.media_utils import (
     download_file,
     extract_frames_from_video,
-    download_video_ytdlp,
+    extract_supported_media_urls,
     notify_admin_cookie_failure,
     service_name_from_cookies_path,
+    YtDlpFailureKind,
+    ytdlp_manager,
 )
 from bot.vision import analyze_image, analyze_frames
-from config import COOKIES_DIR, ADMIN_ID
+from config import ADMIN_ID
 import os
 import re
 from xml.sax.saxutils import escape as xml_escape
@@ -661,33 +663,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text or update.message.caption or ""
 
-    # Check for Video URLs (YouTube, Instagram, X, etc.)
-    target_domains = [
-        "youtube.com",
-        "youtu.be",
-        "instagram.com",
-        "tiktok.com",
-        "vt.tiktok.com",
-        "twitter.com",
-        "x.com",
-        "facebook.com",
-        "reddit.com",
-        "pinterest.com",
-        "spotify.com",
-        "soundcloud.com",
-        "bandcamp.com",
-        "mixcloud.com",
-        "twitch.tv",
-        "vk.com",
-        "rutube.ru",
-        "vkvideo.ru",
-    ]
-
-    # Construct regex pattern from domains
-    domain_pattern = "|".join([re.escape(d) for d in target_domains])
-    url_pattern = rf"(https?://(?:www\.)?(?:{domain_pattern})/[^\s]+)"
-
-    urls = re.findall(url_pattern, text)
+    # Check for URLs supported by the shared yt-dlp service registry.
+    urls = extract_supported_media_urls(text)
 
     if urls:
         # Check if utils are disabled
@@ -701,73 +678,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_admin = user.id == ADMIN_ID
             chat_type = getattr(update.effective_chat, "type", None)
             for url in urls:
-                # Determine service for cookies
-                cookies_path = None
-                if "youtube.com" in url or "youtu.be" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
-                elif "instagram.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "instagram.txt")
-                elif "x.com" in url or "twitter.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "x.txt")
-                elif "tiktok.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "tiktok.txt")
-                elif "facebook.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "facebook.txt")
-                elif "reddit.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "reddit.txt")
-                elif "pinterest.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "pinterest.txt")
-                elif "spotify.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "spotify.txt")
-                elif "soundcloud.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "soundcloud.txt")
-                elif "bandcamp.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "bandcamp.txt")
-                elif "mixcloud.com" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "mixcloud.txt")
-                elif "twitch.tv" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "twitch.txt")
-                elif "vk.com" in url or "vkvideo.ru" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "vk.txt")
-                elif "rutube.ru" in url:
-                    cookies_path = os.path.join(COOKIES_DIR, "rutube.txt")
-
                 logging.info(
                     "Media download attempt chat_id=%s chat_type=%s user_id=%s "
-                    "is_admin=%s url=%s cookies=%s",
+                    "is_admin=%s url=%s",
                     chat_id,
                     chat_type,
                     user.id,
                     is_admin,
                     url,
-                    cookies_path or "none",
                 )
 
-                dl = await asyncio.to_thread(download_video_ytdlp, url, cookies_path)
+                dl = await ytdlp_manager.download_video(url, chat_id)
                 if dl.cookie_issue:
                     await notify_admin_cookie_failure(
                         context.bot,
                         url=url,
                         result=dl,
-                        service=service_name_from_cookies_path(cookies_path),
+                        service=service_name_from_cookies_path(dl.cookies_path),
                     )
                 if dl.path:
                     try:
-                        await context.bot.send_video(
-                            chat_id=chat_id,
-                            video=open(dl.path, "rb"),
-                            reply_to_message_id=update.message.message_id,
-                        )
+                        with open(dl.path, "rb") as video_file:
+                            await context.bot.send_video(
+                                chat_id=chat_id,
+                                video=video_file,
+                                reply_to_message_id=update.message.message_id,
+                            )
                         logging.info(
-                            "Media download ok chat_id=%s user_id=%s is_admin=%s "
-                            "url=%s path=%s",
+                            "Media download ok chat_id=%s user_id=%s is_admin=%s url=%s "
+                            "extractor=%s bytes=%s elapsed=%.2fs ytdlp=%s",
                             chat_id,
                             user.id,
                             is_admin,
                             url,
-                            dl.path,
+                            dl.extractor,
+                            dl.size_bytes,
+                            dl.elapsed_seconds,
+                            dl.ytdlp_version,
                         )
-                        os.remove(dl.path)
                         return  # Stop processing if we handled a video download
                     except Exception as e:
                         logging.error(
@@ -777,21 +725,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             url,
                             e,
                         )
-                        if os.path.exists(dl.path):
-                            os.remove(dl.path)
+                    finally:
+                        dl.cleanup()
                 else:
                     logging.error(
                         "Media download failed chat_id=%s chat_type=%s user_id=%s "
-                        "is_admin=%s cookie_issue=%s cookies_present=%s url=%s error=%s",
+                        "is_admin=%s kind=%s cookies_present=%s url=%s error=%s",
                         chat_id,
                         chat_type,
                         user.id,
                         is_admin,
-                        dl.cookie_issue,
+                        dl.failure_kind,
                         dl.cookies_present,
                         url,
                         dl.error,
                     )
+                    failure_messages = {
+                        YtDlpFailureKind.TOO_LARGE: "This video is larger than Telegram's 50 MB limit.",
+                        YtDlpFailureKind.TIMEOUT: "The video download timed out.",
+                        YtDlpFailureKind.QUEUE_FULL: "The media download queue is busy. Try again shortly.",
+                        YtDlpFailureKind.FORMAT: "No Telegram-compatible video format was available.",
+                    }
+                    if dl.failure_kind in failure_messages:
+                        await update.message.reply_text(failure_messages[dl.failure_kind])
 
     if media_description:
         text = f"{media_description}\n{text}".strip()

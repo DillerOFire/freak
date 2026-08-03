@@ -1,7 +1,12 @@
 import pytest
+import asyncio
+import os
+import threading
+import time
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 from bot import media_utils
-from bot.media_utils import YtDlpResult
+from bot.media_utils import YtDlpFailureKind, YtDlpResult
 
 
 @pytest.fixture
@@ -27,35 +32,35 @@ def test_download_video_ytdlp_success(mock_ytdlp):
     """Test successful video download."""
     # Setup mock
     instance = mock_ytdlp.return_value.__enter__.return_value
-    instance.download.return_value = (
-        None  # download returns None on success logic in code
-    )
+    def extract_info(_url, download):
+        assert download is True
+        opts = mock_ytdlp.call_args.args[0]
+        output = Path(opts["outtmpl"].replace("%(ext)s", "mp4"))
+        output.write_bytes(b"video")
+        return {"extractor_key": "TestExtractor"}
 
-    # Mock glob to find the file
-    with (
-        patch("glob.glob") as mock_glob,
-        patch("tempfile.gettempdir", return_value="/tmp"),
-        patch("uuid.uuid4", return_value="test_uuid"),
-    ):
-        mock_glob.return_value = ["/tmp/test_uuid.mp4"]
+    instance.extract_info.side_effect = extract_info
+    result = media_utils.download_video_ytdlp("https://example.com/video")
 
-        result = media_utils.download_video_ytdlp("https://example.com/video")
+    assert result.ok
+    assert result.path and result.path.endswith("media.mp4")
+    assert result.extractor == "TestExtractor"
+    instance.extract_info.assert_called_once_with("https://example.com/video", download=True)
 
-        assert result.ok
-        assert result.path == "/tmp/test_uuid.mp4"
-        instance.download.assert_called_once_with(["https://example.com/video"])
-
-        # Verify options
-        args, _ = mock_ytdlp.call_args
-        opts = args[0]
-        assert opts["max_filesize"] == 50 * 1024 * 1024
-        assert opts["noplaylist"] is True
+    opts = mock_ytdlp.call_args.args[0]
+    assert opts["max_filesize"] == 50 * 1024 * 1024
+    assert opts["socket_timeout"] == media_utils.YTDLP_SOCKET_TIMEOUT_SEC
+    assert opts["retries"] == 3
+    assert opts["noplaylist"] is True
+    work_dir = result.work_dir
+    result.cleanup()
+    assert work_dir and not Path(work_dir).exists()
 
 
 def test_download_video_ytdlp_failure(mock_ytdlp):
     """Test video download failure."""
     instance = mock_ytdlp.return_value.__enter__.return_value
-    instance.download.side_effect = Exception("Download failed")
+    instance.extract_info.side_effect = Exception("Download failed")
 
     result = media_utils.download_video_ytdlp("https://example.com/video")
     assert not result.ok
@@ -67,7 +72,7 @@ def test_download_video_ytdlp_failure(mock_ytdlp):
 def test_download_video_ytdlp_cookie_403(mock_ytdlp, tmp_path):
     """403 Forbidden is treated as a cookie/auth issue when cookies were expected."""
     instance = mock_ytdlp.return_value.__enter__.return_value
-    instance.download.side_effect = Exception(
+    instance.extract_info.side_effect = Exception(
         "ERROR: unable to download video data: HTTP Error 403: Forbidden"
     )
     cookies = tmp_path / "youtube.txt"
@@ -81,17 +86,17 @@ def test_download_video_ytdlp_cookie_403(mock_ytdlp, tmp_path):
     assert result.cookies_present is True
 
 
-def test_download_video_ytdlp_missing_cookies_is_cookie_issue(mock_ytdlp, tmp_path):
-    """Missing expected cookies file is a cookie issue on failure."""
+def test_missing_cookies_do_not_turn_network_failure_into_auth(mock_ytdlp, tmp_path):
     instance = mock_ytdlp.return_value.__enter__.return_value
-    instance.download.side_effect = Exception("network boom")
+    instance.extract_info.side_effect = Exception("network boom")
     missing = str(tmp_path / "youtube.txt")
 
     result = media_utils.download_video_ytdlp(
         "https://youtube.com/watch?v=abc", missing
     )
     assert not result.ok
-    assert result.cookie_issue is True
+    assert result.cookie_issue is False
+    assert result.failure_kind == YtDlpFailureKind.NETWORK
     assert result.cookies_present is False
 
 
@@ -107,28 +112,26 @@ def test_download_audio_ytdlp_success(mock_ytdlp):
         "uploader": "Test Artist",
     }
 
-    with (
-        patch("os.path.exists") as mock_exists,
-        patch("tempfile.gettempdir", return_value="/tmp"),
-        patch("uuid.uuid4", return_value="test_uuid"),
-    ):
-        # Mock that files exist
-        def exists_side_effect(path):
-            if path.endswith(".mp3"):
-                return True
-            if path.endswith(".jpg"):
-                return True
-            return False
+    def extract_info(_url, download):
+        opts = mock_ytdlp.call_args.args[0]
+        Path(opts["outtmpl"].replace("%(ext)s", "mp3")).write_bytes(b"audio")
+        Path(opts["outtmpl"].replace("%(ext)s", "jpg")).write_bytes(b"thumb")
+        return {
+            "title": "Test Song",
+            "description": "A test song",
+            "duration": 120,
+            "uploader": "Test Artist",
+        }
 
-        mock_exists.side_effect = exists_side_effect
+    instance.extract_info.side_effect = extract_info
+    result = media_utils.download_audio_ytdlp("https://example.com/audio")
 
-        result = media_utils.download_audio_ytdlp("https://example.com/audio")
-
-        assert result.ok
-        assert result.info is not None
-        assert result.info["title"] == "Test Song"
-        assert result.info["audio_path"].endswith(".mp3")
-        assert result.info["thumbnail_path"].endswith(".jpg")
+    assert result.ok
+    assert result.info is not None
+    assert result.info["title"] == "Test Song"
+    assert result.info["audio_path"].endswith(".mp3")
+    assert result.info["thumbnail_path"].endswith(".jpg")
+    result.cleanup()
 
 
 def test_extract_frames_from_video(mock_cv2):
@@ -166,6 +169,73 @@ def test_detect_cookie_issue_markers():
     assert not media_utils._detect_cookie_issue(
         "Unsupported URL", None, False
     )
+
+
+def test_failure_classification_does_not_report_format_as_cookie_issue():
+    kind = media_utils._classify_ytdlp_failure("Requested format is not available")
+    assert kind == YtDlpFailureKind.FORMAT
+
+
+def test_service_registry_uses_exact_hosts_and_shared_cookie_policy():
+    assert media_utils.resolve_media_service("https://vt.tiktok.com/abc").name == "tiktok"
+    assert media_utils.resolve_media_service("https://youtube.com.evil.test/watch") is None
+    assert media_utils.cookies_path_for_url("https://youtu.be/abc").endswith("youtube.txt")
+    assert media_utils.extract_supported_media_urls(
+        "watch https://youtu.be/abc, ignore https://youtube.com.evil.test/x"
+    ) == ["https://youtu.be/abc"]
+
+
+def test_progress_guard_enforces_aggregate_50_mib_limit():
+    guard = media_utils._DownloadGuard()
+    guard.progress_hook({"filename": "video", "downloaded_bytes": 40 * 1024 * 1024})
+    with pytest.raises(Exception, match="FREAK-SIZE-LIMIT"):
+        guard.progress_hook({"filename": "audio", "downloaded_bytes": 11 * 1024 * 1024})
+
+
+def test_cleanup_stale_ytdlp_artifacts_only_removes_owned_old_paths(tmp_path):
+    stale = tmp_path / "freak-ytdlp-video-old"
+    stale.mkdir()
+    (stale / "media.part").write_bytes(b"partial")
+    fresh = tmp_path / "freak-ytdlp-audio-fresh"
+    fresh.mkdir()
+    unrelated = tmp_path / "someone-elses-file"
+    unrelated.write_text("keep", encoding="utf-8")
+    old = time.time() - 100
+    os.utime(stale, (old, old))
+
+    with patch("tempfile.gettempdir", return_value=str(tmp_path)):
+        removed = media_utils.cleanup_stale_ytdlp_artifacts(max_age_seconds=50)
+
+    assert removed == 1
+    assert not stale.exists()
+    assert fresh.exists()
+    assert unrelated.exists()
+
+
+@pytest.mark.asyncio
+async def test_manager_serializes_downloads_per_chat(monkeypatch):
+    manager = media_utils.YtDlpManager(max_concurrent=2)
+    active = 0
+    max_active = 0
+    state_lock = threading.Lock()
+
+    def fake_download(_url, _cookies, *, cancel_event):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with state_lock:
+            active -= 1
+        return YtDlpResult(path="unused")
+
+    monkeypatch.setattr(media_utils, "download_video_ytdlp", fake_download)
+    first, second = await asyncio.gather(
+        manager.download_video("https://youtu.be/one", 42),
+        manager.download_video("https://youtu.be/two", 42),
+    )
+    assert first.ok and second.ok
+    assert max_active == 1
 
 
 def test_normalize_netscape_cookies_converts_spaces_to_tabs():
@@ -216,21 +286,21 @@ def test_save_netscape_cookies_reports_session(tmp_path):
 def test_download_video_uses_cookie_copy_not_source(mock_ytdlp, tmp_path):
     """yt-dlp must receive a temp cookiefile so it cannot wipe the stored jar."""
     instance = mock_ytdlp.return_value.__enter__.return_value
-    instance.download.return_value = None
+    def extract_info(_url, download):
+        opts = mock_ytdlp.call_args.args[0]
+        Path(opts["outtmpl"].replace("%(ext)s", "mp4")).write_bytes(b"video")
+        return {}
+
+    instance.extract_info.side_effect = extract_info
     cookies = tmp_path / "youtube.txt"
     cookies.write_text(
         ".youtube.com\tTRUE\t/\tTRUE\t1820105380\tSID\tabc\n", encoding="utf-8"
     )
     original = cookies.read_text(encoding="utf-8")
 
-    with (
-        patch("glob.glob", return_value=["/tmp/out.mp4"]),
-        patch("tempfile.gettempdir", return_value="/tmp"),
-        patch("uuid.uuid4", return_value="test_uuid"),
-    ):
-        result = media_utils.download_video_ytdlp(
-            "https://youtube.com/watch?v=abc", str(cookies)
-        )
+    result = media_utils.download_video_ytdlp(
+        "https://youtube.com/watch?v=abc", str(cookies)
+    )
 
     assert result.ok
     opts = mock_ytdlp.call_args[0][0]
@@ -240,6 +310,7 @@ def test_download_video_uses_cookie_copy_not_source(mock_ytdlp, tmp_path):
     assert "remote_components" in opts
     # Stored jar unchanged
     assert cookies.read_text(encoding="utf-8") == original
+    result.cleanup()
 
 
 def test_cookie_refresh_instructions_include_service_links_and_tools():

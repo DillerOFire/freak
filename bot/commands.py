@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import shlex
+from contextlib import ExitStack
 from urllib.parse import quote
 
 from datetime import datetime
@@ -14,7 +15,7 @@ from bot.jobs import (
     remove_job_if_exists,
     check_bot_update_job,
 )
-from bot.system import update_ytdlp_package, restart_bot
+from bot.system import rollback_ytdlp_package, update_ytdlp_package, restart_bot
 from bot.memory import (
     add_whitelist,
     remove_whitelist,
@@ -298,6 +299,18 @@ async def update_ytdlp_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Restarting bot to apply changes...")
         import asyncio
 
+        await asyncio.sleep(2)
+        restart_bot()
+
+
+async def rollback_ytdlp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+
+    success, message = await rollback_ytdlp_package()
+    await update.message.reply_text(f"Rollback Result:\n{message}")
+    if success:
+        await update.message.reply_text("Restarting bot to load the previous yt-dlp build...")
         await asyncio.sleep(2)
         restart_bot()
 
@@ -1011,29 +1024,25 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Import ytdlp helper
     from bot.media_utils import (
-        download_audio_ytdlp,
+        YtDlpFailureKind,
         notify_admin_cookie_failure,
         service_name_from_cookies_path,
+        ytdlp_manager,
     )
 
-    cookies_path = None
-    if "youtube.com" in url or "youtu.be" in url:
-        cookies_path = os.path.join(COOKIES_DIR, "youtube.txt")
-
     logging.info(
-        "Audio download attempt chat_id=%s user_id=%s url=%s cookies=%s",
+        "Audio download attempt chat_id=%s user_id=%s url=%s",
         chat_id,
         user_id,
         url,
-        cookies_path or "none",
     )
-    dl = await asyncio.to_thread(download_audio_ytdlp, url, cookies_path)
+    dl = await ytdlp_manager.download_audio(url, chat_id)
     if dl.cookie_issue:
         await notify_admin_cookie_failure(
             context.bot,
             url=url,
             result=dl,
-            service=service_name_from_cookies_path(cookies_path),
+            service=service_name_from_cookies_path(dl.cookies_path),
         )
     if dl.info:
         info = dl.info
@@ -1044,31 +1053,32 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thumbnail_path = info.get("thumbnail_path")
 
         try:
-            # Send audio
-            # open thumbnail if exists
-            thumb = open(thumbnail_path, "rb") if thumbnail_path else None
-
-            await update.message.reply_audio(
-                audio=open(audio_path, "rb"),
-                title=title,
-                performer=uploader,
-                duration=duration,
-                thumbnail=thumb,
-            )
+            with ExitStack() as files:
+                audio_file = files.enter_context(open(audio_path, "rb"))
+                thumb = (
+                    files.enter_context(open(thumbnail_path, "rb"))
+                    if thumbnail_path
+                    else None
+                )
+                await update.message.reply_audio(
+                    audio=audio_file,
+                    title=title,
+                    performer=uploader,
+                    duration=duration,
+                    thumbnail=thumb,
+                )
             logging.info(
-                "Audio download ok chat_id=%s user_id=%s url=%s title=%s",
+                "Audio download ok chat_id=%s user_id=%s url=%s title=%s "
+                "extractor=%s bytes=%s elapsed=%.2fs ytdlp=%s",
                 chat_id,
                 user_id,
                 url,
                 title,
+                dl.extractor,
+                dl.size_bytes,
+                dl.elapsed_seconds,
+                dl.ytdlp_version,
             )
-
-            # Cleanup
-            if thumb:
-                thumb.close()
-                os.remove(thumbnail_path)
-            os.remove(audio_path)
-
         except Exception as e:
             logging.error(
                 "Failed to send audio chat_id=%s user_id=%s url=%s: %s",
@@ -1078,21 +1088,27 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 e,
             )
             await update.message.reply_text("Failed to send audio file.")
-            # Cleanup on fail
-            if thumbnail_path and os.path.exists(thumbnail_path):
-                os.remove(thumbnail_path)
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
+        finally:
+            dl.cleanup()
     else:
         logging.error(
-            "Audio download failed chat_id=%s user_id=%s cookie_issue=%s url=%s error=%s",
+            "Audio download failed chat_id=%s user_id=%s kind=%s url=%s error=%s",
             chat_id,
             user_id,
-            dl.cookie_issue,
+            dl.failure_kind,
             url,
             dl.error,
         )
-        await update.message.reply_text("Failed to download audio.")
+        failure_messages = {
+            YtDlpFailureKind.TOO_LARGE: "The audio is larger than Telegram's 50 MB limit.",
+            YtDlpFailureKind.TIMEOUT: "The audio download timed out.",
+            YtDlpFailureKind.QUEUE_FULL: "The media download queue is busy. Try again shortly.",
+            YtDlpFailureKind.UNSUPPORTED: "That media URL is not supported.",
+            YtDlpFailureKind.FORMAT: "No downloadable audio format was available.",
+        }
+        await update.message.reply_text(
+            failure_messages.get(dl.failure_kind, "Failed to download audio.")
+        )
 
 
 async def add_daily_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1269,6 +1285,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - <code>/whitelist_remove &lt;id&gt;</code> - Remove an ID from the whitelist.
 - <code>/whitelist_list</code> - List whitelisted entities.
 - <code>/update_ytdlp</code> - Update yt-dlp manually.
+- <code>/rollback_ytdlp</code> - Restore the previous verified yt-dlp build.
 - <code>/update_bot</code> - Check for bot updates and restart if found.
 """
     await update.message.reply_text(help_text, parse_mode="HTML")
