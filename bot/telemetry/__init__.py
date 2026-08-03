@@ -1,4 +1,4 @@
-"""Modular telemetry package: storage, analysis, export, dashboard, and web."""
+"""Modular telemetry package: storage, analysis, export, and Web App data."""
 
 from bot.telemetry.storage import (
     init_telemetry_db,
@@ -12,8 +12,7 @@ from bot.telemetry.analysis import (
     build_context_engineering_suggestions,
 )
 from bot.telemetry.export import build_llm_telemetry_export
-from bot.telemetry.dashboard import render_dashboard_html
-from bot.telemetry.web import start_telemetry_dashboard
+from bot.telemetry.web import build_telemetry_snapshot, parse_telemetry_filters
 
 __all__ = [
     "init_telemetry_db",
@@ -24,6 +23,6 @@ __all__ = [
     "summarize_telemetry",
     "build_context_engineering_suggestions",
     "build_llm_telemetry_export",
-    "render_dashboard_html",
-    "start_telemetry_dashboard",
+    "build_telemetry_snapshot",
+    "parse_telemetry_filters",
 ]

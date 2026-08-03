@@ -16,9 +16,12 @@ All of the above are listed in `.gitignore`. Use `.env.example` as a template on
 
 If credentials or cookies were ever committed, rotate them immediately and rewrite git history before making the repository public.
 
-## Telemetry dashboard
+## Telegram Web App telemetry
 
-When `TELEMETRY_DASHBOARD_ENABLED` is true, bind the dashboard to `127.0.0.1` unless you protect it with a reverse proxy. Set `TELEMETRY_DASHBOARD_TOKEN` when exposing the port beyond localhost.
+Telemetry is exposed only through the same Telegram Web App listener as admin
+settings. Put public HTTPS in front of `WEB_SETTINGS_HOST` and
+`WEB_SETTINGS_PORT`; every telemetry API request is verified against fresh,
+Telegram-signed Web App data and restricted to `ADMIN_ID`.
 
 ## Ponder agent
 

@@ -1,18 +1,14 @@
-import json
-import urllib.request
-import urllib.error
-
 import pytest
 
 from bot.telemetry import (
-    init_telemetry_db,
+    build_telemetry_snapshot,
+    parse_telemetry_filters,
     record_llm_telemetry,
-    start_telemetry_dashboard,
 )
 
 
 @pytest.mark.asyncio
-async def test_telemetry_dashboard_routes(temp_db_path):
+async def test_telemetry_web_app_snapshot_returns_filtered_events(temp_db_path):
     await record_llm_telemetry(
         {
             "chat_id": 555,
@@ -28,51 +24,26 @@ async def test_telemetry_dashboard_routes(temp_db_path):
         }
     )
 
-    # fetch the id
-    from bot.telemetry import fetch_llm_telemetry
+    snapshot = await build_telemetry_snapshot(
+        {"chat_id": "555", "status": "success", "limit": "50"}
+    )
 
-    events = await fetch_llm_telemetry(chat_id=555)
-    event_id = events[0]["id"]
-
-    server = start_telemetry_dashboard("127.0.0.1", 0, token="secret")
-    port = server.server_address[1]
-    base = f"http://127.0.0.1:{port}"
-    try:
-        # /telemetry with token
-        with urllib.request.urlopen(f"{base}/telemetry?token=secret") as r:
-            assert r.status == 200
-            body = r.read().decode("utf-8")
-            assert "Bot Telemetry Dashboard" in body
-
-        # /telemetry/export.json with token
-        with urllib.request.urlopen(f"{base}/telemetry/export.json?token=secret") as r:
-            assert r.status == 200
-            data = json.loads(r.read().decode("utf-8"))
-            assert data["generated_for"] == "llm_context_engineering_review"
-            assert data["events"][0]["response_media"] == {"media_unique_id": "photo_u1", "media_type": "photo", "description": "web test photo"}
-
-        # /telemetry/event/<id>.json with token
-        with urllib.request.urlopen(
-            f"{base}/telemetry/event/{event_id}.json?token=secret"
-        ) as r:
-            assert r.status == 200
-            ev = json.loads(r.read().decode("utf-8"))
-            assert ev["id"] == event_id
-            assert ev["chat_id"] == 555
-    finally:
-        server.shutdown()
-        server.server_close()
+    assert snapshot["filters"] == {
+        "chat_id": 555,
+        "status": "success",
+        "source": None,
+        "limit": 50,
+    }
+    assert snapshot["summary"]["total_events"] == 1
+    assert snapshot["events"][0]["response_media"] == {
+        "media_unique_id": "photo_u1",
+        "media_type": "photo",
+        "description": "web test photo",
+    }
+    assert snapshot["chats"] == [555]
 
 
-@pytest.mark.asyncio
-async def test_telemetry_dashboard_unauthorized(temp_db_path):
-    server = start_telemetry_dashboard("127.0.0.1", 0, token="secret")
-    port = server.server_address[1]
-    base = f"http://127.0.0.1:{port}"
-    try:
-        with pytest.raises(urllib.error.HTTPError) as exc:
-            urllib.request.urlopen(f"{base}/telemetry")
-        assert exc.value.code == 401
-    finally:
-        server.shutdown()
-        server.server_close()
+def test_telemetry_web_app_filter_normalization():
+    assert parse_telemetry_filters(
+        {"chat_id": "not-a-chat", "status": "all", "source": "all", "limit": "999"}
+    ) == {"chat_id": None, "status": None, "source": None, "limit": 500}

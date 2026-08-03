@@ -43,12 +43,10 @@ RUN if [ ! -f .build-info.json ]; then \
 
 USER freak
 
-# Telemetry dashboard is the in-container health signal.
-# /telemetry returns 200 when the dashboard (and thus the bot's async runtime
-# + DB) is live. If TELEMETRY_DASHBOARD_TOKEN is set, configure a reverse
-# proxy health probe or override this check.
+# The Web App listener checks that telemetry storage can be read before it
+# returns /health, so this verifies both the async runtime and SQLite.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -sf "http://127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}/telemetry" || exit 1
+    CMD curl -sf "http://127.0.0.1:${WEB_SETTINGS_PORT:-8780}/health" || exit 1
 
 # Run the application
 CMD ["uv", "run", "--no-sync", "main.py"]

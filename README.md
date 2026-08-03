@@ -17,7 +17,7 @@ Think of it as a moody, opinionated chat member with memory — not a question-a
 - **Per-chat settings** — reply chance, reaction chance, cooldown, bot-to-bot ping-pong cap. Set globally or per chat via a button panel.
 - **Daily schedules** — send a message or run an LLM prompt every day at a given time.
 - **Whitelist** — only respond in chats/users you allow.
-- **Telemetry dashboard** — optional local web dashboard of usage stats.
+- **Telegram-native telemetry** — an admin-only Web App for usage stats, LLM context, and memory behavior.
 - **Auto-update** — on bare-metal, `/update_bot` pulls git updates, runs `uv sync`, verifies imports, then restarts; `/update_ytdlp` refreshes the downloader. Under Docker the image is replaced wholesale by Watchtower, so these jobs are disabled there (see [Deployment](#-deployment)).
 
 ---
@@ -80,12 +80,13 @@ The model defaults are sensible; override them only if you want different ones:
 | `LLM_PONDER_MAX_STEPS` | Maximum ponder research/tool iterations | `10` |
 | `LLM_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
 
-### Telegram Web App settings
+### Telegram Web Apps
 
-Set `WEB_SETTINGS_URL` to the public **HTTPS** URL of the embedded settings
-listener, then open `/web_settings` from the admin's private chat with the
-bot. The page edits the same persisted environment file, persona prompt, and
-global behavior settings as the bot commands.
+Set `WEB_SETTINGS_URL` to the public **HTTPS** URL of the embedded Web App
+listener. From the admin's private chat, `/web_settings` edits the same
+persisted environment file, persona prompt, and global behavior settings as
+the bot commands; `/web_telemetry` opens usage, context, reply, and memory
+telemetry. Both surfaces require fresh Telegram-signed Web App credentials.
 
 ```ini
 WEB_SETTINGS_URL=https://bot.example.com
@@ -108,8 +109,7 @@ Docker-only overrides (set in `docker-compose.yml` or `.env`):
 | `RUN_MODE` | Set to `docker` to disable in-process self-update jobs | _(unset — bare-metal mode)_ |
 | `BOT_DB_PATH` | SQLite database location | `bot_memory.db` next to the code; `/data/bot_memory.db` in the image |
 | `COOKIES_DIR` | Where `cookies.txt` files live | `cookies/` next to the code; `/data/cookies` in the image |
-| `TELEMETRY_DASHBOARD_HOST` | Dashboard bind address | `127.0.0.1`; set `0.0.0.0` in Docker so the port-forwarded healthcheck reaches it |
-| `WEB_SETTINGS_HOST` | Web App settings listener bind address | `127.0.0.1`; set `0.0.0.0` in Docker when a reverse proxy needs the mapped port |
+| `WEB_SETTINGS_HOST` | Web App listener bind address | `127.0.0.1`; set `0.0.0.0` in Docker when a reverse proxy needs the mapped port |
 
 ### 4. Run it
 
@@ -183,12 +183,10 @@ services:
     env_file: .env
     environment:
       RUN_MODE: docker
-      TELEMETRY_DASHBOARD_HOST: "0.0.0.0"
       WEB_SETTINGS_HOST: "0.0.0.0"
     volumes:
       - ./data:/data
     ports:
-      - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}:${TELEMETRY_DASHBOARD_PORT:-8765}"
       - "127.0.0.1:${WEB_SETTINGS_PORT:-8780}:${WEB_SETTINGS_PORT:-8780}"
 ```
 
@@ -262,7 +260,7 @@ List the container names you want Watchtower to watch at the end of the `command
 
 #### Running multiple instances
 
-Each instance is its own deploy dir with its own `.env`, `data/`, and `docker-compose.yml`. Use distinct `container_name`s and `TELEMETRY_DASHBOARD_PORT`s. Watchtower takes a list of container names to watch.
+Each instance is its own deploy dir with its own `.env`, `data/`, and `docker-compose.yml`. Use distinct `container_name`s and `WEB_SETTINGS_PORT`s. Watchtower takes a list of container names to watch.
 
 ### Option B — Bare metal with systemd
 
@@ -315,7 +313,7 @@ Send `/help` in Telegram for the live list. Highlights:
 
 **Admin config**
 - `/settings` — button panel for all tunables.
-- `/web_settings` — open the Telegram Web App editor in an admin DM (requires `WEB_SETTINGS_URL`).
+- `/web_settings`, `/web_telemetry` — open the admin-only Telegram Web Apps in a DM (requires `WEB_SETTINGS_URL`).
 - `/bot_env`, `/set_env <KEY> <value>` — inspect masked editable environment values or update one in an admin DM.
 - `/set_reply_chance`, `/set_reaction_chance`, `/set_cooldown`, `/set_max_ping_pong` — exact values.
 - `/update_prompt <text>`, `/show_prompt` — edit the persona.
@@ -345,7 +343,7 @@ bot/
   jobs.py          Daily tasks + update checker + 30s poller for deferred LLM actions
   system.py        Self-update helpers (git pull, yt-dlp upgrade, restart)
   messages.py      Reaction emoji pool
-  telemetry/        Optional usage dashboard
+  telemetry/        Telemetry storage, analysis, export, and Web App payloads
 ```
 
 Database file `bot_memory.db` is created next to the code on first run. In Docker it lives on the `./data` volume (`/data/bot_memory.db` inside the container) so memory survives container recreation.

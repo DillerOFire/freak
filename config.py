@@ -74,15 +74,9 @@ LLM_REFERER = os.getenv("LLM_REFERER", "https://github.com/your-org/freak")
 LLM_TITLE = os.getenv("LLM_TITLE", "Freak Telegram Bot")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
-TELEMETRY_DASHBOARD_ENABLED = os.getenv("TELEMETRY_DASHBOARD_ENABLED", "true").lower() not in {"0", "false", "no"}
-TELEMETRY_DASHBOARD_HOST = os.getenv("TELEMETRY_DASHBOARD_HOST", "127.0.0.1")
-TELEMETRY_DASHBOARD_PORT = int(os.getenv("TELEMETRY_DASHBOARD_PORT", "8765"))
-TELEMETRY_DASHBOARD_TOKEN = os.getenv("TELEMETRY_DASHBOARD_TOKEN")
-
-# Telegram Web App used for the admin settings editor.  Telegram only opens
-# Web Apps over public HTTPS, so WEB_SETTINGS_URL should be the public URL of
-# the reverse proxy in front of the local listener below.  Keep the listener
-# on loopback unless a proxy/container network needs a different bind address.
+# Telegram Web Apps used for admin settings, cookies, and telemetry. Telegram
+# only opens Web Apps over public HTTPS, so WEB_SETTINGS_URL should be the
+# public URL of the reverse proxy in front of the local listener below.
 WEB_SETTINGS_URL = os.getenv("WEB_SETTINGS_URL", "").strip()
 WEB_SETTINGS_HOST = os.getenv("WEB_SETTINGS_HOST", "127.0.0.1")
 WEB_SETTINGS_PORT = _bounded_env_int("WEB_SETTINGS_PORT", 8780, 1, 65535)
@@ -101,5 +95,31 @@ if not os.path.exists(COOKIES_DIR):
 
 # Writable overlay for in-container yt-dlp upgrades (venv may be root-owned in Docker).
 YTDLP_PACKAGE_DIR = os.getenv("YTDLP_PACKAGE_DIR", _default_ytdlp_package_dir())
-if os.path.isdir(YTDLP_PACKAGE_DIR) and YTDLP_PACKAGE_DIR not in sys.path:
-    sys.path.insert(0, YTDLP_PACKAGE_DIR)
+
+
+def _active_ytdlp_overlay() -> str | None:
+    """Return a verified overlay, falling back to the previous staged release."""
+    package_root = Path(YTDLP_PACKAGE_DIR)
+    for name in ("current", "previous"):
+        candidate = package_root / name
+        if candidate.is_dir() and (candidate / "yt_dlp" / "__init__.py").is_file():
+            return str(candidate)
+
+    # Backward compatibility with the former flat --target layout.
+    if (package_root / "yt_dlp" / "__init__.py").is_file():
+        return str(package_root)
+    return None
+
+
+_ytdlp_overlay = _active_ytdlp_overlay()
+if _ytdlp_overlay and _ytdlp_overlay not in sys.path:
+    sys.path.insert(0, _ytdlp_overlay)
+
+YTDLP_MAX_CONCURRENT_DOWNLOADS = _bounded_env_int(
+    "YTDLP_MAX_CONCURRENT_DOWNLOADS", 2, 1, 8
+)
+YTDLP_QUEUE_TIMEOUT_SEC = _bounded_env_int("YTDLP_QUEUE_TIMEOUT_SEC", 30, 1, 300)
+YTDLP_DOWNLOAD_TIMEOUT_SEC = _bounded_env_int(
+    "YTDLP_DOWNLOAD_TIMEOUT_SEC", 180, 30, 1800
+)
+YTDLP_SOCKET_TIMEOUT_SEC = _bounded_env_int("YTDLP_SOCKET_TIMEOUT_SEC", 20, 5, 120)

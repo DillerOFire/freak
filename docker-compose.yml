@@ -1,6 +1,6 @@
 # Per-instance deployment file.
 # Copy .env into the deploy dir (or set env_file path) and adjust the host
-# port for the telemetry dashboard. Each instance runs from the same image.
+# port for the Telegram Web App listener. Each instance runs from the same image.
 services:
   bot:
     build: .
@@ -11,10 +11,8 @@ services:
     environment:
       RUN_MODE: docker
       ENV_FILE: /data/.env
-      TELEMETRY_DASHBOARD_HOST: "0.0.0.0"
       WEB_SETTINGS_HOST: "0.0.0.0"
     volumes:
       - ./data:/data
     ports:
-      - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8765}:${TELEMETRY_DASHBOARD_PORT:-8765}"
       - "127.0.0.1:${WEB_SETTINGS_PORT:-8780}:${WEB_SETTINGS_PORT:-8780}"

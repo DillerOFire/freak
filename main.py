@@ -1,7 +1,6 @@
 import logging
-import config
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
-from config import TELEGRAM_BOT_TOKEN, TELEMETRY_DASHBOARD_ENABLED, TELEMETRY_DASHBOARD_HOST, TELEMETRY_DASHBOARD_PORT, TELEMETRY_DASHBOARD_TOKEN
+from config import TELEGRAM_BOT_TOKEN
 from bot.handlers import handle_message
 from bot.commands import (
     update_cookies_command,
@@ -37,11 +36,12 @@ from bot.commands import (
     bot_env_callback,
     web_settings_command,
     web_cookies_command,
+    web_telemetry_command,
 )
 from bot.jobs import load_jobs
 from bot.memory import init_db
 from bot.logic import init_logic
-from bot.telemetry import init_telemetry_db, start_telemetry_dashboard
+from bot.telemetry import init_telemetry_db
 from bot.env_config import ensure_env_file_seeded
 from bot.settings_web import start_settings_web_server, stop_settings_web_server
 
@@ -62,21 +62,8 @@ async def post_init(application):
     await init_logic()
     logging.info("Database and Logic Config initialized.")
     await load_jobs(application)
-    if TELEMETRY_DASHBOARD_ENABLED:
-        server = start_telemetry_dashboard(
-            host=TELEMETRY_DASHBOARD_HOST,
-            port=TELEMETRY_DASHBOARD_PORT,
-            token=TELEMETRY_DASHBOARD_TOKEN,
-        )
-        application.bot_data["telemetry_dashboard_server"] = server
-        logging.info(
-            "Telemetry dashboard listening on http://%s:%s/telemetry",
-            TELEMETRY_DASHBOARD_HOST,
-            TELEMETRY_DASHBOARD_PORT,
-        )
-    if config.WEB_SETTINGS_URL:
-        runner = await start_settings_web_server()
-        application.bot_data["settings_web_runner"] = runner
+    runner = await start_settings_web_server()
+    application.bot_data["settings_web_runner"] = runner
 
 
 async def post_shutdown(application):
@@ -157,6 +144,7 @@ def main():
     application.add_handler(CommandHandler("bot_env", bot_env_command))
     application.add_handler(CommandHandler("web_settings", web_settings_command))
     application.add_handler(CommandHandler("web_cookies", web_cookies_command))
+    application.add_handler(CommandHandler("web_telemetry", web_telemetry_command))
     application.add_handler(CommandHandler("version", version_command))
 
     logging.info("Bot started polling...")

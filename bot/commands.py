@@ -78,6 +78,11 @@ def cookie_web_app_url(service: str | None = None) -> str:
     return url
 
 
+def telemetry_web_app_url() -> str:
+    """Build the authenticated Telegram Web App telemetry URL."""
+    return WEB_SETTINGS_URL.rstrip("/") + "/telemetry"
+
+
 async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handler for /update_cookies <service>
@@ -844,6 +849,13 @@ def _build_bot_env_panel() -> tuple[str, InlineKeyboardMarkup]:
                 )
             ]
         )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "Open telemetry", web_app=WebAppInfo(url=telemetry_web_app_url())
+                )
+            ]
+        )
     keyboard = InlineKeyboardMarkup(rows)
     return text, keyboard
 
@@ -886,6 +898,27 @@ async def web_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "Open the cookie manager to paste, replace, or remove media cookies:",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("Open web cookies", web_app=WebAppInfo(cookie_web_app_url()))]]
+        ),
+    )
+
+
+async def web_telemetry_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Open the authenticated telemetry Telegram Web App from an admin DM."""
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(_DM_ONLY_MESSAGE)
+        return
+    if not WEB_SETTINGS_URL.startswith("https://"):
+        await update.message.reply_text(
+            "Web telemetry is not configured. Set WEB_SETTINGS_URL to the public "
+            "HTTPS URL of the Web App listener, then restart the bot."
+        )
+        return
+    await update.message.reply_text(
+        "Open the telemetry Web App:",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Open telemetry", web_app=WebAppInfo(telemetry_web_app_url()))]]
         ),
     )
 
@@ -1216,6 +1249,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - <code>/settings</code> - Show and change chat behavior with buttons.
 - <code>/web_settings</code> - Open the Telegram Web App editor (admin DM; requires WEB_SETTINGS_URL).
 - <code>/web_cookies</code> - Open the Telegram Web App cookie manager (admin DM; requires WEB_SETTINGS_URL).
+- <code>/web_telemetry</code> - Open Telegram-native telemetry (admin DM; requires WEB_SETTINGS_URL).
 - <code>/bot_env</code> - View .env settings (admin DM only). Use with <code>/set_env</code>.
 - <code>/set_env &lt;KEY&gt; &lt;value&gt;</code> - Update a .env setting (admin DM only).
 - <code>/set_reply_chance &lt;0.0-1.0&gt;</code> - Set chance to reply to random messages.

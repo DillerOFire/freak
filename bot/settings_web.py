@@ -39,6 +39,9 @@ from bot.logic import (
     update_behavior_settings,
 )
 from bot.memory import get_config, set_config
+from bot.telemetry.export import build_llm_telemetry_export
+from bot.telemetry.storage import fetch_llm_telemetry_event
+from bot.telemetry.web import build_telemetry_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +425,21 @@ async def cookies_page(request: web.Request) -> web.Response:
     return web.Response(text=render_cookies_html(), content_type="text/html")
 
 
+async def telemetry_page(request: web.Request) -> web.Response:
+    """Serve the shell; its sensitive content is Telegram-authenticated API data."""
+    return web.Response(text=render_telemetry_html(), content_type="text/html")
+
+
+async def health_page(request: web.Request) -> web.Response:
+    """Internal liveness/readiness probe used by the container healthcheck."""
+    try:
+        await build_telemetry_snapshot({"limit": "1"})
+    except Exception:
+        logger.exception("Web App health check failed")
+        raise web.HTTPServiceUnavailable(text="Database unavailable")
+    return web.Response(text="ok")
+
+
 async def api_get_settings(request: web.Request) -> web.Response:
     _require_admin(request)
     return web.json_response(await build_settings_snapshot())
@@ -483,6 +501,33 @@ async def api_delete_cookies(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_get_telemetry(request: web.Request) -> web.Response:
+    _require_admin(request)
+    return web.json_response(await build_telemetry_snapshot(request.query))
+
+
+async def api_get_telemetry_export(request: web.Request) -> web.Response:
+    _require_admin(request)
+    snapshot = await build_telemetry_snapshot(request.query)
+    persona_prompt = await get_config("persona_prompt")
+    export = build_llm_telemetry_export(
+        snapshot["events"], persona_prompt, snapshot["filters"]
+    )
+    return web.json_response(export)
+
+
+async def api_get_telemetry_event(request: web.Request) -> web.Response:
+    _require_admin(request)
+    try:
+        event_id = int(request.match_info["event_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="Invalid telemetry event id") from exc
+    event = await fetch_llm_telemetry_event(event_id)
+    if event is None:
+        raise web.HTTPNotFound(text="Telemetry event not found")
+    return web.json_response(event)
+
+
 def create_settings_web_app() -> web.Application:
     app = web.Application(client_max_size=MAX_JSON_BODY_BYTES)
     app.router.add_get("/", settings_page)
@@ -490,12 +535,18 @@ def create_settings_web_app() -> web.Application:
     app.router.add_get("/settings/", settings_page)
     app.router.add_get("/cookies", cookies_page)
     app.router.add_get("/cookies/", cookies_page)
+    app.router.add_get("/telemetry", telemetry_page)
+    app.router.add_get("/telemetry/", telemetry_page)
+    app.router.add_get("/health", health_page)
     app.router.add_get("/api/settings", api_get_settings)
     app.router.add_get("/api/default_persona", api_get_default_persona)
     app.router.add_post("/api/settings", api_save_settings)
     app.router.add_get("/api/cookies", api_get_cookies)
     app.router.add_post("/api/cookies", api_save_cookies)
     app.router.add_delete("/api/cookies", api_delete_cookies)
+    app.router.add_get("/api/telemetry", api_get_telemetry)
+    app.router.add_get("/api/telemetry/export.json", api_get_telemetry_export)
+    app.router.add_get("/api/telemetry/event/{event_id}", api_get_telemetry_event)
     return app
 
 
@@ -522,6 +573,73 @@ async def start_settings_web_server() -> web.AppRunner:
 async def stop_settings_web_server(runner: web.AppRunner | None) -> None:
     if runner is not None:
         await runner.cleanup()
+
+
+def render_telemetry_html() -> str:
+    """Return the responsive, Telegram-native telemetry Web App shell."""
+    return r'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Freak telemetry</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: env(safe-area-inset-top) 14px env(safe-area-inset-bottom); background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #111); font: 15px/1.4 system-ui, sans-serif; }
+    header { padding: 18px 2px 12px; } h1 { margin: 0; font-size: 24px; } .sub, .muted { color: var(--tg-theme-hint-color, #777); }
+    .controls, .panel, details { background: var(--tg-theme-secondary-bg-color, #f4f4f5); border-radius: 14px; padding: 13px; margin: 10px 0; }
+    .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; } label { color: var(--tg-theme-hint-color, #777); font-size: 12px; } select, input, button { width: 100%; margin-top: 4px; border-radius: 9px; border: 0; padding: 10px; font: inherit; background: var(--tg-theme-bg-color, #fff); color: inherit; }
+    button { background: var(--tg-theme-button-color, #2481cc); color: var(--tg-theme-button-text-color, #fff); font-weight: 600; cursor: pointer; } button.secondary { background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-link-color, #2481cc); }
+    .actions { display: flex; gap: 8px; grid-column: 1 / -1; }.actions button { flex: 1; }
+    .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }.card { background: var(--tg-theme-secondary-bg-color, #f4f4f5); border-radius: 12px; padding: 11px; }.label { font-size: 11px; color: var(--tg-theme-hint-color, #777); }.value { font-size: 20px; font-weight: 700; margin-top: 2px; }
+    h2 { font-size: 18px; margin: 0 0 8px; } ul { margin: 0; padding-left: 20px; } li + li { margin-top: 6px; }.event-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }.event-title { font-weight: 700; }.meta { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 7px; color: var(--tg-theme-hint-color, #777); font-size: 12px; }.badge { border-radius: 99px; padding: 3px 8px; color: #fff; font-size: 12px; white-space: nowrap; }.success { background: #2e7d32; }.no_reply { background: #1565c0; }.failure { background: #c62828; }.unknown { background: #666; }
+    summary { cursor: pointer; font-weight: 600; } pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--tg-theme-bg-color, #fff); padding: 10px; border-radius: 9px; font-size: 12px; }.detail-title { font-size: 13px; font-weight: 700; margin: 13px 0 4px; }.hidden { display: none; }.error { color: #d32f2f; }
+  </style>
+</head>
+<body>
+  <header><h1>Telemetry</h1><div class="sub">LLM context, replies, and memory behavior</div></header>
+  <div class="controls"><div class="filters">
+    <label>Chat<select id="chat"><option value="all">All chats</option></select></label>
+    <label>Status<select id="status"><option value="all">All statuses</option><option value="success">Success</option><option value="no_reply">No reply</option><option value="invalid_json">Invalid JSON</option><option value="validation_error">Validation error</option><option value="empty_content">Empty content</option><option value="exception">Exception</option></select></label>
+    <label>Source<select id="source"><option value="all">All sources</option><option value="message">Message</option><option value="daily_task">Daily task</option></select></label>
+    <label>Events<input id="limit" type="number" min="1" max="500" value="100"></label>
+    <div class="actions"><button id="apply">Refresh</button><button id="export" class="secondary">Export JSON</button></div>
+  </div></div>
+  <p id="notice" class="muted">Loading telemetry…</p><main id="content" class="hidden"><section id="cards" class="cards"></section><section class="panel"><h2>Suggestions</h2><ul id="suggestions"></ul></section><section class="panel"><h2>Events</h2><div id="events"></div></section></main>
+  <script>
+  (() => {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) { tg.ready(); tg.expand(); document.documentElement.style.setProperty('--tg-theme-bg-color', tg.themeParams.bg_color || '#fff'); }
+    const ids = ['chat', 'status', 'source', 'limit']; const $ = id => document.getElementById(id);
+    const notice = $('notice'), content = $('content');
+    const headers = () => ({'X-Telegram-Init-Data': tg ? tg.initData : ''});
+    const fmt = value => value === null || value === undefined ? 'n/a' : (typeof value === 'number' && !Number.isInteger(value) ? value.toFixed(1) : String(value));
+    const rate = value => value === null || value === undefined ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+    const make = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
+    const query = () => new URLSearchParams(Object.fromEntries(ids.map(id => [id === 'chat' ? 'chat_id' : id, $(id).value])));
+    const select = (id, value) => { $(id).value = value == null ? 'all' : String(value); };
+    function populateChats(chats, active) { const dropdown = $('chat'); const previous = dropdown.value; dropdown.replaceChildren(make('option', 'All chats')); dropdown.firstChild.value = 'all'; chats.forEach(chat => { const opt = make('option', chat); opt.value = chat; dropdown.append(opt); }); dropdown.value = active == null ? (previous || 'all') : String(active); }
+    function render(snapshot) {
+      const s = snapshot.summary; populateChats(snapshot.chats, snapshot.filters.chat_id); select('status', snapshot.filters.status); select('source', snapshot.filters.source); $('limit').value = snapshot.filters.limit;
+      const items = [['Total events', fmt(s.total_events)], ['Success rate', rate(s.success_rate)], ['No-reply rate', rate(s.no_reply_rate)], ['Failure rate', rate(s.failure_rate)], ['Avg context chars', fmt(s.avg_context_chars)], ['Avg prompt tokens', fmt(s.avg_prompt_tokens)], ['Cached prompt tokens', fmt(s.avg_prompt_cached_tokens)], ['Retrieved memories', fmt(s.avg_retrieved_memory_count)], ['Memory writes', fmt(s.avg_memory_write_count)], ['Memory write success', rate(s.memory_write_success_rate)]];
+      const cards = $('cards'); cards.replaceChildren(); items.forEach(([label, value]) => { const card = make('div', undefined, 'card'); card.append(make('div', label, 'label'), make('div', value, 'value')); cards.append(card); });
+      const suggestions = $('suggestions'); suggestions.replaceChildren(); (snapshot.suggestions.length ? snapshot.suggestions : ['No suggestions yet.']).forEach(value => suggestions.append(make('li', value)));
+      const events = $('events'); events.replaceChildren(); if (!snapshot.events.length) events.append(make('p', 'No telemetry recorded for these filters yet.', 'muted'));
+      snapshot.events.forEach(event => {
+        const details = make('details'); const summary = make('summary'); const head = make('div', undefined, 'event-head'); const title = make('span', `#${event.id} · ${event.timestamp || 'unknown time'}`, 'event-title'); const status = event.status || 'unknown'; const klass = status === 'success' ? 'success' : status === 'no_reply' ? 'no_reply' : ['invalid_json','validation_error','empty_content','exception'].includes(status) ? 'failure' : 'unknown'; head.append(title, make('span', status.replace('_', ' '), `badge ${klass}`)); summary.append(head); const meta = make('div', undefined, 'meta'); [`chat ${event.chat_id}`, event.source || 'message', `latency ${fmt(event.latency_ms)} ms`, `context ${fmt(event.context_message_count)} msgs`, `memories ${fmt(event.retrieved_memory_count)}`, `writes ${fmt(event.memory_write_count)}/${fmt(event.failed_memory_write_count)}`].forEach(text => meta.append(make('span', text))); summary.append(meta); details.append(summary);
+        [['Trigger messages', event.trigger_messages || []], ['Memories used', {user_thoughts: event.used_user_thoughts || {}, general_memories: event.used_general_memories || []}], ['Response', {messages: event.response_messages || [], media: event.response_media || {}, reply_to_message_id: event.reply_to_message_id}], ['Memorized', event.memory_writes || []], ['Tool calls', event.tool_calls || []]].forEach(([label, value]) => { details.append(make('div', label, 'detail-title')); details.append(make('pre', JSON.stringify(value, null, 2))); }); events.append(details);
+      });
+      notice.className = 'hidden'; content.classList.remove('hidden');
+    }
+    async function load() { notice.className = 'muted'; notice.textContent = 'Loading telemetry…'; content.classList.add('hidden'); try { const response = await fetch(`/api/telemetry?${query()}`, {headers: headers()}); if (!response.ok) throw new Error(await response.text() || 'Could not load telemetry.'); render(await response.json()); } catch (error) { notice.className = 'error'; notice.textContent = error.message || 'Could not load telemetry.'; } }
+    $('apply').addEventListener('click', load); $('export').addEventListener('click', async () => { try { const response = await fetch(`/api/telemetry/export.json?${query()}`, {headers: headers()}); if (!response.ok) throw new Error(await response.text()); const blob = new Blob([await response.text()], {type: 'application/json'}); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'freak-telemetry.json'; link.click(); URL.revokeObjectURL(link.href); } catch (error) { notice.className = 'error'; notice.textContent = error.message || 'Could not export telemetry.'; } });
+    load();
+  })();
+  </script>
+</body>
+</html>'''
 
 
 def render_settings_html() -> str:

@@ -31,10 +31,6 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "LLM_VISION_BASE_URL",
         "LLM_REFERER",
         "LLM_TITLE",
-        "TELEMETRY_DASHBOARD_ENABLED",
-        "TELEMETRY_DASHBOARD_HOST",
-        "TELEMETRY_DASHBOARD_PORT",
-        "TELEMETRY_DASHBOARD_TOKEN",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "WEB_SETTINGS_URL",
@@ -42,6 +38,10 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "WEB_SETTINGS_PORT",
         "WEB_SETTINGS_INIT_DATA_MAX_AGE",
         "UV_EXECUTABLE",
+        "YTDLP_MAX_CONCURRENT_DOWNLOADS",
+        "YTDLP_QUEUE_TIMEOUT_SEC",
+        "YTDLP_DOWNLOAD_TIMEOUT_SEC",
+        "YTDLP_SOCKET_TIMEOUT_SEC",
     }
 )
 
@@ -60,7 +60,6 @@ SECRET_ENV_KEYS: frozenset[str] = frozenset(
     {
         "TELEGRAM_BOT_TOKEN",
         "LLM_API_KEY",
-        "TELEMETRY_DASHBOARD_TOKEN",
         "FIRECRAWL_API_KEY",
     }
 )
@@ -71,14 +70,14 @@ RESTART_REQUIRED_KEYS: frozenset[str] = frozenset(
         "LLM_PONDER_BASE_URL",
         "LLM_VISION_BASE_URL",
         "ADMIN_ID",
-        "TELEMETRY_DASHBOARD_HOST",
-        "TELEMETRY_DASHBOARD_PORT",
-        "TELEMETRY_DASHBOARD_ENABLED",
-        "TELEMETRY_DASHBOARD_TOKEN",
         "WEB_SETTINGS_URL",
         "WEB_SETTINGS_HOST",
         "WEB_SETTINGS_PORT",
         "WEB_SETTINGS_INIT_DATA_MAX_AGE",
+        "YTDLP_MAX_CONCURRENT_DOWNLOADS",
+        "YTDLP_QUEUE_TIMEOUT_SEC",
+        "YTDLP_DOWNLOAD_TIMEOUT_SEC",
+        "YTDLP_SOCKET_TIMEOUT_SEC",
     }
 )
 
@@ -130,17 +129,25 @@ def validate_env_value(key: str, value: str) -> tuple[str, str]:
             )
     elif normalized_key == "ADMIN_ID":
         _validate_int(value, key=normalized_key, minimum=1, maximum=2**63 - 1)
-    elif normalized_key in {"TELEMETRY_DASHBOARD_PORT", "WEB_SETTINGS_PORT"}:
+    elif normalized_key == "WEB_SETTINGS_PORT":
         _validate_int(value, key=normalized_key, minimum=1, maximum=65535)
     elif normalized_key == "WEB_SETTINGS_INIT_DATA_MAX_AGE":
         _validate_int(value, key=normalized_key, minimum=60, maximum=86400)
+    elif normalized_key == "YTDLP_MAX_CONCURRENT_DOWNLOADS":
+        _validate_int(value, key=normalized_key, minimum=1, maximum=8)
+    elif normalized_key == "YTDLP_QUEUE_TIMEOUT_SEC":
+        _validate_int(value, key=normalized_key, minimum=1, maximum=300)
+    elif normalized_key == "YTDLP_DOWNLOAD_TIMEOUT_SEC":
+        _validate_int(value, key=normalized_key, minimum=30, maximum=1800)
+    elif normalized_key == "YTDLP_SOCKET_TIMEOUT_SEC":
+        _validate_int(value, key=normalized_key, minimum=5, maximum=120)
     elif normalized_key == "WEB_SETTINGS_URL":
         parsed = urlparse(value)
         if parsed.scheme != "https" or not parsed.netloc:
             raise EnvUpdateError(
                 "WEB_SETTINGS_URL must be a public HTTPS URL, for example https://bot.example.com."
             )
-    elif normalized_key in {"LLM_PROMPT_CACHE", "TELEMETRY_DASHBOARD_ENABLED"}:
+    elif normalized_key == "LLM_PROMPT_CACHE":
         if value.lower() not in _BOOL_VALUES:
             raise EnvUpdateError(f"{normalized_key} must be a boolean value.")
 
@@ -467,14 +474,6 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         agent.client.default_headers["X-Title"] = value
     elif key == "ADMIN_ID":
         config.ADMIN_ID = int(value)
-    elif key == "TELEMETRY_DASHBOARD_ENABLED":
-        config.TELEMETRY_DASHBOARD_ENABLED = value.lower() not in {"0", "false", "no"}
-    elif key == "TELEMETRY_DASHBOARD_HOST":
-        config.TELEMETRY_DASHBOARD_HOST = value
-    elif key == "TELEMETRY_DASHBOARD_PORT":
-        config.TELEMETRY_DASHBOARD_PORT = int(value)
-    elif key == "TELEMETRY_DASHBOARD_TOKEN":
-        config.TELEMETRY_DASHBOARD_TOKEN = value or None
     elif key == "FIRECRAWL_API_KEY":
         config.FIRECRAWL_API_KEY = value or None
         import bot.agent as agent

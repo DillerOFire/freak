@@ -145,6 +145,36 @@ def test_rendered_cookie_manager_uses_authenticated_cookie_api():
     assert "Saved cookie values are never shown" in html
 
 
+def test_rendered_telemetry_is_a_telegram_web_app():
+    html = settings_web.render_telemetry_html()
+
+    assert "telegram-web-app.js" in html
+    assert "X-Telegram-Init-Data" in html
+    assert "/api/telemetry" in html
+    assert "Export JSON" in html
+    assert "textContent" in html
+
+
+@pytest.mark.asyncio
+async def test_telemetry_endpoint_requires_signed_admin_data():
+    now = int(time.time())
+    init_data = _signed_init_data(token="test-token", user_id=42, auth_date=now)
+    snapshot = {"events": [], "filters": {"limit": 100}, "chats": [], "summary": {}, "suggestions": []}
+    with patch("bot.settings_web.config.TELEGRAM_BOT_TOKEN", "test-token"), patch(
+        "bot.settings_web.config.ADMIN_ID", 42
+    ), patch("bot.settings_web.build_telemetry_snapshot", new_callable=AsyncMock, return_value=snapshot):
+        with pytest.raises(web.HTTPUnauthorized):
+            await settings_web.api_get_telemetry(make_mocked_request("GET", "/api/telemetry"))
+        response = await settings_web.api_get_telemetry(
+            make_mocked_request(
+                "GET", "/api/telemetry?limit=10",
+                headers={settings_web.INIT_DATA_HEADER: init_data},
+            )
+        )
+
+    assert json.loads(response.text) == snapshot
+
+
 @pytest.mark.asyncio
 async def test_default_persona_endpoint_requires_admin_init_data():
     now = int(time.time())
