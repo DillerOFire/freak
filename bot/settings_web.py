@@ -302,6 +302,14 @@ async def api_get_settings(request: web.Request) -> web.Response:
     return web.json_response(await build_settings_snapshot())
 
 
+async def api_get_default_persona(request: web.Request) -> web.Response:
+    """Return the built-in persona for the editor's reset action."""
+    _require_admin(request)
+    from bot.llm import DEFAULT_PERSONA
+
+    return web.json_response({"persona": DEFAULT_PERSONA})
+
+
 async def api_save_settings(request: web.Request) -> web.Response:
     user = _require_admin(request)
     if request.content_length and request.content_length > MAX_JSON_BODY_BYTES:
@@ -325,6 +333,7 @@ def create_settings_web_app() -> web.Application:
     app.router.add_get("/settings", settings_page)
     app.router.add_get("/settings/", settings_page)
     app.router.add_get("/api/settings", api_get_settings)
+    app.router.add_get("/api/default_persona", api_get_default_persona)
     app.router.add_post("/api/settings", api_save_settings)
     return app
 
@@ -364,33 +373,40 @@ def render_settings_html() -> str:
   <title>Freak settings</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { color-scheme: light dark; --bg: var(--tg-theme-bg-color, #10131a); --card: var(--tg-theme-secondary-bg-color, #1a202b); --text: var(--tg-theme-text-color, #edf1f7); --hint: var(--tg-theme-hint-color, #98a2b3); --accent: var(--tg-theme-button-color, #61a8ff); --accent-text: var(--tg-theme-button-text-color, #fff); --bad: #f97066; --good: #4bb57b; }
+    :root { color-scheme: light dark; --bg: var(--tg-theme-bg-color, #10131a); --card: var(--tg-theme-secondary-bg-color, #1a202b); --text: var(--tg-theme-text-color, #edf1f7); --hint: var(--tg-theme-hint-color, #98a2b3); --accent: var(--tg-theme-button-color, #61a8ff); --accent-text: var(--tg-theme-button-text-color, #fff); --bad: var(--tg-theme-destructive-text-color, #f97066); --good: var(--tg-theme-accent-text-color, #4bb57b); }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, sans-serif; }
-    main { max-width: 760px; margin: auto; padding: 18px 14px 94px; }
+    main { width: 100%; margin: auto; padding: 14px 14px 94px; }
     h1 { font-size: 24px; margin: 0 0 4px; } h2 { font-size: 18px; margin: 0 0 12px; }
     .intro, .hint { color: var(--hint); } .intro { margin: 0 0 18px; }
-    .card { background: var(--card); border-radius: 14px; padding: 16px; margin: 14px 0; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 760px; margin: auto; }
+    .tabs { display: flex; gap: 8px; overflow-x: auto; max-width: 760px; margin: 14px auto; padding-bottom: 2px; }
+    .card { background: var(--card); border-radius: 14px; padding: 16px; max-width: 760px; margin: 14px auto; }
+    .persona-card { max-width: none; }
     .field { display: grid; gap: 6px; margin: 12px 0; }
     .field label { font-weight: 650; } .field small { color: var(--hint); }
     input, textarea { width: 100%; border: 1px solid color-mix(in srgb, var(--hint) 45%, transparent); background: color-mix(in srgb, var(--bg) 72%, transparent); color: var(--text); border-radius: 9px; padding: 10px; font: inherit; }
-    textarea { min-height: 220px; resize: vertical; } input[type=number] { max-width: 180px; }
+    textarea { min-height: 220px; resize: vertical; } #persona { min-height: 60vh; max-height: 85vh; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; line-height: 1.5; } input[type=number] { max-width: 180px; }
     .switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0; } .switch input { width: 22px; height: 22px; }
     .secret-note { color: var(--hint); margin: -2px 0 4px; font-size: 13px; }
     #status { position: fixed; left: 14px; right: 14px; bottom: 14px; max-width: 732px; margin: auto; padding: 12px 14px; border-radius: 10px; background: var(--card); box-shadow: 0 5px 30px #0006; display: none; }
     #status.ok { color: var(--good); display: block; } #status.error { color: var(--bad); display: block; }
-    button { width: 100%; border: 0; border-radius: 10px; padding: 13px; background: var(--accent); color: var(--accent-text); font: 700 16px system-ui, sans-serif; cursor: pointer; }
+    button { border: 0; border-radius: 10px; padding: 11px 13px; background: var(--accent); color: var(--accent-text); font: 700 16px system-ui, sans-serif; cursor: pointer; }
+    .topbar button, .tabs button, .secondary { width: auto; background: color-mix(in srgb, var(--hint) 24%, transparent); color: var(--text); font-size: 14px; }
+    .tabs button { white-space: nowrap; } .persona-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; } .persona-actions #save { margin-left: auto; }
+    .counter { color: var(--hint); font-size: 13px; text-align: right; } .counter.warning { color: var(--bad); font-weight: 700; }
     button:disabled { opacity: .55; cursor: wait; } .hidden { display: none; }
+    @media (max-width: 599px) { main { padding: 10px 10px 84px; } .card { padding: 14px; } #persona { min-height: 62vh; } .persona-actions { display: grid; grid-template-columns: 1fr 1fr; } .persona-actions #save { grid-column: 1 / -1; margin-left: 0; } }
   </style>
 </head>
 <body>
   <main>
-    <h1>Bot settings</h1>
+    <div class="topbar"><h1>Bot settings</h1><button id="exit-fullscreen" type="button" class="hidden">Exit fullscreen</button></div>
     <p class="intro">Admin-only settings. API keys are kept on the bot and are never sent to this page.</p>
+    <nav class="tabs" aria-label="Settings sections"><button type="button" data-scroll-target="persona-section">Persona</button><button type="button" data-scroll-target="behavior-section">Behavior</button><button type="button" data-scroll-target="environment-section">Environment</button></nav>
     <form id="settings-form">
-      <section class="card"><h2>Environment</h2><div id="environment"></div></section>
-      <section class="card"><h2>Persona</h2><p id="default-persona-note" class="hint hidden">This is the built-in default. Saving it makes it a custom prompt.</p><div class="field"><label for="persona">Persona prompt</label><textarea id="persona" maxlength="30000"></textarea></div></section>
-      <section class="card"><h2>Global behavior</h2>
+      <section id="persona-section" class="card persona-card"><h2>Persona prompt</h2><p class="hint">This prompt defines the bot's personality and how it speaks in chat. Changes stay here until you save.</p><p id="default-persona-note" class="hint hidden">This is the built-in default. Saving it makes it a custom prompt.</p><div class="field"><label for="persona">Prompt</label><textarea id="persona" maxlength="30000"></textarea><div id="persona-counter" class="counter" aria-live="polite">0 / 30000</div></div><div class="persona-actions"><button id="copy-persona" type="button" class="secondary">Copy to clipboard</button><button id="reset-persona" type="button" class="secondary">Reset to default</button><button id="save" type="submit">Save changes</button></div></section>
+      <section id="behavior-section" class="card"><h2>Global behavior</h2>
         <div class="field"><label for="reply_chance">Reply chance (%)</label><input id="reply_chance" type="number" min="0" max="100" step="1"></div>
         <div class="field"><label for="reaction_chance">Reaction chance (%)</label><input id="reaction_chance" type="number" min="0" max="100" step="1"></div>
         <div class="field"><label for="cooldown_threshold">Cooldown threshold (messages)</label><input id="cooldown_threshold" type="number" min="0" max="200" step="1"></div>
@@ -399,7 +415,7 @@ def render_settings_html() -> str:
         <div class="switch"><label for="paused">Bot paused</label><input id="paused" type="checkbox"></div>
         <div class="switch"><label for="utils_disabled">Disable video/audio utilities</label><input id="utils_disabled" type="checkbox"></div>
       </section>
-      <button id="save" type="submit">Save changes</button>
+      <section id="environment-section" class="card"><h2>Environment</h2><div id="environment"></div></section>
     </form>
   </main>
   <div id="status" role="status"></div>
@@ -409,11 +425,13 @@ def render_settings_html() -> str:
     const form = document.getElementById('settings-form');
     const save = document.getElementById('save');
     const status = document.getElementById('status');
+    const persona = document.getElementById('persona');
+    const personaCounter = document.getElementById('persona-counter');
     let initial = null;
     function show(message, kind = 'ok') { status.textContent = message; status.className = kind; }
     function changed(id, value) { return initial && initial[id] !== value; }
-    async function request(method, data) {
-      const response = await fetch(api, { method, headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': telegram ? telegram.initData : '' }, body: data ? JSON.stringify(data) : undefined });
+    async function request(method, data, path = api) {
+      const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': telegram ? telegram.initData : '' }, body: data ? JSON.stringify(data) : undefined });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || body.message || 'Request failed.');
       return body;
@@ -428,16 +446,22 @@ def render_settings_html() -> str:
       field.append(input); document.getElementById('environment').append(field);
     }
     function setField(id, value) { document.getElementById(id).value = value; initial[id] = String(value); }
+    function updatePersonaCounter() { const length = persona.value.length; personaCounter.textContent = length + ' / 30000'; personaCounter.classList.toggle('warning', length > 27000); }
     function populate(data) {
       initial = {};
       data.environment.forEach(addEnvironmentField);
       data.environment.forEach(entry => { initial['env-' + entry.key] = entry.is_secret ? '' : String(entry.value || ''); });
-      setField('persona', data.persona_prompt); document.getElementById('default-persona-note').classList.toggle('hidden', !data.persona_uses_default);
+      setField('persona', data.persona_prompt); updatePersonaCounter(); document.getElementById('default-persona-note').classList.toggle('hidden', !data.persona_uses_default);
       setField('reply_chance', Math.round(data.behavior.reply_chance * 100)); setField('reaction_chance', Math.round(data.behavior.reaction_chance * 100));
       setField('cooldown_threshold', data.behavior.cooldown_threshold); setField('max_ping_pong', data.behavior.max_ping_pong); setField('media_reply_guidance', data.behavior.media_reply_guidance || '');
       for (const id of ['paused', 'utils_disabled']) { const el = document.getElementById(id); el.checked = Boolean(data[id]); initial[id] = el.checked; }
     }
-    async function load() { if (!telegram || !telegram.initData) throw new Error('Open this page from the bot\'s Settings button in Telegram.'); telegram.ready(); telegram.expand(); populate(await request('GET')); }
+    async function load() { if (!telegram || !telegram.initData) throw new Error('Open this page from the bot\'s Settings button in Telegram.'); telegram.ready(); telegram.expand(); telegram.isVerticalSwipesEnabled = false; if (telegram.requestFullscreen) { telegram.requestFullscreen(); document.getElementById('exit-fullscreen').classList.remove('hidden'); } populate(await request('GET')); }
+    persona.addEventListener('input', updatePersonaCounter);
+    document.querySelectorAll('[data-scroll-target]').forEach(button => button.addEventListener('click', () => document.getElementById(button.dataset.scrollTarget).scrollIntoView({ behavior: 'smooth', block: 'start' })));
+    document.getElementById('exit-fullscreen').addEventListener('click', () => { if (telegram && telegram.exitFullscreen) telegram.exitFullscreen(); });
+    document.getElementById('copy-persona').addEventListener('click', async () => { try { await navigator.clipboard.writeText(persona.value); show('Persona copied to clipboard.'); } catch { show('Could not copy the persona. Select and copy it manually.', 'error'); } });
+    document.getElementById('reset-persona').addEventListener('click', async () => { if (!window.confirm('Replace the editor contents with the built-in default persona? You still need to save to apply it.')) return; try { const data = await request('GET', undefined, '/api/default_persona'); persona.value = data.persona; updatePersonaCounter(); document.getElementById('default-persona-note').classList.remove('hidden'); show('Default persona loaded. Save changes to apply it.'); } catch (error) { show(error.message, 'error'); } });
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (!initial) return; const payload = {}; const env = {};
       document.querySelectorAll('[data-env-key]').forEach(input => { if (input.value && changed(input.id, input.value)) env[input.dataset.envKey] = input.value; });

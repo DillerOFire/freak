@@ -6,6 +6,8 @@ from urllib.parse import urlencode
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 
 from bot import settings_web
 
@@ -88,3 +90,35 @@ async def test_settings_update_rejects_non_admin():
     with patch("bot.settings_web.config.ADMIN_ID", 42):
         with pytest.raises(settings_web.WebSettingsAuthError, match="only available"):
             await settings_web.apply_settings_update({"paused": True}, requesting_user_id=99)
+
+
+def test_rendered_settings_includes_fullscreen_persona_controls():
+    html = settings_web.render_settings_html()
+
+    assert "requestFullscreen" in html
+    assert "reset-persona" in html
+    assert "/api/default_persona" in html
+
+
+@pytest.mark.asyncio
+async def test_default_persona_endpoint_requires_admin_init_data():
+    now = int(time.time())
+    valid_init_data = _signed_init_data(token="test-token", user_id=42, auth_date=now)
+    with patch("bot.settings_web.config.TELEGRAM_BOT_TOKEN", "test-token"), patch(
+        "bot.settings_web.config.ADMIN_ID", 42
+    ):
+        with pytest.raises(web.HTTPUnauthorized):
+            await settings_web.api_get_default_persona(
+                make_mocked_request("GET", "/api/default_persona")
+            )
+
+        with patch("bot.llm.DEFAULT_PERSONA", "Built-in test persona"):
+            response = await settings_web.api_get_default_persona(
+                make_mocked_request(
+                    "GET",
+                    "/api/default_persona",
+                    headers={settings_web.INIT_DATA_HEADER: valid_init_data},
+                )
+            )
+
+    assert json.loads(response.text) == {"persona": "Built-in test persona"}
