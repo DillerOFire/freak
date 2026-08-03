@@ -485,6 +485,20 @@ async def test_web_settings_command_opens_telegram_web_app(mock_admin_update, mo
 
 
 @pytest.mark.asyncio
+async def test_web_cookies_command_opens_cookie_manager(mock_admin_update, mock_context):
+    mock_admin_update.effective_chat.type = "private"
+    mock_admin_update.message.reply_text = AsyncMock()
+
+    with patch("bot.commands.WEB_SETTINGS_URL", "https://bot.example.test"):
+        await commands.web_cookies_command(mock_admin_update, mock_context)
+
+    _, kwargs = mock_admin_update.message.reply_text.call_args
+    button = kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Open web cookies"
+    assert button.web_app.url == "https://bot.example.test/cookies"
+
+
+@pytest.mark.asyncio
 async def test_bot_env_callback_refreshes_panel(mock_admin_update, mock_context):
     query = MagicMock()
     query.from_user.id = 12345

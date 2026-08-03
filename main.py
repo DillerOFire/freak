@@ -36,6 +36,7 @@ from bot.commands import (
     bot_env_command,
     bot_env_callback,
     web_settings_command,
+    web_cookies_command,
 )
 from bot.jobs import load_jobs
 from bot.memory import init_db
@@ -155,6 +156,7 @@ def main():
     application.add_handler(CommandHandler("set_env", set_env_command))
     application.add_handler(CommandHandler("bot_env", bot_env_command))
     application.add_handler(CommandHandler("web_settings", web_settings_command))
+    application.add_handler(CommandHandler("web_cookies", web_cookies_command))
     application.add_handler(CommandHandler("version", version_command))
 
     logging.info("Bot started polling...")

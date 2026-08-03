@@ -12,8 +12,10 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from urllib.parse import parse_qsl
 
 from aiohttp import web
@@ -41,8 +43,28 @@ from bot.memory import get_config, set_config
 logger = logging.getLogger(__name__)
 
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
-MAX_JSON_BODY_BYTES = 96 * 1024
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_PERSONA_PROMPT_LENGTH = 30_000
+MAX_COOKIE_CONTENT_LENGTH = 512 * 1024
+
+# Keep this list aligned with the services selected by the message and music
+# download handlers.  ``twitter`` is accepted as a legacy alias for ``x``.
+COOKIE_SERVICES: dict[str, str] = {
+    "youtube": "YouTube",
+    "instagram": "Instagram",
+    "x": "X (Twitter)",
+    "tiktok": "TikTok",
+    "facebook": "Facebook",
+    "reddit": "Reddit",
+    "pinterest": "Pinterest",
+    "spotify": "Spotify",
+    "soundcloud": "SoundCloud",
+    "bandcamp": "Bandcamp",
+    "mixcloud": "Mixcloud",
+    "twitch": "Twitch",
+    "vk": "VK",
+    "rutube": "Rutube",
+}
 
 
 class WebSettingsAuthError(ValueError):
@@ -151,6 +173,105 @@ async def build_settings_snapshot() -> dict[str, object]:
         "paused": get_paused(),
         "utils_disabled": await get_utils_disabled(GLOBAL_SETTINGS_CHAT_ID),
     }
+
+
+def _normalize_cookie_service(service: object) -> str:
+    if not isinstance(service, str):
+        raise WebSettingsValidationError("Cookie service must be text.")
+    normalized = service.strip().lower()
+    if normalized == "twitter":
+        normalized = "x"
+    if normalized not in COOKIE_SERVICES:
+        raise WebSettingsValidationError("Unsupported cookie service.")
+    return normalized
+
+
+def _cookie_path(service: str) -> Path:
+    # Service is normalized against a fixed allow-list, so this cannot escape
+    # COOKIES_DIR even when a browser sends a malicious payload.
+    return Path(config.COOKIES_DIR) / f"{service}.txt"
+
+
+def _cookie_snapshot_entry(service: str) -> dict[str, object]:
+    path = _cookie_path(service)
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        from bot.media_utils import _SESSION_COOKIE_NAMES, normalize_netscape_cookies
+
+        _normalized, names = normalize_netscape_cookies(raw)
+        session = sorted({name for name in names if name.lower() in _SESSION_COOKIE_NAMES})
+        return {
+            "service": service,
+            "label": COOKIE_SERVICES[service],
+            "present": True,
+            "valid_rows": len(names),
+            "session_cookie_names": session,
+            "updated_at": int(path.stat().st_mtime),
+        }
+    except FileNotFoundError:
+        return {
+            "service": service,
+            "label": COOKIE_SERVICES[service],
+            "present": False,
+            "valid_rows": 0,
+            "session_cookie_names": [],
+            "updated_at": None,
+        }
+    except OSError:
+        logger.exception("Could not inspect cookies for service=%s", service)
+        return {
+            "service": service,
+            "label": COOKIE_SERVICES[service],
+            "present": True,
+            "valid_rows": 0,
+            "session_cookie_names": [],
+            "updated_at": None,
+            "error": "Could not read the saved cookie file.",
+        }
+
+
+async def build_cookie_snapshot() -> dict[str, object]:
+    """Return cookie-file metadata only; values never leave the host."""
+    return {"services": [_cookie_snapshot_entry(service) for service in COOKIE_SERVICES]}
+
+
+async def apply_cookie_update(payload: object, *, requesting_user_id: int) -> dict[str, object]:
+    if requesting_user_id != config.ADMIN_ID:
+        raise WebSettingsAuthError("This Web App is only available to the bot admin.")
+    body = _required_mapping(payload, "Cookie payload")
+    service = _normalize_cookie_service(body.get("service"))
+    content = body.get("content")
+    if not isinstance(content, str):
+        raise WebSettingsValidationError("Cookie content must be text.")
+    if len(content) > MAX_COOKIE_CONTENT_LENGTH:
+        raise WebSettingsValidationError(
+            f"Cookie content is too long (maximum {MAX_COOKIE_CONTENT_LENGTH} characters)."
+        )
+
+    from bot.media_utils import save_netscape_cookies
+
+    count, _names, session = save_netscape_cookies(str(_cookie_path(service)), content)
+    return {
+        "message": f"Saved {count} cookie rows for {COOKIE_SERVICES[service]}.",
+        "service": service,
+        "valid_rows": count,
+        "session_cookie_names": session,
+    }
+
+
+async def delete_cookie_file(payload: object, *, requesting_user_id: int) -> dict[str, object]:
+    if requesting_user_id != config.ADMIN_ID:
+        raise WebSettingsAuthError("This Web App is only available to the bot admin.")
+    body = _required_mapping(payload, "Cookie payload")
+    service = _normalize_cookie_service(body.get("service"))
+    try:
+        os.remove(_cookie_path(service))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.exception("Could not remove cookies for service=%s", service)
+        raise WebSettingsValidationError("Could not remove the saved cookie file.") from exc
+    return {"message": f"Removed saved cookies for {COOKIE_SERVICES[service]}.", "service": service}
 
 
 def _required_mapping(payload: object, field: str) -> Mapping[str, object]:
@@ -297,6 +418,10 @@ async def settings_page(request: web.Request) -> web.Response:
     return web.Response(text=render_settings_html(), content_type="text/html")
 
 
+async def cookies_page(request: web.Request) -> web.Response:
+    return web.Response(text=render_cookies_html(), content_type="text/html")
+
+
 async def api_get_settings(request: web.Request) -> web.Response:
     _require_admin(request)
     return web.json_response(await build_settings_snapshot())
@@ -327,14 +452,50 @@ async def api_save_settings(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_get_cookies(request: web.Request) -> web.Response:
+    _require_admin(request)
+    return web.json_response(await build_cookie_snapshot())
+
+
+async def api_save_cookies(request: web.Request) -> web.Response:
+    user = _require_admin(request)
+    try:
+        payload = await request.json()
+        result = await apply_cookie_update(payload, requesting_user_id=int(user["id"]))
+    except (json.JSONDecodeError, WebSettingsValidationError, WebSettingsAuthError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception:
+        logger.exception("Telegram Web cookie save failed")
+        return web.json_response({"error": "Could not save cookies."}, status=500)
+    return web.json_response(result)
+
+
+async def api_delete_cookies(request: web.Request) -> web.Response:
+    user = _require_admin(request)
+    try:
+        payload = await request.json()
+        result = await delete_cookie_file(payload, requesting_user_id=int(user["id"]))
+    except (json.JSONDecodeError, WebSettingsValidationError, WebSettingsAuthError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception:
+        logger.exception("Telegram Web cookie deletion failed")
+        return web.json_response({"error": "Could not remove cookies."}, status=500)
+    return web.json_response(result)
+
+
 def create_settings_web_app() -> web.Application:
     app = web.Application(client_max_size=MAX_JSON_BODY_BYTES)
     app.router.add_get("/", settings_page)
     app.router.add_get("/settings", settings_page)
     app.router.add_get("/settings/", settings_page)
+    app.router.add_get("/cookies", cookies_page)
+    app.router.add_get("/cookies/", cookies_page)
     app.router.add_get("/api/settings", api_get_settings)
     app.router.add_get("/api/default_persona", api_get_default_persona)
     app.router.add_post("/api/settings", api_save_settings)
+    app.router.add_get("/api/cookies", api_get_cookies)
+    app.router.add_post("/api/cookies", api_save_cookies)
+    app.router.add_delete("/api/cookies", api_delete_cookies)
     return app
 
 
@@ -496,6 +657,56 @@ def render_settings_html() -> str:
       if (!Object.keys(payload).length) { show('No changes to save.'); return; }
       save.disabled = true; try { const result = await request('POST', payload); show(result.message + (result.restart_required ? ' Restart the bot to apply the marked environment changes.' : '')); await load(); } catch (error) { show(error.message, 'error'); } finally { save.disabled = false; }
     });
+    load().catch(error => { form.classList.add('hidden'); show(error.message, 'error'); });
+  </script>
+</body>
+</html>'''
+
+
+def render_cookies_html() -> str:
+    """Return the cookie replacement UI; it intentionally contains no saved data."""
+    return r'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Freak cookies</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { color-scheme: light dark; --bg: var(--tg-theme-bg-color, #10131a); --card: var(--tg-theme-secondary-bg-color, #1a202b); --text: var(--tg-theme-text-color, #edf1f7); --hint: var(--tg-theme-hint-color, #98a2b3); --accent: var(--tg-theme-button-color, #61a8ff); --accent-text: var(--tg-theme-button-text-color, #fff); --bad: var(--tg-theme-destructive-text-color, #f97066); --good: var(--tg-theme-accent-text-color, #4bb57b); }
+    * { box-sizing: border-box; } body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, sans-serif; }
+    main { max-width: 760px; margin: auto; padding: calc(env(safe-area-inset-top, 0px) + 18px) 14px calc(env(safe-area-inset-bottom, 0px) + 94px); }
+    h1 { font-size: 24px; margin: 0 0 4px; } h2 { font-size: 18px; margin: 0 0 8px; } .hint { color: var(--hint); } .card { background: var(--card); border-radius: 14px; padding: 16px; margin: 14px 0; }
+    .field { display: grid; gap: 6px; margin: 12px 0; } label { font-weight: 650; } select, textarea { width: 100%; border: 1px solid color-mix(in srgb, var(--hint) 45%, transparent); background: color-mix(in srgb, var(--bg) 72%, transparent); color: var(--text); border-radius: 9px; padding: 10px; font: inherit; }
+    textarea { min-height: 280px; resize: vertical; font: 13px/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace; } .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; } button { border: 0; border-radius: 10px; padding: 11px 13px; background: var(--accent); color: var(--accent-text); font: 700 16px system-ui, sans-serif; cursor: pointer; } button.secondary { background: color-mix(in srgb, var(--hint) 24%, transparent); color: var(--text); } button.danger { background: transparent; color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 55%, transparent); } button:disabled { opacity: .55; cursor: wait; }
+    #cookie-status { margin: 8px 0; } .ok { color: var(--good); } .error { color: var(--bad); } .hidden { display: none; } #summary { display: grid; gap: 8px; } .summary-row { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid color-mix(in srgb, var(--hint) 24%, transparent); padding-top: 8px; } .summary-row:first-child { border-top: 0; padding-top: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Download cookies</h1>
+    <p class="hint">Paste a Netscape <code>cookies.txt</code> export to replace one service’s jar. Saved cookie values are never shown or sent back to this page.</p>
+    <section class="card"><h2>Saved jars</h2><div id="summary" class="hint">Loading…</div></section>
+    <form id="cookie-form" class="card">
+      <h2>Replace cookies</h2>
+      <div class="field"><label for="service">Service</label><select id="service" required></select></div>
+      <div class="field"><label for="content">cookies.txt content</label><textarea id="content" maxlength="524288" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com&#9;TRUE&#9;/&#9;TRUE&#9;..." spellcheck="false" required></textarea><small class="hint">Export from the browser profile where you are logged in. JSON exports will not work.</small></div>
+      <div id="cookie-status" role="status"></div>
+      <div class="actions"><button id="save" type="submit">Save cookies</button><button id="clear" class="secondary" type="button">Clear paste</button><button id="remove" class="danger" type="button">Remove saved jar</button></div>
+    </form>
+  </main>
+  <script>
+    const telegram = window.Telegram && window.Telegram.WebApp;
+    const serviceSelect = document.getElementById('service'); const content = document.getElementById('content'); const status = document.getElementById('cookie-status'); const summary = document.getElementById('summary'); const form = document.getElementById('cookie-form');
+    let snapshot = null;
+    function show(message, kind = 'ok') { status.textContent = message; status.className = kind; }
+    async function request(method, data) { const response = await fetch('/api/cookies', { method, headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': telegram ? telegram.initData : '' }, body: data ? JSON.stringify(data) : undefined }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error || body.message || 'Request failed.'); return body; }
+    function renderSummary(data) { summary.replaceChildren(); data.services.forEach(item => { const row = document.createElement('div'); row.className = 'summary-row'; const name = document.createElement('strong'); name.textContent = item.label; const detail = document.createElement('span'); if (!item.present) detail.textContent = 'not saved'; else if (item.error) detail.textContent = item.error; else { const sessions = item.session_cookie_names.length ? '; session: ' + item.session_cookie_names.join(', ') : '; no session cookies detected'; detail.textContent = item.valid_rows + ' rows' + sessions; } row.append(name, detail); summary.append(row); }); }
+    function populate(data) { snapshot = data; serviceSelect.replaceChildren(); data.services.forEach(item => { const option = document.createElement('option'); option.value = item.service; option.textContent = item.label; serviceSelect.append(option); }); const requested = new URLSearchParams(location.search).get('service'); if (requested && [...serviceSelect.options].some(option => option.value === requested)) { serviceSelect.value = requested; history.replaceState(null, '', location.pathname); } renderSummary(data); }
+    async function load() { if (!telegram || !telegram.initData) throw new Error('Open this page from the bot\'s Cookies button in Telegram.'); telegram.ready(); telegram.expand(); populate(await request('GET')); }
+    form.addEventListener('submit', async event => { event.preventDefault(); const save = document.getElementById('save'); save.disabled = true; try { const result = await request('POST', { service: serviceSelect.value, content: content.value }); content.value = ''; show(result.message + (result.session_cookie_names.length ? ' Session cookies: ' + result.session_cookie_names.join(', ') + '.' : ' No common session cookie was detected.'), 'ok'); await load(); } catch (error) { show(error.message, 'error'); } finally { save.disabled = false; } });
+    document.getElementById('clear').addEventListener('click', () => { content.value = ''; content.focus(); });
+    document.getElementById('remove').addEventListener('click', async () => { const selected = serviceSelect.options[serviceSelect.selectedIndex]; if (!selected || !window.confirm('Remove saved cookies for ' + selected.text + '?')) return; try { const result = await request('DELETE', { service: serviceSelect.value }); show(result.message); await load(); } catch (error) { show(error.message, 'error'); } });
     load().catch(error => { form.classList.add('hidden'); show(error.message, 'error'); });
   </script>
 </body>

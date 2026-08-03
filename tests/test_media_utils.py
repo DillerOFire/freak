@@ -183,6 +183,15 @@ def test_normalize_netscape_cookies_converts_spaces_to_tabs():
     assert lines[0].split("\t")[6] == "secretvalue"
 
 
+def test_normalize_netscape_cookies_preserves_httponly_rows():
+    text, names = media_utils.normalize_netscape_cookies(
+        "#HttpOnly_.youtube.com TRUE / TRUE 1820105380 SID secretvalue\n"
+    )
+
+    assert names == ["SID"]
+    assert "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1820105380\tSID\tsecretvalue" in text
+
+
 def test_save_netscape_cookies_rejects_empty(tmp_path):
     path = tmp_path / "youtube.txt"
     with pytest.raises(ValueError, match="No valid Netscape"):
@@ -296,6 +305,30 @@ async def test_notify_admin_cookie_failure_sends_and_rate_limits():
         )
         assert sent2 is False
         assert bot.send_message.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_notify_admin_cookie_failure_adds_preselected_web_cookie_button():
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    result = YtDlpResult(
+        error="HTTP Error 403: Forbidden",
+        cookie_issue=True,
+        cookies_path="/data/cookies/youtube.txt",
+        cookies_present=True,
+    )
+
+    with patch.object(media_utils, "ADMIN_ID", 42), patch.object(
+        media_utils, "WEB_SETTINGS_URL", "https://bot.example.test"
+    ):
+        sent = await media_utils.notify_admin_cookie_failure(
+            bot, url="https://youtu.be/x", result=result, service="youtube"
+        )
+
+    assert sent is True
+    button = bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Refresh cookies in web app"
+    assert button.web_app.url == "https://bot.example.test/cookies?service=youtube"
 
 
 @pytest.mark.asyncio

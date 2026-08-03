@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import shlex
+from urllib.parse import quote
 
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
@@ -69,6 +70,14 @@ def _is_admin_dm_query(query) -> bool:
     return query.message.chat.type == "private"
 
 
+def cookie_web_app_url(service: str | None = None) -> str:
+    """Build the cookie manager URL, optionally preselecting one service."""
+    url = WEB_SETTINGS_URL.rstrip("/") + "/cookies"
+    if service:
+        url += "?service=" + quote(service, safe="")
+    return url
+
+
 async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handler for /update_cookies <service>
@@ -96,6 +105,8 @@ async def update_cookies_command(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     service = args[0].lower()
+    if service == "twitter":
+        service = "x"
     if service not in [
         "youtube",
         "instagram",
@@ -858,6 +869,27 @@ async def web_settings_command(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+async def web_cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Open the authenticated cookie manager from an admin private chat."""
+    if not update.message or update.effective_user.id != ADMIN_ID:
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(_DM_ONLY_MESSAGE)
+        return
+    if not WEB_SETTINGS_URL.startswith("https://"):
+        await update.message.reply_text(
+            "Web cookies are not configured. Set WEB_SETTINGS_URL to the public "
+            "HTTPS URL of the settings listener, then restart the bot."
+        )
+        return
+    await update.message.reply_text(
+        "Open the cookie manager to paste, replace, or remove media cookies:",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Open web cookies", web_app=WebAppInfo(cookie_web_app_url()))]]
+        ),
+    )
+
+
 async def bot_env_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
@@ -1183,6 +1215,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <b>Admin configuration</b>
 - <code>/settings</code> - Show and change chat behavior with buttons.
 - <code>/web_settings</code> - Open the Telegram Web App editor (admin DM; requires WEB_SETTINGS_URL).
+- <code>/web_cookies</code> - Open the Telegram Web App cookie manager (admin DM; requires WEB_SETTINGS_URL).
 - <code>/bot_env</code> - View .env settings (admin DM only). Use with <code>/set_env</code>.
 - <code>/set_env &lt;KEY&gt; &lt;value&gt;</code> - Update a .env setting (admin DM only).
 - <code>/set_reply_chance &lt;0.0-1.0&gt;</code> - Set chance to reply to random messages.

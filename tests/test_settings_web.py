@@ -92,6 +92,37 @@ async def test_settings_update_rejects_non_admin():
             await settings_web.apply_settings_update({"paused": True}, requesting_user_id=99)
 
 
+@pytest.mark.asyncio
+async def test_cookie_update_saves_atomically_and_snapshot_hides_values(tmp_path):
+    raw = "#HttpOnly_.youtube.com TRUE / TRUE 1820105380 SID super-secret-cookie\n"
+    with patch.object(settings_web.config, "ADMIN_ID", 42), patch.object(
+        settings_web.config, "COOKIES_DIR", str(tmp_path)
+    ):
+        result = await settings_web.apply_cookie_update(
+            {"service": "youtube", "content": raw}, requesting_user_id=42
+        )
+        snapshot = await settings_web.build_cookie_snapshot()
+
+    saved = (tmp_path / "youtube.txt").read_text(encoding="utf-8")
+    youtube = next(item for item in snapshot["services"] if item["service"] == "youtube")
+    assert result["valid_rows"] == 1
+    assert saved.startswith("# Netscape HTTP Cookie File\n#HttpOnly_.youtube.com\t")
+    assert youtube["valid_rows"] == 1
+    assert youtube["session_cookie_names"] == ["SID"]
+    assert "super-secret-cookie" not in json.dumps(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_cookie_update_rejects_non_admin(tmp_path):
+    with patch.object(settings_web.config, "ADMIN_ID", 42), patch.object(
+        settings_web.config, "COOKIES_DIR", str(tmp_path)
+    ), pytest.raises(settings_web.WebSettingsAuthError, match="only available"):
+        await settings_web.apply_cookie_update(
+            {"service": "youtube", "content": ".youtube.com TRUE / TRUE 0 SID value"},
+            requesting_user_id=99,
+        )
+
+
 def test_rendered_settings_includes_fullscreen_persona_editor_overlay():
     html = settings_web.render_settings_html()
 
@@ -103,6 +134,15 @@ def test_rendered_settings_includes_fullscreen_persona_editor_overlay():
     assert "requestFullscreen" not in html
     assert "reset-persona" in html
     assert "/api/default_persona" in html
+
+
+def test_rendered_cookie_manager_uses_authenticated_cookie_api():
+    html = settings_web.render_cookies_html()
+
+    assert "cookies.txt content" in html
+    assert "X-Telegram-Init-Data" in html
+    assert "/api/cookies" in html
+    assert "Saved cookie values are never shown" in html
 
 
 @pytest.mark.asyncio

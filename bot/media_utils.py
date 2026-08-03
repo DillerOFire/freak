@@ -7,9 +7,11 @@ import yt_dlp
 import glob
 import uuid
 from dataclasses import dataclass
-from telegram import File
+from urllib.parse import quote
 
-from config import ADMIN_ID
+from telegram import File, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+from config import ADMIN_ID, WEB_SETTINGS_URL
 
 # Rate-limit cookie failure DMs per service (seconds).
 _COOKIE_NOTIFY_COOLDOWN_SEC = 15 * 60
@@ -121,7 +123,14 @@ def normalize_netscape_cookies(content: str) -> tuple[str, list[str]]:
         if not line.strip():
             out_lines.append("")
             continue
-        if line.lstrip().startswith("#"):
+        # Netscape marks HttpOnly cookies with this otherwise-comment-looking
+        # prefix.  Dropping those rows loses common logged-in sessions.
+        http_only_prefix = ""
+        stripped = line.lstrip()
+        if stripped.startswith("#HttpOnly_"):
+            http_only_prefix = "#HttpOnly_"
+            line = stripped[len(http_only_prefix) :]
+        elif stripped.startswith("#"):
             out_lines.append(line.rstrip())
             continue
 
@@ -145,15 +154,13 @@ def normalize_netscape_cookies(content: str) -> tuple[str, list[str]]:
         # Normalize boolean flags to TRUE/FALSE as Netscape expects.
         flag = "TRUE" if flag.upper() == "TRUE" else "FALSE"
         secure = "TRUE" if secure.upper() == "TRUE" else "FALSE"
-        out_lines.append(
-            "\t".join([domain, flag, path, secure, expires, name, value])
-        )
+        out_lines.append(http_only_prefix + "\t".join([domain, flag, path, secure, expires, name, value]))
         names.append(name)
 
     text = "\n".join(out_lines)
     if text and not text.endswith("\n"):
         text += "\n"
-    if not text.startswith("#"):
+    if not text.startswith("# Netscape HTTP Cookie File"):
         text = "# Netscape HTTP Cookie File\n" + text
     return text, names
 
@@ -172,8 +179,19 @@ def save_netscape_cookies(path: str, content: str) -> tuple[int, list[str], list
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(normalized)
+    # Never leave a partially pasted/exported jar in place if the process is
+    # interrupted.  mkstemp defaults to a private (0600) file.
+    fd, tmp_path = tempfile.mkstemp(prefix=".cookies-", suffix=".txt", dir=parent or None)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(normalized)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     session = [n for n in names if n.lower() in _SESSION_COOKIE_NAMES]
     return len(names), names, session
 
@@ -427,8 +445,19 @@ async def notify_admin_cookie_failure(
     _last_cookie_notify_at[svc] = now
 
     text = format_cookie_failure_admin_message(url=url, result=result, service=svc)
+    reply_markup = None
+    if WEB_SETTINGS_URL.startswith("https://"):
+        cookie_url = WEB_SETTINGS_URL.rstrip("/") + "/cookies?service=" + quote(svc, safe="")
+        reply_markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Refresh cookies in web app", web_app=WebAppInfo(cookie_url))]]
+        )
     try:
-        await bot.send_message(chat_id=ADMIN_ID, text=text, disable_web_page_preview=True)
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=text,
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+        )
         logging.info("Notified admin about cookie failure for service=%s", svc)
         return True
     except Exception as e:
