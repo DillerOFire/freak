@@ -83,6 +83,29 @@ def test_set_env_value_updates_ponder_step_budget_at_runtime(env_file):
     assert agent.LLM_PONDER_MAX_STEPS == 14
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("low", "low"), ("MeDiuM", "medium"), ("HIGH", "high")],
+)
+def test_validate_env_value_normalizes_ponder_reasoning_effort(value, expected):
+    assert env_config.validate_env_value("LLM_PONDER_REASONING_EFFORT", value) == (
+        "LLM_PONDER_REASONING_EFFORT",
+        expected,
+    )
+
+
+def test_validate_env_value_accepts_empty_ponder_reasoning_effort():
+    assert env_config.validate_env_value("LLM_PONDER_REASONING_EFFORT", "") == (
+        "LLM_PONDER_REASONING_EFFORT",
+        "",
+    )
+
+
+def test_validate_env_value_rejects_invalid_ponder_reasoning_effort():
+    with pytest.raises(env_config.EnvUpdateError, match="low, medium, high"):
+        env_config.validate_env_value("LLM_PONDER_REASONING_EFFORT", "ultra")
+
+
 @pytest.mark.parametrize("value", ["0", "21", "many"])
 def test_set_env_value_rejects_invalid_ponder_step_budget(env_file, value):
     ok, message = env_config.set_env_value("LLM_PONDER_MAX_STEPS", value)

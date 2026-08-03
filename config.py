@@ -46,6 +46,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-flash-2.5")
 LLM_PONDER_MODEL = os.getenv("LLM_PONDER_MODEL", "deepseek/deepseek-v4-flash")
+LLM_PONDER_REASONING_EFFORT = os.getenv("LLM_PONDER_REASONING_EFFORT", "")
 
 
 def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:

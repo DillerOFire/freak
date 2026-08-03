@@ -32,7 +32,7 @@ from bot.logic import (
     get_behavior_settings,
     update_behavior_settings,
 )
-from config import LLM_PONDER_MODEL, LLM_PONDER_MAX_STEPS, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE, ADMIN_ID, FIRECRAWL_API_KEY, FIRECRAWL_API_URL
+from config import LLM_PONDER_MODEL, LLM_PONDER_REASONING_EFFORT, LLM_PONDER_MAX_STEPS, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE, ADMIN_ID, FIRECRAWL_API_KEY, FIRECRAWL_API_URL
 from openai import AsyncOpenAI
 
 client = AsyncOpenAI(
@@ -905,11 +905,14 @@ async def run_ponder_agent(
         ]
 
         for _ in range(step_budget):
-            response = await client.chat.completions.create(
-                model=LLM_PONDER_MODEL,
-                messages=messages,
-                response_format={"type": "json_object"},
-            )
+            kwargs = {
+                "model": LLM_PONDER_MODEL,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            }
+            if LLM_PONDER_REASONING_EFFORT:
+                kwargs["reasoning_effort"] = LLM_PONDER_REASONING_EFFORT
+            response = await client.chat.completions.create(**kwargs)
             raw_json_str = response.choices[0].message.content or "{}"
             try:
                 parsed = json.loads(raw_json_str)
@@ -1071,11 +1074,14 @@ async def run_ponder_agent(
                 ),
             }
         )
-        response = await client.chat.completions.create(
-            model=LLM_PONDER_MODEL,
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
+        kwargs = {
+            "model": LLM_PONDER_MODEL,
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+        }
+        if LLM_PONDER_REASONING_EFFORT:
+            kwargs["reasoning_effort"] = LLM_PONDER_REASONING_EFFORT
+        response = await client.chat.completions.create(**kwargs)
         raw_json_str = response.choices[0].message.content or "{}"
         try:
             parsed = json.loads(raw_json_str)

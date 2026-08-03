@@ -452,6 +452,33 @@ async def test_run_ponder_agent_answer_on_first_step():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("reasoning_effort", "expected"), [("", None), ("high", "high")])
+async def test_run_ponder_agent_conditionally_passes_reasoning_effort(
+    reasoning_effort, expected
+):
+    mock_response = _mock_llm_json_response({"thought": "I know this", "answer": "Done."})
+
+    with (
+        patch.object(agent, "LLM_PONDER_REASONING_EFFORT", reasoning_effort),
+        patch.object(agent, "_prefetch_linked_sources", AsyncMock(return_value=[])),
+        patch.object(agent, "get_relevant_research_notes", AsyncMock(return_value=[])),
+        patch.object(agent, "_finalize_ponder_answer", AsyncMock(return_value="Done.")),
+        patch.object(
+            agent.client.chat.completions, "create", AsyncMock(return_value=mock_response)
+        ) as create_mock,
+    ):
+        assert await agent.run_ponder_agent("answer this", chat_id=1) == "Done."
+
+    kwargs = create_mock.await_args.kwargs
+    assert kwargs["model"] == agent.LLM_PONDER_MODEL
+    assert kwargs["response_format"] == {"type": "json_object"}
+    if expected is None:
+        assert "reasoning_effort" not in kwargs
+    else:
+        assert kwargs["reasoning_effort"] == expected
+
+
+@pytest.mark.asyncio
 async def test_run_ponder_agent_prefetches_linked_article_and_keeps_source():
     url = "https://example.com/article"
     mock_response = _mock_llm_json_response(

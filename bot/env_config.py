@@ -23,6 +23,7 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "LLM_BASE_URL",
         "LLM_MODEL",
         "LLM_PONDER_MODEL",
+        "LLM_PONDER_REASONING_EFFORT",
         "LLM_PONDER_MAX_STEPS",
         "LLM_VISION_MODEL",
         "LLM_PROMPT_CACHE",
@@ -110,7 +111,9 @@ def validate_env_value(key: str, value: str) -> tuple[str, str]:
         raise EnvUpdateError(f"Unknown or non-editable key: {normalized_key}")
     if not isinstance(value, str):
         raise EnvUpdateError(f"{normalized_key} must be a text value.")
-    if not value or "\x00" in value or "\n" in value or "\r" in value:
+    if "\x00" in value or "\n" in value or "\r" in value:
+        raise EnvUpdateError(f"{normalized_key} must be a non-empty single-line value.")
+    if not value and normalized_key != "LLM_PONDER_REASONING_EFFORT":
         raise EnvUpdateError(f"{normalized_key} must be a non-empty single-line value.")
     if len(value) > MAX_ENV_VALUE_LENGTH:
         raise EnvUpdateError(
@@ -119,6 +122,12 @@ def validate_env_value(key: str, value: str) -> tuple[str, str]:
 
     if normalized_key == "LLM_PONDER_MAX_STEPS":
         _validate_int(value, key=normalized_key, minimum=1, maximum=20)
+    elif normalized_key == "LLM_PONDER_REASONING_EFFORT":
+        value = value.lower()
+        if value and value not in {"low", "medium", "high"}:
+            raise EnvUpdateError(
+                "LLM_PONDER_REASONING_EFFORT must be one of: low, medium, high (or leave empty to disable)."
+            )
     elif normalized_key == "ADMIN_ID":
         _validate_int(value, key=normalized_key, minimum=1, maximum=2**63 - 1)
     elif normalized_key in {"TELEMETRY_DASHBOARD_PORT", "WEB_SETTINGS_PORT"}:
@@ -395,6 +404,11 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.agent as agent
 
         agent.LLM_PONDER_MODEL = value
+    elif key == "LLM_PONDER_REASONING_EFFORT":
+        config.LLM_PONDER_REASONING_EFFORT = value
+        import bot.agent as agent
+
+        agent.LLM_PONDER_REASONING_EFFORT = value
     elif key == "LLM_PONDER_MAX_STEPS":
         step_budget = int(value)
         config.LLM_PONDER_MAX_STEPS = step_budget
