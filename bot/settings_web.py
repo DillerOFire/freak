@@ -15,10 +15,14 @@ import logging
 import os
 import time
 from collections.abc import Mapping
+from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qsl
 
 from aiohttp import web
+from telegram import InputFile
 
 import config
 from bot.env_config import (
@@ -44,6 +48,9 @@ from bot.telemetry.storage import fetch_llm_telemetry_event
 from bot.telemetry.web import build_telemetry_snapshot
 
 logger = logging.getLogger(__name__)
+
+# Set by start_settings_web_server so export can DM files through the live bot.
+_TELEGRAM_BOT: Any | None = None
 
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
@@ -507,6 +514,7 @@ async def api_get_telemetry(request: web.Request) -> web.Response:
 
 
 async def api_get_telemetry_export(request: web.Request) -> web.Response:
+    """Return the JSON export body (kept for debugging / non-WebView clients)."""
     _require_admin(request)
     snapshot = await build_telemetry_snapshot(request.query)
     persona_prompt = await get_config("persona_prompt")
@@ -514,6 +522,58 @@ async def api_get_telemetry_export(request: web.Request) -> web.Response:
         snapshot["events"], persona_prompt, snapshot["filters"]
     )
     return web.json_response(export)
+
+
+async def api_post_telemetry_export_dm(request: web.Request) -> web.Response:
+    """Build the telemetry export and send it as a JSON document to the admin DM."""
+    user = _require_admin(request)
+    bot = request.app.get("telegram_bot") or _TELEGRAM_BOT
+    if bot is None:
+        return web.json_response(
+            {"error": "Bot is not ready to send DMs yet. Restart the bot and try again."},
+            status=503,
+        )
+
+    snapshot = await build_telemetry_snapshot(request.query)
+    persona_prompt = await get_config("persona_prompt")
+    export = build_llm_telemetry_export(
+        snapshot["events"], persona_prompt, snapshot["filters"]
+    )
+    payload = json.dumps(export, ensure_ascii=False, indent=2).encode("utf-8")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"freak-telemetry-{stamp}.json"
+    chat_id = int(user["id"])
+    event_count = len(export.get("events") or [])
+    main_count = int(export.get("main_event_count") or 0)
+    ponder_count = int(export.get("ponder_event_count") or 0)
+    caption = (
+        f"Telemetry export · {event_count} events "
+        f"({main_count} main / {ponder_count} ponder)"
+    )
+    try:
+        await bot.send_document(
+            chat_id=chat_id,
+            document=InputFile(BytesIO(payload), filename=filename),
+            caption=caption,
+        )
+    except Exception:
+        logger.exception("Failed to DM telemetry export to admin %s", chat_id)
+        return web.json_response(
+            {"error": "Could not send the JSON file in DM."},
+            status=502,
+        )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "message": "Sent the JSON export to your DM.",
+            "filename": filename,
+            "bytes": len(payload),
+            "event_count": event_count,
+            "main_event_count": main_count,
+            "ponder_event_count": ponder_count,
+        }
+    )
 
 
 async def api_get_telemetry_event(request: web.Request) -> web.Response:
@@ -546,13 +606,17 @@ def create_settings_web_app() -> web.Application:
     app.router.add_delete("/api/cookies", api_delete_cookies)
     app.router.add_get("/api/telemetry", api_get_telemetry)
     app.router.add_get("/api/telemetry/export.json", api_get_telemetry_export)
+    app.router.add_post("/api/telemetry/export", api_post_telemetry_export_dm)
     app.router.add_get("/api/telemetry/event/{event_id}", api_get_telemetry_event)
     return app
 
 
-async def start_settings_web_server() -> web.AppRunner:
+async def start_settings_web_server(bot: Any | None = None) -> web.AppRunner:
     """Start the embedded settings listener and return its runner for shutdown."""
+    global _TELEGRAM_BOT
+    _TELEGRAM_BOT = bot
     app = create_settings_web_app()
+    app["telegram_bot"] = bot
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, config.WEB_SETTINGS_HOST, config.WEB_SETTINGS_PORT)
@@ -605,7 +669,7 @@ def render_telemetry_html() -> str:
     <label>Status<select id="status"><option value="all">All statuses</option><option value="success">Success</option><option value="no_reply">No reply</option><option value="invalid_json">Invalid JSON</option><option value="validation_error">Validation error</option><option value="empty_content">Empty content</option><option value="exception">Exception</option></select></label>
     <label>Source<select id="source"><option value="all">All sources</option><option value="message">Message</option><option value="daily_task">Daily task</option><option value="scheduled_action">Scheduled action</option><option value="ponder_agent">Ponder agent</option><option value="ponder_followup">Ponder follow-up</option><option value="ponder">Ponder follow-up (legacy)</option></select></label>
     <label>Events<input id="limit" type="number" min="1" max="500" value="100"></label>
-    <div class="actions"><button id="apply">Refresh</button><button id="export" class="secondary">Export JSON</button></div>
+    <div class="actions"><button id="apply">Refresh</button><button id="export" class="secondary">Send JSON to DM</button></div>
   </div></div>
   <p id="notice" class="muted">Loading telemetry…</p><main id="content" class="hidden"><section class="panel"><h2>Main RP bot</h2><div id="main-cards" class="cards"></div></section><section class="panel"><h2>Ponder agent</h2><div id="ponder-cards" class="cards"></div></section><section class="panel"><h2>Combined</h2><div id="cards" class="cards"></div></section><section class="panel"><h2>Suggestions</h2><ul id="suggestions"></ul></section><section class="panel"><h2>Events</h2><div id="events"></div></section></main>
   <script>
@@ -651,7 +715,7 @@ def render_telemetry_html() -> str:
       notice.className = 'hidden'; content.classList.remove('hidden');
     }
     async function load() { notice.className = 'muted'; notice.textContent = 'Loading telemetry…'; content.classList.add('hidden'); try { const response = await fetch(`/api/telemetry?${query()}`, {headers: headers()}); if (!response.ok) throw new Error(await response.text() || 'Could not load telemetry.'); render(await response.json()); } catch (error) { notice.className = 'error'; notice.textContent = error.message || 'Could not load telemetry.'; } }
-    $('apply').addEventListener('click', load); $('export').addEventListener('click', async () => { try { const response = await fetch(`/api/telemetry/export.json?${query()}`, {headers: headers()}); if (!response.ok) throw new Error(await response.text()); const blob = new Blob([await response.text()], {type: 'application/json'}); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'freak-telemetry.json'; link.click(); URL.revokeObjectURL(link.href); } catch (error) { notice.className = 'error'; notice.textContent = error.message || 'Could not export telemetry.'; } });
+    $('apply').addEventListener('click', load); $('export').addEventListener('click', async () => { notice.className = 'muted'; notice.textContent = 'Sending JSON to your DM…'; try { const response = await fetch(`/api/telemetry/export?${query()}`, {method: 'POST', headers: headers()}); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error || body.message || 'Could not export telemetry.'); notice.className = 'muted'; notice.textContent = body.message || 'Sent the JSON export to your DM.'; if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) tg.HapticFeedback.notificationOccurred('success'); if (tg && tg.showAlert) tg.showAlert(body.message || 'Sent the JSON export to your DM.'); } catch (error) { notice.className = 'error'; notice.textContent = error.message || 'Could not export telemetry.'; if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) tg.HapticFeedback.notificationOccurred('error'); } });
     load();
   })();
   </script>

@@ -63,7 +63,7 @@ async def post_init(application):
     await init_logic()
     logging.info("Database and Logic Config initialized.")
     await load_jobs(application)
-    runner = await start_settings_web_server()
+    runner = await start_settings_web_server(application.bot)
     application.bot_data["settings_web_runner"] = runner
 
 

@@ -151,7 +151,9 @@ def test_rendered_telemetry_is_a_telegram_web_app():
     assert "telegram-web-app.js" in html
     assert "X-Telegram-Init-Data" in html
     assert "/api/telemetry" in html
-    assert "Export JSON" in html
+    assert "Send JSON to DM" in html
+    assert "/api/telemetry/export" in html
+    assert "method: 'POST'" in html
     assert "textContent" in html
     assert "Active event states" in html
     assert "Pending scheduled actions" in html
@@ -167,6 +169,8 @@ def test_rendered_telemetry_is_a_telegram_web_app():
     assert "ponder_followup" in html
     assert "main_summary" in html
     assert "ponder_summary" in html
+
+
 
 
 @pytest.mark.asyncio
@@ -211,3 +215,94 @@ async def test_default_persona_endpoint_requires_admin_init_data():
             )
 
     assert json.loads(response.text) == {"persona": "Built-in test persona"}
+
+@pytest.mark.asyncio
+async def test_telemetry_export_dm_sends_document_to_admin():
+    now = int(time.time())
+    init_data = _signed_init_data(token="test-token", user_id=42, auth_date=now)
+    snapshot = {
+        "events": [{"id": 1, "source": "message", "status": "success"}],
+        "filters": {"limit": 100, "chat_id": None, "status": None, "source": None},
+        "chats": [1],
+        "summary": {"total_events": 1},
+        "main_summary": {"total_events": 1},
+        "ponder_summary": {"total_events": 0},
+        "main_event_count": 1,
+        "ponder_event_count": 0,
+        "suggestions": [],
+    }
+    export = {
+        "schema_version": 1,
+        "events": snapshot["events"],
+        "main_event_count": 1,
+        "ponder_event_count": 0,
+        "summary": snapshot["summary"],
+    }
+    bot = AsyncMock()
+    bot.send_document = AsyncMock()
+
+    request = make_mocked_request(
+        "POST",
+        "/api/telemetry/export?limit=100",
+        headers={settings_web.INIT_DATA_HEADER: init_data},
+        app={"telegram_bot": bot},
+    )
+
+    with (
+        patch("bot.settings_web.config.TELEGRAM_BOT_TOKEN", "test-token"),
+        patch("bot.settings_web.config.ADMIN_ID", 42),
+        patch(
+            "bot.settings_web.build_telemetry_snapshot",
+            new_callable=AsyncMock,
+            return_value=snapshot,
+        ),
+        patch(
+            "bot.settings_web.get_config",
+            new_callable=AsyncMock,
+            return_value="persona",
+        ),
+        patch(
+            "bot.settings_web.build_llm_telemetry_export",
+            return_value=export,
+        ),
+    ):
+        with pytest.raises(web.HTTPUnauthorized):
+            await settings_web.api_post_telemetry_export_dm(
+                make_mocked_request("POST", "/api/telemetry/export")
+            )
+
+        response = await settings_web.api_post_telemetry_export_dm(request)
+
+    body = json.loads(response.text)
+    assert body["ok"] is True
+    assert body["event_count"] == 1
+    assert body["filename"].startswith("freak-telemetry-")
+    assert body["filename"].endswith(".json")
+    bot.send_document.assert_awaited_once()
+    kwargs = bot.send_document.await_args.kwargs
+    assert kwargs["chat_id"] == 42
+    assert "Telemetry export" in kwargs["caption"]
+    document = kwargs["document"]
+    assert document.filename == body["filename"]
+
+
+@pytest.mark.asyncio
+async def test_telemetry_export_dm_requires_live_bot():
+    now = int(time.time())
+    init_data = _signed_init_data(token="test-token", user_id=42, auth_date=now)
+    request = make_mocked_request(
+        "POST",
+        "/api/telemetry/export",
+        headers={settings_web.INIT_DATA_HEADER: init_data},
+        app={},
+    )
+    with (
+        patch("bot.settings_web.config.TELEGRAM_BOT_TOKEN", "test-token"),
+        patch("bot.settings_web.config.ADMIN_ID", 42),
+        patch.object(settings_web, "_TELEGRAM_BOT", None),
+    ):
+        response = await settings_web.api_post_telemetry_export_dm(request)
+
+    assert response.status == 503
+    assert "not ready" in json.loads(response.text)["error"].lower()
+
