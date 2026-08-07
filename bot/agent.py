@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import socket
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -33,7 +34,59 @@ from bot.logic import (
     update_behavior_settings,
 )
 from config import LLM_PONDER_MODEL, LLM_PONDER_REASONING_EFFORT, LLM_PONDER_MAX_STEPS, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE, ADMIN_ID, FIRECRAWL_API_KEY, FIRECRAWL_API_URL
+from bot.telemetry import record_llm_telemetry
 from openai import AsyncOpenAI
+
+
+def _usage_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _usage_field(usage: object, *path: str) -> object:
+    current = usage
+    for key in path:
+        if current is None:
+            return None
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            current = getattr(current, key, None)
+    return current
+
+
+def _prompt_cached_tokens(usage: object) -> int | None:
+    return _usage_int(_usage_field(usage, "prompt_tokens_details", "cached_tokens"))
+
+
+def _prompt_cache_hit_rate(
+    prompt_tokens: int | None, prompt_cached_tokens: int | None
+) -> float | None:
+    if prompt_tokens is None or prompt_cached_tokens is None or prompt_tokens <= 0:
+        return None
+    cached = max(0, min(int(prompt_cached_tokens), int(prompt_tokens)))
+    return cached / float(prompt_tokens)
+
+
+def _accumulate_usage(totals: dict[str, int | None], usage: object) -> None:
+    prompt = _usage_int(_usage_field(usage, "prompt_tokens"))
+    cached = _prompt_cached_tokens(usage)
+    completion = _usage_int(_usage_field(usage, "completion_tokens"))
+    total = _usage_int(_usage_field(usage, "total_tokens"))
+    for key, value in (
+        ("prompt_tokens", prompt),
+        ("prompt_cached_tokens", cached),
+        ("completion_tokens", completion),
+        ("total_tokens", total),
+    ):
+        if value is None:
+            continue
+        current = totals.get(key)
+        totals[key] = value if current is None else int(current) + value
 
 client = AsyncOpenAI(
     base_url=LLM_PONDER_BASE_URL,
@@ -876,8 +929,25 @@ async def run_ponder_agent(
     settings_chat_id: int | None = None,
     conversation_context: str | None = None,
 ) -> str:
+    started_at = time.perf_counter()
+    status = "exception"
+    error_type: str | None = None
+    error_message: str | None = None
+    raw_response = ""
+    final_answer = ""
+    step_count = 0
+    tool_calls: list[dict[str, Any]] = []
+    usage_totals: dict[str, int | None] = {
+        "prompt_tokens": None,
+        "prompt_cached_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+    }
+    system_prompt = PONDER_SYSTEM_PROMPT
+    context_prompt = ""
+    step_budget = LLM_PONDER_MAX_STEPS if max_steps is None else max(1, max_steps)
+
     try:
-        step_budget = LLM_PONDER_MAX_STEPS if max_steps is None else max(1, max_steps)
         prefetched_sources = await _prefetch_linked_sources(query)
         prior_research: list[dict[str, Any]] = []
         try:
@@ -891,16 +961,17 @@ async def run_ponder_agent(
         ]
         search_candidate_urls: list[str] = []
         searched_web = False
+        context_prompt = _build_research_request(
+            query,
+            conversation_context,
+            prefetched_sources,
+            prior_research=prior_research,
+        )
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": _cacheable_text(PONDER_SYSTEM_PROMPT)},
+            {"role": "system", "content": _cacheable_text(system_prompt)},
             {
                 "role": "user",
-                "content": _build_research_request(
-                    query,
-                    conversation_context,
-                    prefetched_sources,
-                    prior_research=prior_research,
-                ),
+                "content": context_prompt,
             },
         ]
 
@@ -913,7 +984,10 @@ async def run_ponder_agent(
             if LLM_PONDER_REASONING_EFFORT:
                 kwargs["reasoning_effort"] = LLM_PONDER_REASONING_EFFORT
             response = await client.chat.completions.create(**kwargs)
+            step_count += 1
+            _accumulate_usage(usage_totals, getattr(response, "usage", None))
             raw_json_str = response.choices[0].message.content or "{}"
+            raw_response = raw_json_str
             try:
                 parsed = json.loads(raw_json_str)
             except json.JSONDecodeError:
@@ -948,9 +1022,11 @@ async def run_ponder_agent(
                         }
                     )
                     continue
-                return await _finalize_ponder_answer(
+                final_answer = await _finalize_ponder_answer(
                     str(answer), consulted_urls, chat_id=chat_id, query=query
                 )
+                status = "success"
+                return final_answer
 
             if "tool" in parsed:
                 tool_name = parsed.get("tool", "")
@@ -961,6 +1037,13 @@ async def run_ponder_agent(
                     tool_input = str(raw_tool_input)
 
                 if tool_name not in PONDER_TOOLS:
+                    tool_calls.append(
+                        {
+                            "name": tool_name or "unknown",
+                            "arguments": {"tool_input": tool_input},
+                            "status": "unknown_tool",
+                        }
+                    )
                     messages.append(
                         {
                             "role": "user",
@@ -984,9 +1067,11 @@ async def run_ponder_agent(
                     and _canonical_source_url(fetched_input_urls[0])
                     in {_canonical_source_url(url) for url in consulted_urls}
                 )
+                tool_status = "succeeded"
                 try:
                     if already_fetched:
                         result = "Tool notice: this page was already fetched; use the existing evidence."
+                        tool_status = "skipped"
                     elif tool_context == "chat_id":
                         result = await asyncio.wait_for(
                             tool_fn(tool_input, chat_id), timeout=tool_timeout
@@ -1007,10 +1092,20 @@ async def run_ponder_agent(
                         )
                 except asyncio.TimeoutError:
                     result = f"Tool error: {tool_name} timed out after {tool_timeout}s"
+                    tool_status = "timeout"
                 except Exception as error:
                     result = f"Tool error: {error}"
+                    tool_status = "failed"
 
                 result_text = str(result)
+                tool_calls.append(
+                    {
+                        "name": tool_name,
+                        "arguments": {"tool_input": tool_input},
+                        "status": tool_status,
+                        "result_chars": len(result_text),
+                    }
+                )
                 if tool_name == "web_search":
                     searched_web = True
                     for url in _extract_urls(result_text):
@@ -1082,19 +1177,78 @@ async def run_ponder_agent(
         if LLM_PONDER_REASONING_EFFORT:
             kwargs["reasoning_effort"] = LLM_PONDER_REASONING_EFFORT
         response = await client.chat.completions.create(**kwargs)
+        step_count += 1
+        _accumulate_usage(usage_totals, getattr(response, "usage", None))
         raw_json_str = response.choices[0].message.content or "{}"
+        raw_response = raw_json_str
         try:
             parsed = json.loads(raw_json_str)
         except json.JSONDecodeError:
             parsed = {}
         if isinstance(parsed, dict) and "answer" in parsed:
-            return await _finalize_ponder_answer(
+            final_answer = await _finalize_ponder_answer(
                 str(parsed.get("answer", "")),
                 consulted_urls,
                 chat_id=chat_id,
                 query=query,
             )
-        return "Could not complete verified research in time."
+            status = "success"
+            return final_answer
+        status = "empty_content"
+        final_answer = "Could not complete verified research in time."
+        return final_answer
     except Exception as error:
         logging.exception("Ponder agent failed")
-        return f"Pondering failed: {error}"
+        status = "exception"
+        error_type = type(error).__name__
+        error_message = str(error)[:500]
+        final_answer = f"Pondering failed: {error}"
+        return final_answer
+    finally:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        prompt_tokens = usage_totals.get("prompt_tokens")
+        prompt_cached_tokens = usage_totals.get("prompt_cached_tokens")
+        try:
+            await record_llm_telemetry(
+                {
+                    "chat_id": chat_id,
+                    "source": "ponder_agent",
+                    "model": LLM_PONDER_MODEL,
+                    "status": status,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "latency_ms": latency_ms,
+                    "prompt_tokens": prompt_tokens,
+                    "prompt_cached_tokens": prompt_cached_tokens,
+                    "prompt_cache_hit_rate": _prompt_cache_hit_rate(
+                        prompt_tokens if isinstance(prompt_tokens, int) else None,
+                        prompt_cached_tokens
+                        if isinstance(prompt_cached_tokens, int)
+                        else None,
+                    ),
+                    "completion_tokens": usage_totals.get("completion_tokens"),
+                    "total_tokens": usage_totals.get("total_tokens"),
+                    "context_message_count": 1 if conversation_context else 0,
+                    "context_chars": len(context_prompt),
+                    "system_prompt_chars": len(system_prompt),
+                    "memory_query": query,
+                    "system_prompt": system_prompt,
+                    "context_prompt": context_prompt,
+                    "raw_response": raw_response or final_answer,
+                    "response_messages": [final_answer] if final_answer else [],
+                    "response_message_count": 1 if final_answer else 0,
+                    "response_chars": len(final_answer or ""),
+                    "tool_calls": tool_calls,
+                    "tool_call_count": len(tool_calls),
+                    "memory_writes": [],
+                    "memory_write_count": 0,
+                    "failed_memory_write_count": len(
+                        [t for t in tool_calls if t.get("status") in {"failed", "timeout"}]
+                    ),
+                    # Reuse count field for step budget usage (ponder multi-step).
+                    "retrieved_memory_count": step_count,
+                }
+            )
+        except Exception as telemetry_error:
+            logging.error("Failed to record ponder telemetry: %s", telemetry_error)
+

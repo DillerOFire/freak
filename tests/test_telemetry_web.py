@@ -23,6 +23,22 @@ async def test_telemetry_web_app_snapshot_returns_filtered_events(temp_db_path):
             "response_media": {"media_unique_id": "photo_u1", "media_type": "photo", "description": "web test photo"},
         }
     )
+    await record_llm_telemetry(
+        {
+            "chat_id": 555,
+            "source": "ponder_agent",
+            "status": "success",
+            "trigger_messages": [],
+            "used_user_thoughts": {},
+            "used_general_memories": [],
+            "tool_calls": [{"name": "web_search", "arguments": {"tool_input": "x"}}],
+            "memory_writes": [],
+            "response_messages": ["research done"],
+            "prompt_tokens": 80,
+            "prompt_cached_tokens": 40,
+            "prompt_cache_hit_rate": 0.5,
+        }
+    )
 
     snapshot = await build_telemetry_snapshot(
         {"chat_id": "555", "status": "success", "limit": "50"}
@@ -34,12 +50,13 @@ async def test_telemetry_web_app_snapshot_returns_filtered_events(temp_db_path):
         "source": None,
         "limit": 50,
     }
-    assert snapshot["summary"]["total_events"] == 1
-    assert snapshot["events"][0]["response_media"] == {
-        "media_unique_id": "photo_u1",
-        "media_type": "photo",
-        "description": "web test photo",
-    }
+    assert snapshot["summary"]["total_events"] == 2
+    assert snapshot["main_summary"]["total_events"] == 1
+    assert snapshot["ponder_summary"]["total_events"] == 1
+    assert snapshot["main_event_count"] == 1
+    assert snapshot["ponder_event_count"] == 1
+    assert snapshot["events"][0]["source"] in {"message", "ponder_agent"}
+    assert any(e["response_media"].get("media_unique_id") == "photo_u1" for e in snapshot["events"])
     assert snapshot["chats"] == [555]
 
 

@@ -5,6 +5,7 @@ from typing import Any
 from bot.telemetry.analysis import (
     build_context_engineering_suggestions,
     summarize_telemetry,
+    summarize_telemetry_by_role,
 )
 
 
@@ -13,6 +14,7 @@ def build_llm_telemetry_export(
 ) -> dict:
     """Return a JSON-serializable dict for LLM context-engineering review."""
     summary = summarize_telemetry(events)
+    role_summaries = summarize_telemetry_by_role(events)
     suggestions = build_context_engineering_suggestions(events)
 
     exported_events: list[dict[str, Any]] = []
@@ -29,6 +31,7 @@ def build_llm_telemetry_export(
                 "latency_ms": event.get("latency_ms"),
                 "prompt_tokens": event.get("prompt_tokens"),
                 "prompt_cached_tokens": event.get("prompt_cached_tokens"),
+                "prompt_cache_hit_rate": event.get("prompt_cache_hit_rate"),
                 "completion_tokens": event.get("completion_tokens"),
                 "total_tokens": event.get("total_tokens"),
                 "context_message_count": event.get("context_message_count", 0),
@@ -43,6 +46,11 @@ def build_llm_telemetry_export(
                 "tool_calls": event.get("tool_calls", []),
                 "memory_writes": event.get("memory_writes", []),
                 "response_messages": event.get("response_messages", []),
+                "active_event_states": event.get("active_event_states", []),
+                "pending_scheduled_actions": event.get("pending_scheduled_actions", []),
+                "saved_media_options": event.get("saved_media_options", []),
+                "saved_media_option_count": event.get("saved_media_option_count", 0),
+                "saved_media_policy": event.get("saved_media_policy", {}),
                 "error_type": event.get("error_type"),
                 "error_message": event.get("error_message"),
                 "system_prompt": event.get("system_prompt"),
@@ -58,6 +66,10 @@ def build_llm_telemetry_export(
         "filters": filters,
         "persona_prompt": persona_prompt,
         "summary": summary,
+        "main_summary": role_summaries["main"],
+        "ponder_summary": role_summaries["ponder"],
+        "main_event_count": role_summaries["main_event_count"],
+        "ponder_event_count": role_summaries["ponder_event_count"],
         "suggestions": suggestions,
         "events": exported_events,
     }

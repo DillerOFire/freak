@@ -11,7 +11,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from bot.telemetry.analysis import build_context_engineering_suggestions, summarize_telemetry
+from bot.telemetry.analysis import (
+    build_context_engineering_suggestions,
+    is_ponder_telemetry_source,
+    partition_telemetry_by_role,
+    summarize_telemetry_by_role,
+)
 from bot.telemetry.storage import fetch_llm_telemetry, get_telemetry_chats
 
 
@@ -51,10 +56,22 @@ async def build_telemetry_snapshot(filters: Mapping[str, Any]) -> dict[str, obje
     """Build one JSON-safe, filter-aware telemetry document for the Web App."""
     normalized = parse_telemetry_filters(filters)
     events = await fetch_llm_telemetry(**normalized)
+    main_events, ponder_events = partition_telemetry_by_role(events)
+    role_summaries = summarize_telemetry_by_role(events)
+    # Suggestions stay focused on main RP behavior unless the filter is ponder-only.
+    suggestion_events = (
+        ponder_events
+        if is_ponder_telemetry_source(normalized.get("source"))
+        else main_events or events
+    )
     return {
         "filters": normalized,
         "chats": await get_telemetry_chats(),
         "events": events,
-        "summary": summarize_telemetry(events),
-        "suggestions": build_context_engineering_suggestions(events),
+        "summary": role_summaries["all"],
+        "main_summary": role_summaries["main"],
+        "ponder_summary": role_summaries["ponder"],
+        "main_event_count": role_summaries["main_event_count"],
+        "ponder_event_count": role_summaries["ponder_event_count"],
+        "suggestions": build_context_engineering_suggestions(suggestion_events),
     }

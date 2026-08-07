@@ -82,6 +82,46 @@ def _usage_field(usage: object, *path: str) -> object:
 def _prompt_cached_tokens(usage: object) -> int | None:
     return _usage_int(_usage_field(usage, "prompt_tokens_details", "cached_tokens"))
 
+
+def _prompt_cache_hit_rate(
+    prompt_tokens: int | None, prompt_cached_tokens: int | None
+) -> float | None:
+    """Fraction of prompt tokens served from cache, or None when unknown."""
+    if prompt_tokens is None or prompt_cached_tokens is None:
+        return None
+    if prompt_tokens <= 0:
+        return None
+    cached = max(0, min(int(prompt_cached_tokens), int(prompt_tokens)))
+    return cached / float(prompt_tokens)
+
+
+def _telemetry_media_gallery(saved_media_options: list[dict] | None) -> list[dict]:
+    """Compact gallery snapshot for telemetry (no Telegram file_ids)."""
+    gallery: list[dict] = []
+    for option in saved_media_options or []:
+        if not isinstance(option, dict):
+            continue
+        media_id = option.get("media_unique_id")
+        if not media_id:
+            continue
+        description = str(option.get("description") or "")
+        if len(description) > 300:
+            description = description[:300] + "..."
+        entry = {
+            "media_unique_id": str(media_id),
+            "media_type": option.get("media_type"),
+            "description": description,
+            "use_count": option.get("use_count", 0),
+            "is_favorite": bool(option.get("is_favorite")),
+        }
+        if option.get("last_used_at") is not None:
+            entry["last_used_at"] = option.get("last_used_at")
+        if option.get("last_seen_at") is not None:
+            entry["last_seen_at"] = option.get("last_seen_at")
+        gallery.append(entry)
+    return gallery
+
+
 class LLMToolCall(BaseModel):
     name: Literal[
         "update_user_thought",
@@ -1098,6 +1138,9 @@ async def generate_response(
                     "latency_ms": latency_ms,
                     "prompt_tokens": prompt_tokens,
                     "prompt_cached_tokens": prompt_cached_tokens,
+                    "prompt_cache_hit_rate": _prompt_cache_hit_rate(
+                        prompt_tokens, prompt_cached_tokens
+                    ),
                     "completion_tokens": completion_tokens,
                     "total_tokens": total_tokens,
                     "context_message_count": len(messages_context),
@@ -1105,27 +1148,32 @@ async def generate_response(
                     "system_prompt_chars": len(system_prompt),
                     "user_thought_count": len(user_thoughts),
                     "retrieved_memory_count": len(general_memories),
+                    "memory_query": memory_query,
                     "trigger_messages": messages_context,
                     "used_user_thoughts": user_thoughts,
                     "used_general_memories": general_memories,
-                    "retrieved_memory_access_count": sum(
-                        m.get("access_count", 0) if isinstance(m, dict) else 0
-                        for m in general_memories
-                    ),
-                    "raw_request": json.dumps(messages, ensure_ascii=False),
+                    "system_prompt": system_prompt,
+                    "context_prompt": context_str,
                     "raw_response": raw_response or "",
                     "response_messages": response_messages,
                     "reply_to_message_id": reply_to_message_id,
-                    "tool_calls": json.dumps(tool_calls, ensure_ascii=False),
-                    "memory_writes": json.dumps(memory_writes, ensure_ascii=False),
+                    "tool_calls": tool_calls,
+                    "memory_writes": memory_writes,
                     "tool_call_count": len(tool_calls),
                     "memory_write_count": len(memory_writes),
-                    "failed_memory_write_count": len([w for w in memory_writes if w.get("status") == "failed"]),
+                    "failed_memory_write_count": len(
+                        [w for w in memory_writes if w.get("status") == "failed"]
+                    ),
                     "response_message_count": len(response_messages),
                     "response_chars": sum(
                         len(m) for m in response_messages if isinstance(m, str)
                     ),
                     "response_media": response_media,
+                    "saved_media_options": _telemetry_media_gallery(saved_media_options),
+                    "saved_media_option_count": len(saved_media_options or []),
+                    "saved_media_policy": saved_media_policy,
+                    "active_event_states": active_states,
+                    "pending_scheduled_actions": pending_actions,
                 }
             )
         except Exception as telemetry_error:

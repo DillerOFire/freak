@@ -9,6 +9,9 @@ from bot.telemetry.storage import (
 )
 from bot.telemetry.analysis import (
     summarize_telemetry,
+    summarize_telemetry_by_role,
+    partition_telemetry_by_role,
+    is_ponder_telemetry_source,
     build_context_engineering_suggestions,
 )
 from bot.telemetry.export import build_llm_telemetry_export
@@ -21,6 +24,9 @@ __all__ = [
     "fetch_llm_telemetry_event",
     "get_telemetry_chats",
     "summarize_telemetry",
+    "summarize_telemetry_by_role",
+    "partition_telemetry_by_role",
+    "is_ponder_telemetry_source",
     "build_context_engineering_suggestions",
     "build_llm_telemetry_export",
     "build_telemetry_snapshot",

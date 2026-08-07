@@ -140,6 +140,7 @@ async def test_generate_response_prompt_cache_enabled_wraps_system_prompt_and_re
     assert len(events) == 1
     assert events[0]["prompt_tokens"] == 100
     assert events[0]["prompt_cached_tokens"] == 64
+    assert events[0]["prompt_cache_hit_rate"] == pytest.approx(0.64)
 
 
 @pytest.mark.asyncio
@@ -219,13 +220,48 @@ async def test_generate_response_success(temp_db_path):
     # We patch the completions.create method
     async_create_mock = AsyncMock(return_value=mock_response)
     
-    with patch.object(llm.client.chat.completions, "create", async_create_mock):
+    mock_active_states = [
+        {
+            "id": 9,
+            "state_key": "ignore",
+            "value": "cold shoulder Alice",
+            "expires_at": "2026-08-07T12:00:00Z",
+            "target_user_id": 123,
+            "target_username": "Alice",
+            "reason": "spam",
+        }
+    ]
+    mock_pending_actions = [
+        {
+            "id": 3,
+            "action_type": "reply",
+            "execute_at": "2026-08-07T18:00:00Z",
+            "reason": "follow up later",
+            "instruction": "check if Alice calmed down",
+            "target_user_id": 123,
+        }
+    ]
+
+    with (
+        patch.object(llm.client.chat.completions, "create", async_create_mock),
+        patch.object(
+            llm,
+            "list_active_event_states",
+            AsyncMock(return_value=mock_active_states),
+        ),
+        patch.object(
+            llm,
+            "list_pending_scheduled_actions",
+            AsyncMock(return_value=mock_pending_actions),
+        ),
+    ):
         result = await llm.generate_response(
             messages_context=mock_messages_context,
             user_thoughts=mock_user_thoughts,
             general_memories=mock_general_memories,
             chat_id=chat_id,
-            focus_message_id=1
+            focus_message_id=1,
+            memory_query="Hello bot",
         )
         
         # Verify result structure
@@ -266,13 +302,40 @@ async def test_generate_response_success(temp_db_path):
         event = telemetry_events[0]
         assert event["status"] == "success"
         assert event["source"] == "message"
+        assert event["memory_query"] == "Hello bot"
         assert event["trigger_messages"][0]["text"] == "Hello bot"
         assert event["used_user_thoughts"] == mock_user_thoughts
         assert event["used_general_memories"] == mock_general_memories
+        assert isinstance(event["system_prompt"], str) and event["system_prompt"]
+        assert isinstance(event["context_prompt"], str) and "<conversation_context>" in event["context_prompt"]
+        assert event["system_prompt_chars"] == len(event["system_prompt"])
+        assert event["context_chars"] == len(event["context_prompt"])
+        assert event["tool_calls"] == [
+            {
+                "name": "update_user_thought",
+                "arguments": {
+                    "user_id": 123,
+                    "username": "Alice",
+                    "thought": "Alice is very polite today.",
+                },
+            },
+            {
+                "name": "add_general_memory",
+                "arguments": {
+                    "topic": "Politeness",
+                    "summary": "People are greeting each other.",
+                    "importance": 4,
+                },
+            },
+        ]
         assert event["tool_call_count"] == 2
         assert event["memory_write_count"] == 2
         assert event["failed_memory_write_count"] == 0
         assert event["response_messages"] == ["Hello, my dear!", "How can I help you today?"]
+        assert event["active_event_states"] == mock_active_states
+        assert event["pending_scheduled_actions"] == mock_pending_actions
+        assert "active_event_states" in event["context_prompt"]
+        assert "pending_scheduled_actions" in event["context_prompt"]
 
 
 
@@ -491,8 +554,16 @@ async def test_generate_response_media_only_success(temp_db_path):
             chat_id=9999,
             focus_message_id=1,
             saved_media_options=[
-                {"media_unique_id": "photo_u1", "media_type": "photo", "description": "dramatic portrait", "use_count": 0}
-            ]
+                {
+                    "media_unique_id": "photo_u1",
+                    "media_type": "photo",
+                    "description": "dramatic portrait",
+                    "use_count": 0,
+                    "is_favorite": False,
+                    "file_id": "SECRET_FILE_ID",
+                }
+            ],
+            saved_media_policy={"mode": "normal", "max_items": 1, "guidance": "one is enough"},
         )
         
         assert result is not None
@@ -503,6 +574,18 @@ async def test_generate_response_media_only_success(temp_db_path):
         assert len(events) == 1
         assert events[0]["status"] == "success"
         assert events[0]["response_media"]["media_unique_id"] == "photo_u1"
+        assert events[0]["saved_media_option_count"] == 1
+        assert events[0]["saved_media_options"] == [
+            {
+                "media_unique_id": "photo_u1",
+                "media_type": "photo",
+                "description": "dramatic portrait",
+                "use_count": 0,
+                "is_favorite": False,
+            }
+        ]
+        assert "file_id" not in events[0]["saved_media_options"][0]
+        assert events[0]["saved_media_policy"]["max_items"] == 1
 
 
 @pytest.mark.asyncio

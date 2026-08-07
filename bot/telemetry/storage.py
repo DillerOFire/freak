@@ -17,17 +17,25 @@ _JSON_COLUMNS = {
     "memory_writes": "memory_writes_json",
     "response_messages": "response_messages_json",
     "response_media": "response_media_json",
+    "active_event_states": "active_event_states_json",
+    "pending_scheduled_actions": "pending_scheduled_actions_json",
+    "saved_media_options": "saved_media_options_json",
+    "saved_media_policy": "saved_media_policy_json",
 }
 
 
 def _decode_json_field(field: str, raw: str | None) -> Any:
     """Decode a stored JSON column, returning a tolerant default on failure."""
     if raw is None:
-        return [] if field != "used_user_thoughts" else {}
+        if field in {"used_user_thoughts", "response_media", "saved_media_policy"}:
+            return {}
+        return []
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        return [] if field != "used_user_thoughts" else {}
+        if field in {"used_user_thoughts", "response_media", "saved_media_policy"}:
+            return {}
+        return []
 
 
 def _decode_row(row: aiosqlite.Row) -> dict[str, Any]:
@@ -55,6 +63,7 @@ async def init_telemetry_db() -> None:
                 latency_ms INTEGER,
                 prompt_tokens INTEGER,
                 prompt_cached_tokens INTEGER,
+                prompt_cache_hit_rate REAL,
                 completion_tokens INTEGER,
                 total_tokens INTEGER,
                 context_message_count INTEGER NOT NULL DEFAULT 0,
@@ -78,23 +87,54 @@ async def init_telemetry_db() -> None:
                 system_prompt TEXT,
                 context_prompt TEXT,
                 raw_response TEXT,
-                response_media_json TEXT NOT NULL DEFAULT '{}'
+                response_media_json TEXT NOT NULL DEFAULT '{}',
+                active_event_states_json TEXT NOT NULL DEFAULT '[]',
+                pending_scheduled_actions_json TEXT NOT NULL DEFAULT '[]',
+                saved_media_options_json TEXT NOT NULL DEFAULT '[]',
+                saved_media_option_count INTEGER NOT NULL DEFAULT 0,
+                saved_media_policy_json TEXT NOT NULL DEFAULT '{}'
             )
             """
         )
-        # Migration: Add response_media_json if missing
+        # Migrations for columns added after the initial table.
         async with db.execute("PRAGMA table_info(llm_telemetry)") as cursor:
             columns = [row[1] for row in await cursor.fetchall()]
-            if "response_media_json" not in columns:
-                logging.info("Migrating DB: Adding response_media_json to llm_telemetry")
-                await db.execute(
-                    "ALTER TABLE llm_telemetry ADD COLUMN response_media_json TEXT NOT NULL DEFAULT '{}'"
-                )
-            if "prompt_cached_tokens" not in columns:
-                logging.info("Migrating DB: Adding prompt_cached_tokens to llm_telemetry")
-                await db.execute(
+            migrations = {
+                "response_media_json": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN response_media_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
+                ),
+                "prompt_cached_tokens": (
                     "ALTER TABLE llm_telemetry ADD COLUMN prompt_cached_tokens INTEGER"
-                )
+                ),
+                "prompt_cache_hit_rate": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN prompt_cache_hit_rate REAL"
+                ),
+                "active_event_states_json": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN active_event_states_json "
+                    "TEXT NOT NULL DEFAULT '[]'"
+                ),
+                "pending_scheduled_actions_json": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN pending_scheduled_actions_json "
+                    "TEXT NOT NULL DEFAULT '[]'"
+                ),
+                "saved_media_options_json": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN saved_media_options_json "
+                    "TEXT NOT NULL DEFAULT '[]'"
+                ),
+                "saved_media_option_count": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN saved_media_option_count "
+                    "INTEGER NOT NULL DEFAULT 0"
+                ),
+                "saved_media_policy_json": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN saved_media_policy_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
+                ),
+            }
+            for column, ddl in migrations.items():
+                if column not in columns:
+                    logging.info("Migrating DB: Adding %s to llm_telemetry", column)
+                    await db.execute(ddl)
 
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_llm_telemetry_chat_timestamp "
@@ -117,12 +157,29 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
         value = event.get(key)
         if value is None:
             value = []
+        elif isinstance(value, str):
+            # Already JSON text (legacy callers); store as-is after validating.
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                parsed = []
+            if not isinstance(parsed, list):
+                parsed = []
+            return json.dumps(parsed, ensure_ascii=False)
         return json.dumps(value, ensure_ascii=False)
 
     def _dict(key: str) -> str:
         value = event.get(key)
         if value is None:
             value = {}
+        elif isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                parsed = {}
+            if not isinstance(parsed, dict):
+                parsed = {}
+            return json.dumps(parsed, ensure_ascii=False)
         return json.dumps(value, ensure_ascii=False)
 
     def _count(key: str) -> int:
@@ -144,7 +201,8 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
             INSERT INTO llm_telemetry (
                 chat_id, source, model, focus_message_id, status,
                 error_type, error_message, latency_ms,
-                prompt_tokens, prompt_cached_tokens, completion_tokens, total_tokens,
+                prompt_tokens, prompt_cached_tokens, prompt_cache_hit_rate,
+                completion_tokens, total_tokens,
                 context_message_count, context_chars, system_prompt_chars,
                 user_thought_count, retrieved_memory_count, memory_query,
                 trigger_messages_json, used_user_thoughts_json,
@@ -152,8 +210,10 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 tool_call_count, memory_write_count, failed_memory_write_count,
                 response_message_count, response_chars, reply_to_message_id,
                 response_messages_json, system_prompt, context_prompt, raw_response,
-                response_media_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                response_media_json, active_event_states_json,
+                pending_scheduled_actions_json, saved_media_options_json,
+                saved_media_option_count, saved_media_policy_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(event["chat_id"]),
@@ -166,6 +226,7 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 _opt("latency_ms"),
                 _opt("prompt_tokens"),
                 _opt("prompt_cached_tokens"),
+                _opt("prompt_cache_hit_rate"),
                 _opt("completion_tokens"),
                 _opt("total_tokens"),
                 _count("context_message_count"),
@@ -190,6 +251,11 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 _opt("context_prompt"),
                 _opt("raw_response"),
                 _dict("response_media"),
+                _list("active_event_states"),
+                _list("pending_scheduled_actions"),
+                _list("saved_media_options"),
+                _count("saved_media_option_count"),
+                _dict("saved_media_policy"),
             ),
         )
         await db.commit()

@@ -7,6 +7,45 @@ from typing import Any
 
 _FAILURE_STATUSES = {"invalid_json", "validation_error", "empty_content", "exception"}
 
+# Sources owned by the ponder research agent (or its RP follow-up turn).
+# Everything else is treated as main RP-bot telemetry.
+PONDER_TELEMETRY_SOURCES = frozenset({
+    "ponder_agent",
+    "ponder_followup",
+    "ponder",  # legacy RP follow-up source name
+})
+
+
+def is_ponder_telemetry_source(source: str | None) -> bool:
+    """True when this telemetry row belongs to ponder, not the main RP bot."""
+    return (source or "message") in PONDER_TELEMETRY_SOURCES
+
+
+def partition_telemetry_by_role(
+    events: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Split events into (main_rp_events, ponder_events)."""
+    main: list[dict] = []
+    ponder: list[dict] = []
+    for event in events:
+        if is_ponder_telemetry_source(event.get("source")):
+            ponder.append(event)
+        else:
+            main.append(event)
+    return main, ponder
+
+
+def summarize_telemetry_by_role(events: list[dict]) -> dict[str, Any]:
+    """Return separate summaries for main RP bot and ponder agent."""
+    main_events, ponder_events = partition_telemetry_by_role(events)
+    return {
+        "all": summarize_telemetry(events),
+        "main": summarize_telemetry(main_events),
+        "ponder": summarize_telemetry(ponder_events),
+        "main_event_count": len(main_events),
+        "ponder_event_count": len(ponder_events),
+    }
+
 
 def _safe_average(values: list[float | int | None]) -> float | None:
     """Average of non-None values; None when no data."""
@@ -51,7 +90,9 @@ def summarize_telemetry(events: list[dict]) -> dict:
             "avg_response_message_count": None,
             "avg_prompt_tokens": None,
             "avg_prompt_cached_tokens": None,
+            "avg_prompt_cache_hit_rate": None,
             "avg_completion_tokens": None,
+            "avg_saved_media_option_count": None,
             "latest_errors": [],
             "top_memory_write_topics": [],
             "recent_no_memory_examples": [],
@@ -119,8 +160,14 @@ def summarize_telemetry(events: list[dict]) -> dict:
     avg_prompt_cached_tokens = _safe_average(
         [event.get("prompt_cached_tokens") for event in events]
     )
+    avg_prompt_cache_hit_rate = _safe_average(
+        [event.get("prompt_cache_hit_rate") for event in events]
+    )
     avg_completion_tokens = _safe_average(
         [event.get("completion_tokens") for event in events]
+    )
+    avg_saved_media_option_count = _safe_average(
+        [event.get("saved_media_option_count") for event in events]
     )
 
     # Latest errors: up to five newest failure events.
@@ -210,7 +257,9 @@ def summarize_telemetry(events: list[dict]) -> dict:
         "avg_response_message_count": avg_response_message_count,
         "avg_prompt_tokens": avg_prompt_tokens,
         "avg_prompt_cached_tokens": avg_prompt_cached_tokens,
+        "avg_prompt_cache_hit_rate": avg_prompt_cache_hit_rate,
         "avg_completion_tokens": avg_completion_tokens,
+        "avg_saved_media_option_count": avg_saved_media_option_count,
         "latest_errors": latest_errors,
         "top_memory_write_topics": top_memory_write_topics,
         "recent_no_memory_examples": recent_no_memory_examples,

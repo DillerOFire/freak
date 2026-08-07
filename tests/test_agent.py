@@ -438,10 +438,16 @@ def _mock_llm_json_response(payload: dict):
 
 
 @pytest.mark.asyncio
-async def test_run_ponder_agent_answer_on_first_step():
+async def test_run_ponder_agent_answer_on_first_step(temp_db_path):
     mock_response = _mock_llm_json_response(
         {"thought": "I know this", "answer": "The answer is 42."}
     )
+    usage = MagicMock()
+    usage.prompt_tokens = 50
+    usage.completion_tokens = 10
+    usage.total_tokens = 60
+    usage.prompt_tokens_details = {"cached_tokens": 20}
+    mock_response.usage = usage
 
     with patch.object(
         agent.client.chat.completions, "create", AsyncMock(return_value=mock_response)
@@ -449,6 +455,19 @@ async def test_run_ponder_agent_answer_on_first_step():
         result = await agent.run_ponder_agent("what is the answer", chat_id=1)
 
     assert result == "The answer is 42."
+
+    from bot.telemetry import fetch_llm_telemetry
+
+    events = await fetch_llm_telemetry(chat_id=1, source="ponder_agent")
+    assert len(events) == 1
+    event = events[0]
+    assert event["source"] == "ponder_agent"
+    assert event["status"] == "success"
+    assert event["memory_query"] == "what is the answer"
+    assert event["prompt_tokens"] == 50
+    assert event["prompt_cached_tokens"] == 20
+    assert event["prompt_cache_hit_rate"] == pytest.approx(0.4)
+    assert event["response_messages"] == ["The answer is 42."]
 
 
 @pytest.mark.asyncio

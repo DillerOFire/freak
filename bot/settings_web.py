@@ -603,11 +603,11 @@ def render_telemetry_html() -> str:
   <div class="controls"><div class="filters">
     <label>Chat<select id="chat"><option value="all">All chats</option></select></label>
     <label>Status<select id="status"><option value="all">All statuses</option><option value="success">Success</option><option value="no_reply">No reply</option><option value="invalid_json">Invalid JSON</option><option value="validation_error">Validation error</option><option value="empty_content">Empty content</option><option value="exception">Exception</option></select></label>
-    <label>Source<select id="source"><option value="all">All sources</option><option value="message">Message</option><option value="daily_task">Daily task</option></select></label>
+    <label>Source<select id="source"><option value="all">All sources</option><option value="message">Message</option><option value="daily_task">Daily task</option><option value="scheduled_action">Scheduled action</option><option value="ponder_agent">Ponder agent</option><option value="ponder_followup">Ponder follow-up</option><option value="ponder">Ponder follow-up (legacy)</option></select></label>
     <label>Events<input id="limit" type="number" min="1" max="500" value="100"></label>
     <div class="actions"><button id="apply">Refresh</button><button id="export" class="secondary">Export JSON</button></div>
   </div></div>
-  <p id="notice" class="muted">Loading telemetry…</p><main id="content" class="hidden"><section id="cards" class="cards"></section><section class="panel"><h2>Suggestions</h2><ul id="suggestions"></ul></section><section class="panel"><h2>Events</h2><div id="events"></div></section></main>
+  <p id="notice" class="muted">Loading telemetry…</p><main id="content" class="hidden"><section class="panel"><h2>Main RP bot</h2><div id="main-cards" class="cards"></div></section><section class="panel"><h2>Ponder agent</h2><div id="ponder-cards" class="cards"></div></section><section class="panel"><h2>Combined</h2><div id="cards" class="cards"></div></section><section class="panel"><h2>Suggestions</h2><ul id="suggestions"></ul></section><section class="panel"><h2>Events</h2><div id="events"></div></section></main>
   <script>
   (() => {
     const tg = window.Telegram && window.Telegram.WebApp;
@@ -621,15 +621,32 @@ def render_telemetry_html() -> str:
     const query = () => new URLSearchParams(Object.fromEntries(ids.map(id => [id === 'chat' ? 'chat_id' : id, $(id).value])));
     const select = (id, value) => { $(id).value = value == null ? 'all' : String(value); };
     function populateChats(chats, active) { const dropdown = $('chat'); const previous = dropdown.value; dropdown.replaceChildren(make('option', 'All chats')); dropdown.firstChild.value = 'all'; chats.forEach(chat => { const opt = make('option', chat); opt.value = chat; dropdown.append(opt); }); dropdown.value = active == null ? (previous || 'all') : String(active); }
+    function summaryItems(s, role) {
+      const base = [['Events', fmt(s.total_events)], ['Success rate', rate(s.success_rate)], ['Failure rate', rate(s.failure_rate)], ['Avg latency', s.avg_latency_ms == null ? 'n/a' : `${fmt(s.avg_latency_ms)} ms`], ['Avg prompt tokens', fmt(s.avg_prompt_tokens)], ['Cached prompt tokens', fmt(s.avg_prompt_cached_tokens)], ['Prompt cache hit rate', rate(s.avg_prompt_cache_hit_rate)]];
+      if (role === 'main') {
+        base.push(['No-reply rate', rate(s.no_reply_rate)], ['Avg context chars', fmt(s.avg_context_chars)], ['Retrieved memories', fmt(s.avg_retrieved_memory_count)], ['Media gallery size', fmt(s.avg_saved_media_option_count)], ['Memory writes', fmt(s.avg_memory_write_count)], ['Memory write success', rate(s.memory_write_success_rate)]);
+      } else if (role === 'ponder') {
+        base.push(['Avg tool calls', fmt(s.avg_tool_call_count)], ['Avg completion tokens', fmt(s.avg_completion_tokens)]);
+      } else {
+        base.push(['No-reply rate', rate(s.no_reply_rate)], ['Avg context chars', fmt(s.avg_context_chars)], ['Memory writes', fmt(s.avg_memory_write_count)]);
+      }
+      return base;
+    }
+    function fillCards(id, items) {
+      const cards = $(id); cards.replaceChildren();
+      items.forEach(([label, value]) => { const card = make('div', undefined, 'card'); card.append(make('div', label, 'label'), make('div', value, 'value')); cards.append(card); });
+    }
     function render(snapshot) {
-      const s = snapshot.summary; populateChats(snapshot.chats, snapshot.filters.chat_id); select('status', snapshot.filters.status); select('source', snapshot.filters.source); $('limit').value = snapshot.filters.limit;
-      const items = [['Total events', fmt(s.total_events)], ['Success rate', rate(s.success_rate)], ['No-reply rate', rate(s.no_reply_rate)], ['Failure rate', rate(s.failure_rate)], ['Avg context chars', fmt(s.avg_context_chars)], ['Avg prompt tokens', fmt(s.avg_prompt_tokens)], ['Cached prompt tokens', fmt(s.avg_prompt_cached_tokens)], ['Retrieved memories', fmt(s.avg_retrieved_memory_count)], ['Memory writes', fmt(s.avg_memory_write_count)], ['Memory write success', rate(s.memory_write_success_rate)]];
-      const cards = $('cards'); cards.replaceChildren(); items.forEach(([label, value]) => { const card = make('div', undefined, 'card'); card.append(make('div', label, 'label'), make('div', value, 'value')); cards.append(card); });
+      const s = snapshot.summary || {}; const main = snapshot.main_summary || s; const ponder = snapshot.ponder_summary || {};
+      populateChats(snapshot.chats, snapshot.filters.chat_id); select('status', snapshot.filters.status); select('source', snapshot.filters.source); $('limit').value = snapshot.filters.limit;
+      fillCards('main-cards', summaryItems(main, 'main'));
+      fillCards('ponder-cards', summaryItems(ponder, 'ponder'));
+      fillCards('cards', summaryItems(s, 'all').concat([['Main events', fmt(snapshot.main_event_count)], ['Ponder events', fmt(snapshot.ponder_event_count)]]));
       const suggestions = $('suggestions'); suggestions.replaceChildren(); (snapshot.suggestions.length ? snapshot.suggestions : ['No suggestions yet.']).forEach(value => suggestions.append(make('li', value)));
       const events = $('events'); events.replaceChildren(); if (!snapshot.events.length) events.append(make('p', 'No telemetry recorded for these filters yet.', 'muted'));
       snapshot.events.forEach(event => {
-        const details = make('details'); const summary = make('summary'); const head = make('div', undefined, 'event-head'); const title = make('span', `#${event.id} · ${event.timestamp || 'unknown time'}`, 'event-title'); const status = event.status || 'unknown'; const klass = status === 'success' ? 'success' : status === 'no_reply' ? 'no_reply' : ['invalid_json','validation_error','empty_content','exception'].includes(status) ? 'failure' : 'unknown'; head.append(title, make('span', status.replace('_', ' '), `badge ${klass}`)); summary.append(head); const meta = make('div', undefined, 'meta'); [`chat ${event.chat_id}`, event.source || 'message', `latency ${fmt(event.latency_ms)} ms`, `context ${fmt(event.context_message_count)} msgs`, `memories ${fmt(event.retrieved_memory_count)}`, `writes ${fmt(event.memory_write_count)}/${fmt(event.failed_memory_write_count)}`].forEach(text => meta.append(make('span', text))); summary.append(meta); details.append(summary);
-        [['Trigger messages', event.trigger_messages || []], ['Memories used', {user_thoughts: event.used_user_thoughts || {}, general_memories: event.used_general_memories || []}], ['Response', {messages: event.response_messages || [], media: event.response_media || {}, reply_to_message_id: event.reply_to_message_id}], ['Memorized', event.memory_writes || []], ['Tool calls', event.tool_calls || []]].forEach(([label, value]) => { details.append(make('div', label, 'detail-title')); details.append(make('pre', JSON.stringify(value, null, 2))); }); events.append(details);
+        const details = make('details'); const summary = make('summary'); const head = make('div', undefined, 'event-head'); const title = make('span', `#${event.id} · ${event.timestamp || 'unknown time'}`, 'event-title'); const status = event.status || 'unknown'; const klass = status === 'success' ? 'success' : status === 'no_reply' ? 'no_reply' : ['invalid_json','validation_error','empty_content','exception'].includes(status) ? 'failure' : 'unknown'; head.append(title, make('span', status.replace('_', ' '), `badge ${klass}`)); summary.append(head); const meta = make('div', undefined, 'meta'); [`chat ${event.chat_id}`, event.source || 'message', `latency ${fmt(event.latency_ms)} ms`, `context ${fmt(event.context_message_count)} msgs`, `memories ${fmt(event.retrieved_memory_count)}`, `writes ${fmt(event.memory_write_count)}/${fmt(event.failed_memory_write_count)}`, `states ${(event.active_event_states || []).length}`, `scheduled ${(event.pending_scheduled_actions || []).length}`, `cache ${rate(event.prompt_cache_hit_rate)}`, `gallery ${fmt(event.saved_media_option_count)}`].forEach(text => meta.append(make('span', text))); summary.append(meta); details.append(summary);
+        [['Trigger messages', event.trigger_messages || []], ['Memories used', {user_thoughts: event.used_user_thoughts || {}, general_memories: event.used_general_memories || []}], ['Active event states', event.active_event_states || []], ['Pending scheduled actions', event.pending_scheduled_actions || []], ['Media gallery', {options: event.saved_media_options || [], count: event.saved_media_option_count || 0, policy: event.saved_media_policy || {}}], ['Response', {messages: event.response_messages || [], media: event.response_media || {}, reply_to_message_id: event.reply_to_message_id}], ['Memorized', event.memory_writes || []], ['Tool calls', event.tool_calls || []]].forEach(([label, value]) => { details.append(make('div', label, 'detail-title')); details.append(make('pre', JSON.stringify(value, null, 2))); }); events.append(details);
       });
       notice.className = 'hidden'; content.classList.remove('hidden');
     }

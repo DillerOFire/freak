@@ -153,6 +153,20 @@ def test_rendered_telemetry_is_a_telegram_web_app():
     assert "/api/telemetry" in html
     assert "Export JSON" in html
     assert "textContent" in html
+    assert "Active event states" in html
+    assert "Pending scheduled actions" in html
+    assert "active_event_states" in html
+    assert "pending_scheduled_actions" in html
+    assert "Prompt cache hit rate" in html
+    assert "Media gallery" in html
+    assert "saved_media_options" in html
+    assert "prompt_cache_hit_rate" in html
+    assert "Main RP bot" in html
+    assert "Ponder agent" in html
+    assert "ponder_agent" in html
+    assert "ponder_followup" in html
+    assert "main_summary" in html
+    assert "ponder_summary" in html
 
 
 @pytest.mark.asyncio

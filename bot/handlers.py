@@ -158,7 +158,7 @@ async def _complete_ponder_followup(
         general_memories,
         chat_id,
         focus_message_id=message_id,
-        source="ponder",
+        source="ponder_followup",
         memory_query=memory_query,
         saved_media_options=saved_media_options,
         extra_context=extra_context,

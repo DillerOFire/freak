@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from bot.telemetry import (
     init_telemetry_db,
@@ -15,6 +17,9 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
         "source": "message",
         "model": "test-model",
         "status": "success",
+        "memory_query": "hello search",
+        "system_prompt": "You are a test bot.",
+        "context_prompt": "<conversation_context>hi</conversation_context>",
         "trigger_messages": [
             {"message_id": 1, "sender": "Alice", "user_id": 123, "text": "Hello bot"}
         ],
@@ -31,6 +36,27 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
             }
         ],
         "response_messages": ["Hi there!"],
+        "active_event_states": [
+            {
+                "id": 9,
+                "state_key": "ignore",
+                "value": "cold shoulder Alice for an hour",
+                "expires_at": "2026-08-07T12:00:00Z",
+                "target_user_id": 123,
+                "target_username": "Alice",
+                "reason": "spam",
+            }
+        ],
+        "pending_scheduled_actions": [
+            {
+                "id": 3,
+                "action_type": "reply",
+                "execute_at": "2026-08-07T18:00:00Z",
+                "reason": "follow up later",
+                "instruction": "check if Alice calmed down",
+                "target_user_id": 123,
+            }
+        ],
         "context_message_count": 1,
         "context_chars": 100,
         "system_prompt_chars": 500,
@@ -42,8 +68,20 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
         "response_message_count": 1,
         "response_chars": 8,
         "response_media": {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some image"},
+        "saved_media_options": [
+            {
+                "media_unique_id": "photo_u1",
+                "media_type": "photo",
+                "description": "dramatic portrait",
+                "use_count": 2,
+                "is_favorite": True,
+            }
+        ],
+        "saved_media_option_count": 1,
+        "saved_media_policy": {"mode": "normal", "max_items": 1, "guidance": "use sparingly"},
         "prompt_tokens": 42,
         "prompt_cached_tokens": 24,
+        "prompt_cache_hit_rate": 24 / 42,
         "completion_tokens": 7,
         "total_tokens": 49,
     }
@@ -54,13 +92,33 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
     row = fetched[0]
     assert row["chat_id"] == 111
     assert row["status"] == "success"
+    assert row["memory_query"] == "hello search"
+    assert row["system_prompt"] == "You are a test bot."
+    assert row["context_prompt"] == "<conversation_context>hi</conversation_context>"
     assert row["trigger_messages"][0]["text"] == "Hello bot"
     assert row["used_user_thoughts"] == {"Alice": "Needs help"}
     assert row["used_general_memories"] == ["Topic: Greeting, Summary: hello"]
+    assert row["tool_calls"] == [
+        {"name": "add_general_memory", "arguments": {"topic": "Greeting"}}
+    ]
     assert row["memory_writes"][0]["status"] == "succeeded"
     assert row["response_messages"] == ["Hi there!"]
+    assert row["active_event_states"][0]["state_key"] == "ignore"
+    assert row["pending_scheduled_actions"][0]["action_type"] == "reply"
     assert row["response_media"] == {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some image"}
     assert row["prompt_cached_tokens"] == 24
+    assert row["prompt_cache_hit_rate"] == pytest.approx(24 / 42)
+    assert row["saved_media_options"] == [
+        {
+            "media_unique_id": "photo_u1",
+            "media_type": "photo",
+            "description": "dramatic portrait",
+            "use_count": 2,
+            "is_favorite": True,
+        }
+    ]
+    assert row["saved_media_option_count"] == 1
+    assert row["saved_media_policy"]["max_items"] == 1
 
     chats = await get_telemetry_chats()
     assert chats == [111]
@@ -137,3 +195,31 @@ async def test_record_llm_telemetry_defaults_missing_prompt_cached_tokens(temp_d
     assert len(fetched) == 1
     assert fetched[0]["prompt_cached_tokens"] is None
 
+
+@pytest.mark.asyncio
+async def test_record_llm_telemetry_accepts_pre_serialized_json_lists(temp_db_path):
+    """Legacy callers may pass tool_calls/memory_writes already JSON-encoded."""
+    await record_llm_telemetry(
+        {
+            "chat_id": 4,
+            "source": "message",
+            "status": "success",
+            "trigger_messages": [],
+            "used_user_thoughts": {},
+            "used_general_memories": [],
+            "tool_calls": json.dumps(
+                [{"name": "ponder", "arguments": {"query": "x"}}],
+                ensure_ascii=False,
+            ),
+            "memory_writes": json.dumps(
+                [{"type": "ponder", "status": "succeeded"}],
+                ensure_ascii=False,
+            ),
+            "response_messages": [],
+        }
+    )
+
+    fetched = await fetch_llm_telemetry(chat_id=4)
+    assert len(fetched) == 1
+    assert fetched[0]["tool_calls"] == [{"name": "ponder", "arguments": {"query": "x"}}]
+    assert fetched[0]["memory_writes"] == [{"type": "ponder", "status": "succeeded"}]

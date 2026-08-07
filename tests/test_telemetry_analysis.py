@@ -1,5 +1,8 @@
 from bot.telemetry.analysis import (
     summarize_telemetry,
+    summarize_telemetry_by_role,
+    partition_telemetry_by_role,
+    is_ponder_telemetry_source,
     build_context_engineering_suggestions,
 )
 from bot.telemetry.export import build_llm_telemetry_export
@@ -22,6 +25,22 @@ def _success_event(eid, with_memory=True, response_count=1):
         "completion_tokens": 50,
         "total_tokens": 150,
         "prompt_cached_tokens": 60,
+        "prompt_cache_hit_rate": 0.6,
+        "saved_media_option_count": 3 if with_memory else 0,
+        "saved_media_options": (
+            [
+                {
+                    "media_unique_id": "sticker_1",
+                    "media_type": "sticker",
+                    "description": "smug face",
+                    "use_count": 1,
+                    "is_favorite": True,
+                }
+            ]
+            if with_memory
+            else []
+        ),
+        "saved_media_policy": {"mode": "normal", "max_items": 1} if with_memory else {},
         "tool_calls": [{"name": "add_general_memory", "arguments": {"topic": "Opera"}}],
         "memory_writes": (
             [
@@ -40,6 +59,27 @@ def _success_event(eid, with_memory=True, response_count=1):
         "failed_memory_write_count": 0,
         "tool_call_count": 1,
         "trigger_messages": [{"text": f"message {eid}"}],
+        "active_event_states": [
+            {
+                "id": 1,
+                "state_key": "ignore",
+                "value": "ignore for an hour",
+                "expires_at": "2026-01-01T11:00:00Z",
+            }
+        ]
+        if with_memory
+        else [],
+        "pending_scheduled_actions": [
+            {
+                "id": 2,
+                "action_type": "message",
+                "execute_at": "2026-01-01T12:00:00Z",
+                "reason": "check in",
+                "instruction": "say hi later",
+            }
+        ]
+        if with_memory
+        else [],
     }
 
 
@@ -94,6 +134,8 @@ def test_summarize_telemetry_rates_and_memory():
 
     assert summary["avg_prompt_tokens"] == 100  # ignores None
     assert summary["avg_prompt_cached_tokens"] == 60
+    assert summary["avg_prompt_cache_hit_rate"] == 0.6
+    assert summary["avg_saved_media_option_count"] == 1.5
 
 
 def test_build_context_engineering_suggestions_json_contract():
@@ -132,7 +174,11 @@ def test_build_llm_telemetry_export():
     assert ev["trigger_messages"][0]["text"] == "message 1"
     assert ev["used_general_memories"] == []
     assert ev["prompt_cached_tokens"] == 60
+    assert ev["prompt_cache_hit_rate"] == 0.6
     assert ev["memory_writes"][0]["status"] == "succeeded"
+    assert ev["active_event_states"][0]["state_key"] == "ignore"
+    assert ev["pending_scheduled_actions"][0]["action_type"] == "message"
+    assert ev["saved_media_options"][0]["media_unique_id"] == "sticker_1"
 
 
 def test_build_llm_telemetry_export_includes_prompt_cache_summary():
@@ -140,4 +186,44 @@ def test_build_llm_telemetry_export_includes_prompt_cache_summary():
     export = build_llm_telemetry_export(events, "persona text", {"limit": 100})
 
     assert export["summary"]["avg_prompt_cached_tokens"] == 60
+    assert export["summary"]["avg_prompt_cache_hit_rate"] == 0.6
     assert export["events"][0]["prompt_cached_tokens"] == 60
+    assert export["events"][0]["prompt_cache_hit_rate"] == 0.6
+
+
+def test_partition_and_summarize_by_role():
+    main = _success_event(1, with_memory=True)
+    ponder = _success_event(2, with_memory=False)
+    ponder["source"] = "ponder_agent"
+    legacy = _success_event(3, with_memory=False)
+    legacy["source"] = "ponder"
+    followup = _success_event(4, with_memory=False)
+    followup["source"] = "ponder_followup"
+
+    assert is_ponder_telemetry_source("ponder_agent")
+    assert is_ponder_telemetry_source("ponder_followup")
+    assert is_ponder_telemetry_source("ponder")
+    assert not is_ponder_telemetry_source("message")
+    assert not is_ponder_telemetry_source("daily_task")
+
+    main_events, ponder_events = partition_telemetry_by_role([main, ponder, legacy, followup])
+    assert [e["id"] for e in main_events] == [1]
+    assert [e["id"] for e in ponder_events] == [2, 3, 4]
+
+    roles = summarize_telemetry_by_role([main, ponder, legacy, followup])
+    assert roles["main_event_count"] == 1
+    assert roles["ponder_event_count"] == 3
+    assert roles["main"]["total_events"] == 1
+    assert roles["ponder"]["total_events"] == 3
+    assert roles["all"]["total_events"] == 4
+
+
+def test_build_llm_telemetry_export_includes_role_summaries():
+    main = _success_event(1, with_memory=True)
+    ponder = _success_event(2, with_memory=False)
+    ponder["source"] = "ponder_agent"
+    export = build_llm_telemetry_export([main, ponder], "persona text", {"limit": 100})
+    assert export["main_event_count"] == 1
+    assert export["ponder_event_count"] == 1
+    assert export["main_summary"]["total_events"] == 1
+    assert export["ponder_summary"]["total_events"] == 1
