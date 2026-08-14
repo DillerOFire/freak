@@ -46,7 +46,21 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-flash-2.5")
 LLM_PONDER_MODEL = os.getenv("LLM_PONDER_MODEL", "deepseek/deepseek-v4-flash")
+LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "")
 LLM_PONDER_REASONING_EFFORT = os.getenv("LLM_PONDER_REASONING_EFFORT", "")
+LLM_VISION_REASONING_EFFORT = os.getenv("LLM_VISION_REASONING_EFFORT", "")
+
+REASONING_EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+
+
+def reasoning_extra_body(effort: str | None) -> dict[str, object] | None:
+    """OpenRouter-style reasoning payload, or None to omit (model default)."""
+    normalized = (effort or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "none":
+        return {"effort": "none", "enabled": False}
+    return {"effort": normalized, "enabled": True}
 
 
 def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:

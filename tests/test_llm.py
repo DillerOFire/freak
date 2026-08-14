@@ -71,6 +71,86 @@ async def test_generate_reaction_prompt_appends_allowed_reactions():
     assert "Hard constraint" in prompt
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("effort", "expected_reasoning"),
+    [
+        ("", None),
+        ("none", {"effort": "none", "enabled": False}),
+        ("low", {"effort": "low", "enabled": True}),
+    ],
+)
+async def test_generate_response_reasoning_extra_body(
+    temp_db_path, effort, expected_reasoning
+):
+    mock_response = _mock_chat_response(
+        {
+            "tool_calls": [],
+            "reply_to_message_id": 1,
+            "messages": ["ok"],
+            "polls": [],
+        }
+    )
+    async_create_mock = AsyncMock(return_value=mock_response)
+    with (
+        patch.object(llm, "LLM_REASONING_EFFORT", effort),
+        patch.object(llm.client.chat.completions, "create", async_create_mock),
+    ):
+        await llm.generate_response(
+            messages_context=[
+                {
+                    "message_id": 1,
+                    "sender": "Alice",
+                    "user_id": 123,
+                    "text": "hi",
+                    "reply_to_username": None,
+                    "reply_to_text": None,
+                }
+            ],
+            user_thoughts={},
+            general_memories=[],
+            chat_id=1,
+            focus_message_id=1,
+        )
+
+    extra_body = async_create_mock.call_args.kwargs["extra_body"]
+    if expected_reasoning is None:
+        assert "reasoning" not in extra_body
+    else:
+        assert extra_body["reasoning"] == expected_reasoning
+    assert extra_body["safetySettings"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("effort", "expected_reasoning"),
+    [
+        ("", None),
+        ("none", {"effort": "none", "enabled": False}),
+        ("high", {"effort": "high", "enabled": True}),
+    ],
+)
+async def test_generate_reaction_reasoning_extra_body(effort, expected_reasoning):
+    mock_response = MagicMock()
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = "👍"
+    mock_choice.message = mock_message
+    mock_response.choices = [mock_choice]
+    async_create_mock = AsyncMock(return_value=mock_response)
+
+    with (
+        patch.object(llm, "LLM_REASONING_EFFORT", effort),
+        patch.object(llm, "get_reaction_prompt", AsyncMock(return_value="react")),
+        patch.object(llm.client.chat.completions, "create", async_create_mock),
+    ):
+        await llm.generate_reaction("hello")
+
+    extra_body = async_create_mock.call_args.kwargs["extra_body"]
+    if expected_reasoning is None:
+        assert "reasoning" not in extra_body
+    else:
+        assert extra_body["reasoning"] == expected_reasoning
 
 
 def test_cacheable_text_respects_prompt_cache_toggle():

@@ -6,7 +6,17 @@ from typing import Any, Literal
 import html
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from xml.sax.saxutils import escape, quoteattr
-from config import ADMIN_ID, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE
+from config import (
+    ADMIN_ID,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_PROMPT_CACHE,
+    LLM_REASONING_EFFORT,
+    LLM_REFERER,
+    LLM_TITLE,
+    reasoning_extra_body,
+)
 from bot.messages import AvailableReactions
 from bot.memory import (
     update_user_thought,
@@ -56,6 +66,25 @@ def _cacheable_text(text: str) -> str | list[dict[str, Any]]:
             "cache_control": {"type": "ephemeral"},
         }
     ]
+
+
+_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+]
+
+
+def _chat_extra_body(*, include_safety: bool = False) -> dict[str, Any]:
+    extra_body: dict[str, Any] = {}
+    reasoning = reasoning_extra_body(LLM_REASONING_EFFORT)
+    if reasoning is not None:
+        extra_body["reasoning"] = reasoning
+    if include_safety:
+        extra_body["safetySettings"] = _SAFETY_SETTINGS
+    return extra_body
 
 
 def _usage_int(value: object) -> int | None:
@@ -953,31 +982,7 @@ async def generate_response(
             model=LLM_MODEL,
             messages=messages,
             response_format={"type": "json_object"},
-            extra_body={
-                "reasoning": {
-                    "effort": "none",
-                    "enabled": False,
-                },
-                "safetySettings": [
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-                        "threshold": "BLOCK_NONE",
-                    },
-                ],
-            },
+            extra_body=_chat_extra_body(include_safety=True),
         )
 
         usage = getattr(response, "usage", None)
@@ -1221,12 +1226,7 @@ async def generate_reaction_prompt(persona_prompt: str) -> str:
         response = await client.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
-            extra_body={
-                "reasoning": {
-                    "effort": "none",
-                    "enabled": False,
-                },
-            },
+            extra_body=_chat_extra_body(),
         )
         generated_prompt = response.choices[0].message.content.strip()
         if not generated_prompt:
@@ -1266,31 +1266,7 @@ async def generate_reaction(message_text: str) -> str | None:
         response = await client.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
-            extra_body={
-                "reasoning": {
-                    "effort": "none",
-                    "enabled": False,
-                },
-                "safetySettings": [
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-                        "threshold": "BLOCK_NONE",
-                    },
-                ],
-            },
+            extra_body=_chat_extra_body(include_safety=True),
         )
         emoji = response.choices[0].message.content.strip()
         # Verify it's in the allowed reactions

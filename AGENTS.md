@@ -106,8 +106,11 @@ Common optional overrides:
 |----------|---------|---------|
 | `LLM_BASE_URL` | OpenAI-compatible API base URL | `https://openrouter.ai/api/v1` |
 | `LLM_MODEL` | Main persona / chat LLM | `google/gemini-flash-2.5` |
+| `LLM_REASONING_EFFORT` | Chat/reaction reasoning (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`; empty = model default) | *(empty)* |
 | `LLM_PONDER_MODEL` | Ponder research agent | `deepseek/deepseek-v4-flash` |
+| `LLM_PONDER_REASONING_EFFORT` | Ponder reasoning effort (same values as above) | *(empty)* |
 | `LLM_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
+| `LLM_VISION_REASONING_EFFORT` | Vision reasoning effort (same values as above) | *(empty)* |
 
 ## 🚀 Deployment
 

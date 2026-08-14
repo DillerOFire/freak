@@ -84,26 +84,35 @@ def test_set_env_value_updates_ponder_step_budget_at_runtime(env_file):
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
-    [("low", "low"), ("MeDiuM", "medium"), ("HIGH", "high")],
+    ("key", "value", "expected"),
+    [
+        ("LLM_REASONING_EFFORT", "low", "low"),
+        ("LLM_REASONING_EFFORT", "NONE", "none"),
+        ("LLM_PONDER_REASONING_EFFORT", "MeDiuM", "medium"),
+        ("LLM_VISION_REASONING_EFFORT", "HIGH", "high"),
+        ("LLM_VISION_REASONING_EFFORT", "xhigh", "xhigh"),
+        ("LLM_REASONING_EFFORT", "minimal", "minimal"),
+    ],
 )
-def test_validate_env_value_normalizes_ponder_reasoning_effort(value, expected):
-    assert env_config.validate_env_value("LLM_PONDER_REASONING_EFFORT", value) == (
+def test_validate_env_value_normalizes_reasoning_effort(key, value, expected):
+    assert env_config.validate_env_value(key, value) == (key, expected)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "LLM_REASONING_EFFORT",
         "LLM_PONDER_REASONING_EFFORT",
-        expected,
-    )
+        "LLM_VISION_REASONING_EFFORT",
+    ],
+)
+def test_validate_env_value_accepts_empty_reasoning_effort(key):
+    assert env_config.validate_env_value(key, "") == (key, "")
 
 
-def test_validate_env_value_accepts_empty_ponder_reasoning_effort():
-    assert env_config.validate_env_value("LLM_PONDER_REASONING_EFFORT", "") == (
-        "LLM_PONDER_REASONING_EFFORT",
-        "",
-    )
-
-
-def test_validate_env_value_rejects_invalid_ponder_reasoning_effort():
-    with pytest.raises(env_config.EnvUpdateError, match="low, medium, high"):
-        env_config.validate_env_value("LLM_PONDER_REASONING_EFFORT", "ultra")
+def test_validate_env_value_rejects_invalid_reasoning_effort():
+    with pytest.raises(env_config.EnvUpdateError, match="must be one of"):
+        env_config.validate_env_value("LLM_REASONING_EFFORT", "ultra")
 
 
 @pytest.mark.parametrize("value", ["0", "21", "many"])
@@ -171,6 +180,25 @@ def test_apply_env_to_runtime_updates_llm_model(monkeypatch):
     assert restart_required is False
     assert config.LLM_MODEL == "google/gemini-flash-2.5"
     assert llm.LLM_MODEL == "google/gemini-flash-2.5"
+
+
+def test_apply_env_to_runtime_updates_reasoning_effort(monkeypatch):
+    import config
+    import bot.llm as llm
+    import bot.vision as vision
+
+    config.LLM_REASONING_EFFORT = ""
+    config.LLM_VISION_REASONING_EFFORT = ""
+    llm.LLM_REASONING_EFFORT = ""
+    vision.LLM_VISION_REASONING_EFFORT = ""
+
+    assert env_config.apply_env_to_runtime("LLM_REASONING_EFFORT", "low") is False
+    assert env_config.apply_env_to_runtime("LLM_VISION_REASONING_EFFORT", "none") is False
+
+    assert config.LLM_REASONING_EFFORT == "low"
+    assert llm.LLM_REASONING_EFFORT == "low"
+    assert config.LLM_VISION_REASONING_EFFORT == "none"
+    assert vision.LLM_VISION_REASONING_EFFORT == "none"
 
 
 def test_apply_env_to_runtime_updates_default_llm_base_urls(monkeypatch):

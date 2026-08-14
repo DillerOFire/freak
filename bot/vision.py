@@ -1,7 +1,15 @@
 import base64
 import logging
 from openai import AsyncOpenAI
-from config import LLM_API_KEY, LLM_VISION_BASE_URL, LLM_REFERER, LLM_TITLE, LLM_VISION_MODEL
+from config import (
+    LLM_API_KEY,
+    LLM_VISION_BASE_URL,
+    LLM_REFERER,
+    LLM_TITLE,
+    LLM_VISION_MODEL,
+    LLM_VISION_REASONING_EFFORT,
+    reasoning_extra_body,
+)
 
 client = AsyncOpenAI(
     base_url=LLM_VISION_BASE_URL,
@@ -20,6 +28,14 @@ _SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
 ]
+
+
+def _vision_extra_body() -> dict:
+    extra_body: dict = {"safetySettings": _SAFETY_SETTINGS}
+    reasoning = reasoning_extra_body(LLM_VISION_REASONING_EFFORT)
+    if reasoning is not None:
+        extra_body["reasoning"] = reasoning
+    return extra_body
 
 _IMAGE_PROMPT = (
     "Describe this image precisely. Include:\n"
@@ -71,13 +87,7 @@ async def analyze_image(image_bytes: bytes) -> str:
                     ],
                 }
             ],
-            extra_body={
-                "reasoning": {
-                    "effort": "none",
-                    "enabled": False,
-                },
-                "safetySettings": _SAFETY_SETTINGS,
-            },
+            extra_body=_vision_extra_body(),
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -113,13 +123,7 @@ async def analyze_frames(frame_bytes_list: list[bytes]) -> str:
                     "content": content,
                 }
             ],
-            extra_body={
-                "reasoning": {
-                    "effort": "none",
-                    "enabled": False,
-                },
-                "safetySettings": _SAFETY_SETTINGS,
-            },
+            extra_body=_vision_extra_body(),
         )
         return response.choices[0].message.content
     except Exception as e:

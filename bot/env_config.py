@@ -12,7 +12,17 @@ from urllib.parse import urlparse
 
 from dotenv import dotenv_values, load_dotenv
 
+from config import REASONING_EFFORT_VALUES
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+REASONING_EFFORT_KEYS: frozenset[str] = frozenset(
+    {
+        "LLM_REASONING_EFFORT",
+        "LLM_PONDER_REASONING_EFFORT",
+        "LLM_VISION_REASONING_EFFORT",
+    }
+)
 
 # Keys the bot may change via /bot_env or /set_env (admin DM only).
 EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
@@ -22,10 +32,12 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "ADMIN_ID",
         "LLM_BASE_URL",
         "LLM_MODEL",
+        "LLM_REASONING_EFFORT",
         "LLM_PONDER_MODEL",
         "LLM_PONDER_REASONING_EFFORT",
         "LLM_PONDER_MAX_STEPS",
         "LLM_VISION_MODEL",
+        "LLM_VISION_REASONING_EFFORT",
         "LLM_PROMPT_CACHE",
         "LLM_PONDER_BASE_URL",
         "LLM_VISION_BASE_URL",
@@ -112,7 +124,7 @@ def validate_env_value(key: str, value: str) -> tuple[str, str]:
         raise EnvUpdateError(f"{normalized_key} must be a text value.")
     if "\x00" in value or "\n" in value or "\r" in value:
         raise EnvUpdateError(f"{normalized_key} must be a non-empty single-line value.")
-    if not value and normalized_key != "LLM_PONDER_REASONING_EFFORT":
+    if not value and normalized_key not in REASONING_EFFORT_KEYS:
         raise EnvUpdateError(f"{normalized_key} must be a non-empty single-line value.")
     if len(value) > MAX_ENV_VALUE_LENGTH:
         raise EnvUpdateError(
@@ -121,11 +133,12 @@ def validate_env_value(key: str, value: str) -> tuple[str, str]:
 
     if normalized_key == "LLM_PONDER_MAX_STEPS":
         _validate_int(value, key=normalized_key, minimum=1, maximum=20)
-    elif normalized_key == "LLM_PONDER_REASONING_EFFORT":
+    elif normalized_key in REASONING_EFFORT_KEYS:
         value = value.lower()
-        if value and value not in {"low", "medium", "high"}:
+        if value and value not in REASONING_EFFORT_VALUES:
+            allowed = ", ".join(sorted(REASONING_EFFORT_VALUES))
             raise EnvUpdateError(
-                "LLM_PONDER_REASONING_EFFORT must be one of: low, medium, high (or leave empty to disable)."
+                f"{normalized_key} must be one of: {allowed} (or leave empty for the model default)."
             )
     elif normalized_key == "ADMIN_ID":
         _validate_int(value, key=normalized_key, minimum=1, maximum=2**63 - 1)
@@ -392,6 +405,11 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.llm as llm
 
         llm.LLM_MODEL = value
+    elif key == "LLM_REASONING_EFFORT":
+        config.LLM_REASONING_EFFORT = value
+        import bot.llm as llm
+
+        llm.LLM_REASONING_EFFORT = value
     elif key == "LLM_BASE_URL":
         old_base_url = config.LLM_BASE_URL
         config.LLM_BASE_URL = value
@@ -440,6 +458,11 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
         import bot.vision as vision
 
         vision.LLM_VISION_MODEL = value
+    elif key == "LLM_VISION_REASONING_EFFORT":
+        config.LLM_VISION_REASONING_EFFORT = value
+        import bot.vision as vision
+
+        vision.LLM_VISION_REASONING_EFFORT = value
     elif key == "LLM_VISION_BASE_URL":
         config.LLM_VISION_BASE_URL = value
         import bot.vision as vision

@@ -76,9 +76,12 @@ The model defaults are sensible; override them only if you want different ones:
 |----------|---------|---------|
 | `LLM_BASE_URL` | OpenAI-compatible API base URL | `https://openrouter.ai/api/v1` |
 | `LLM_MODEL` | Main persona / chat LLM | `google/gemini-flash-2.5` |
+| `LLM_REASONING_EFFORT` | Chat/reaction reasoning (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`; empty = model default) | *(empty)* |
 | `LLM_PONDER_MODEL` | Research agent | `deepseek/deepseek-v4-flash` |
+| `LLM_PONDER_REASONING_EFFORT` | Ponder reasoning effort (same values as above) | *(empty)* |
 | `LLM_PONDER_MAX_STEPS` | Maximum ponder research/tool iterations | `10` |
 | `LLM_VISION_MODEL` | Image / frame analysis | `google/gemini-flash-2.5` |
+| `LLM_VISION_REASONING_EFFORT` | Vision reasoning effort (same values as above) | *(empty)* |
 
 Media downloads are always capped at Telegram's 50 MiB file limit. The
 downloader also has bounded concurrency and deadlines:
