@@ -607,8 +607,8 @@ async def notify_admin_cookie_failure(
     if svc == "twitter":
         svc = "x"
     now = time.monotonic()
-    last = _last_cookie_notify_at.get(svc, 0.0)
-    if now - last < _COOKIE_NOTIFY_COOLDOWN_SEC:
+    last = _last_cookie_notify_at.get(svc)
+    if last is not None and now - last < _COOKIE_NOTIFY_COOLDOWN_SEC:
         logging.info(
             "Skipping cookie-failure admin notify for %s (cooldown %.0fs left)",
             svc,

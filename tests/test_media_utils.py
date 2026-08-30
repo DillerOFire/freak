@@ -379,6 +379,28 @@ async def test_notify_admin_cookie_failure_sends_and_rate_limits():
 
 
 @pytest.mark.asyncio
+async def test_first_cookie_failure_notify_is_not_suppressed_after_fresh_boot():
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    result = YtDlpResult(
+        error="HTTP Error 403: Forbidden",
+        cookie_issue=True,
+        cookies_path="/data/cookies/youtube.txt",
+        cookies_present=True,
+    )
+
+    with patch.object(media_utils, "ADMIN_ID", 42), patch.object(
+        media_utils.time, "monotonic", return_value=1.0
+    ):
+        sent = await media_utils.notify_admin_cookie_failure(
+            bot, url="https://youtu.be/x", result=result, service="youtube"
+        )
+
+    assert sent is True
+    bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_notify_admin_cookie_failure_adds_preselected_web_cookie_button():
     bot = MagicMock()
     bot.send_message = AsyncMock()
