@@ -176,6 +176,13 @@ ghcr.io/your-org/freak:sha-<sha>   # per-commit tag for selecting a release
 ghcr.io/your-org/freak:v1.2.3      # semver tags
 ```
 
+The workflow runs the locked test suite before publishing. Each successful
+build uploads an `image.env` artifact containing `FREAK_IMAGE` with the exact
+multi-architecture digest. Scheduled dependency refreshes update `nightly` and
+a dated nightly tag without moving the `master` or per-commit tags. Promote the
+artifact digest into infrastructure Compose and use its guarded one-application
+updater; do not deploy a moving tag or restore Watchtower.
+
 The included `docker-compose.yml` builds locally by default. Once you publish,
 replace `build: .` with the reviewed immutable `image:` digest.
 
