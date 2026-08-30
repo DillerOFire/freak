@@ -14,7 +14,8 @@ from bot.system import (
 )
 
 # When running inside a container, image lifecycle is owned by the orchestrator
-# (Watchtower / compose pull). The in-process git+uv self-update and yt-dlp
+# (for example, a reviewed Compose deployment). The in-process git+uv
+# self-update and yt-dlp
 # pip-update jobs would write into the ephemeral container layer and restart
 # into the same image, so they are disabled there.
 RUN_MODE = os.getenv("RUN_MODE", "").strip().lower()
@@ -275,7 +276,7 @@ async def load_jobs(application: Application):
         # The self-update and yt-dlp-pip-update jobs only make sense when the
         # bot runs from a git checkout with a supervisor that restarts it
         # (bare-metal / systemd). Under Docker the image is replaced wholesale
-        # by Watchtower, so these would fight the orchestrator.
+        # by the deployment orchestrator, so these would fight it.
         if not IN_CONTAINER:
             schedule_ytdlp_update_check(application)
             schedule_bot_update_check(application)

@@ -18,7 +18,7 @@ Think of it as a moody, opinionated chat member with memory — not a question-a
 - **Daily schedules** — send a message or run an LLM prompt every day at a given time.
 - **Whitelist** — only respond in chats/users you allow.
 - **Telegram-native telemetry** — an admin-only Web App for usage stats, LLM context, and memory behavior.
-- **Auto-update** — on bare-metal, `/update_bot` pulls git updates, runs `uv sync`, verifies imports, then restarts; `/update_ytdlp` refreshes the downloader. Under Docker the image is replaced wholesale by Watchtower, so these jobs are disabled there (see [Deployment](#-deployment)).
+- **Auto-update** — on bare-metal, `/update_bot` pulls git updates, runs `uv sync`, verifies imports, then restarts; `/update_ytdlp` refreshes the downloader. Under Docker an external orchestrator replaces the image, so these jobs are disabled there (see [Deployment](#-deployment)).
 
 ---
 
@@ -166,17 +166,18 @@ Tests use a temporary SQLite DB and mock Telegram / LLM / yt-dlp calls.
 
 ## 📦 Deployment
 
-### Option A — Docker + GHCR + Watchtower (recommended)
+### Option A — Docker + GHCR (recommended)
 
 CI builds a multi-arch image on every push to `master`, on version tags, and on a daily schedule (keeps yt-dlp fresh). Publish to your own registry, for example:
 
 ```
-ghcr.io/your-org/freak:master      # branch tag, what Watchtower tracks
-ghcr.io/your-org/freak:sha-<sha>   # per-commit pin
+ghcr.io/your-org/freak:master      # moving branch tag for image discovery
+ghcr.io/your-org/freak:sha-<sha>   # per-commit tag for selecting a release
 ghcr.io/your-org/freak:v1.2.3      # semver tags
 ```
 
-The included `docker-compose.yml` builds locally by default. Swap `build: .` for `image: ghcr.io/your-org/freak:master` once you publish.
+The included `docker-compose.yml` builds locally by default. Once you publish,
+replace `build: .` with the reviewed immutable `image:` digest.
 
 #### 1. Create a deploy directory on the server
 
@@ -194,7 +195,7 @@ cp /old/freak/cookies/*.txt data/cookies/ 2>/dev/null || true
 ```yaml
 services:
   bot:
-    image: ghcr.io/your-org/freak:master
+    image: ghcr.io/your-org/freak@sha256:<reviewed-digest>
     container_name: freak
     restart: unless-stopped
     env_file: .env
@@ -248,36 +249,19 @@ sudo systemctl enable --now freak
 
 Logs: `docker compose -f ~/deploy/freak/docker-compose.yml logs -f` or `journalctl -u freak -f`.
 
-#### 5. Auto-update with Watchtower
+#### 5. Update the immutable image
 
-Watchtower polls GHCR every 5 minutes and recreates the container when a new image lands. Put this in its own deploy dir:
+After CI publishes a release, resolve its registry digest and review the change
+to `image:`. Back up `./data`, retain the previous digest for rollback, and then
+deploy through your infrastructure orchestrator. A safe update must wait for
+the `/health` endpoint before removing the previous image.
 
-```yaml
-# ~/deploy/watchtower/docker-compose.yml
-services:
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    restart: unless-stopped
-    environment:
-      DOCKER_API_VERSION: "1.41"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 300 --cleanup freak
-```
-
-```bash
-cd ~/deploy/watchtower
-docker compose up -d
-```
-
-List the container names you want Watchtower to watch at the end of the `command` line. `--cleanup` removes the old image after a successful update.
-
-> **Note:** Watchtower stops and recreates the container itself. If it hits a transient compose-networking error and leaves the container in a bad state, `systemctl restart freak` will recover it (the foreground `up` in the unit recreates as needed).
+Do not give an unattended registry poller the Docker socket. Image publication
+and production deployment are separate operations.
 
 #### Running multiple instances
 
-Each instance is its own deploy dir with its own `.env`, `data/`, and `docker-compose.yml`. Use distinct `container_name`s and `WEB_SETTINGS_PORT`s. Watchtower takes a list of container names to watch.
+Each instance is its own deploy dir with its own `.env`, `data/`, and `docker-compose.yml`. Use distinct `container_name`s and `WEB_SETTINGS_PORT`s.
 
 ### Option B — Bare metal with systemd
 
