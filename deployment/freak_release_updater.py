@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -62,11 +63,17 @@ def latest_release() -> tuple[str, str]:
     releases = request_json(API_URL)
     if not isinstance(releases, list):
         raise ValueError("GitHub releases response is not a list")
+    candidates: list[tuple[datetime, str, str]] = []
     for release in releases:
         if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
             continue
         tag = release.get("tag_name")
-        if not isinstance(tag, str) or not TAG.fullmatch(tag):
+        published_at = release.get("published_at")
+        if not isinstance(tag, str) or not TAG.fullmatch(tag) or not isinstance(published_at, str):
+            continue
+        try:
+            published = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        except ValueError:
             continue
         assets = release.get("assets")
         if not isinstance(assets, list):
@@ -91,6 +98,9 @@ def latest_release() -> tuple[str, str]:
             raise ValueError(f"{tag} has invalid immutable image metadata")
         if image_match.group(1) != identifier:
             raise ValueError(f"{tag} image digest does not match its release id")
+        candidates.append((published, tag, image))
+    if candidates:
+        _, tag, image = max(candidates)
         return tag, image
     raise NoVerifiedReleaseError("no verified continuous release is available")
 

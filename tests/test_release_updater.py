@@ -18,7 +18,7 @@ SPEC.loader.exec_module(UPDATER)
 
 def test_latest_release_requires_a_matching_digest() -> None:
     digest = "a" * 64
-    releases = [{"tag_name": "continuous-" + "b" * 40, "draft": False, "prerelease": False, "assets": [{"name": "image.env", "browser_download_url": "image"}, {"name": "image.env.release-id", "browser_download_url": "id"}]}]
+    releases = [{"tag_name": "continuous-" + "b" * 40, "published_at": "2026-09-02T22:28:49Z", "draft": False, "prerelease": False, "assets": [{"name": "image.env", "browser_download_url": "image"}, {"name": "image.env.release-id", "browser_download_url": "id"}]}]
     with (
         patch.object(UPDATER, "request_json", return_value=releases),
         patch.object(UPDATER, "download_text", side_effect=[f"FREAK_IMAGE=ghcr.io/dillerofire/freak@sha256:{digest}", digest]),
@@ -28,13 +28,26 @@ def test_latest_release_requires_a_matching_digest() -> None:
 
 def test_latest_release_rejects_mismatched_release_identifier() -> None:
     digest = "a" * 64
-    releases = [{"tag_name": "continuous-" + "b" * 40, "draft": False, "prerelease": False, "assets": [{"name": "image.env", "browser_download_url": "image"}, {"name": "image.env.release-id", "browser_download_url": "id"}]}]
+    releases = [{"tag_name": "continuous-" + "b" * 40, "published_at": "2026-09-02T22:28:49Z", "draft": False, "prerelease": False, "assets": [{"name": "image.env", "browser_download_url": "image"}, {"name": "image.env.release-id", "browser_download_url": "id"}]}]
     with (
         patch.object(UPDATER, "request_json", return_value=releases),
         patch.object(UPDATER, "download_text", side_effect=[f"FREAK_IMAGE=ghcr.io/dillerofire/freak@sha256:{digest}", "c" * 64]),
         pytest.raises(ValueError, match="does not match"),
     ):
         UPDATER.latest_release()
+
+
+def test_latest_release_uses_published_time_not_api_order() -> None:
+    old, new = "a" * 64, "b" * 64
+    releases = [
+        {"tag_name": "continuous-" + "c" * 40, "published_at": "2026-09-02T22:25:00Z", "draft": False, "prerelease": False, "assets": [{"name": "image.env", "browser_download_url": "old-image"}, {"name": "image.env.release-id", "browser_download_url": "old-id"}]},
+        {"tag_name": "continuous-" + "d" * 40, "published_at": "2026-09-02T22:26:00Z", "draft": False, "prerelease": False, "assets": [{"name": "image.env", "browser_download_url": "new-image"}, {"name": "image.env.release-id", "browser_download_url": "new-id"}]},
+    ]
+    with (
+        patch.object(UPDATER, "request_json", return_value=releases),
+        patch.object(UPDATER, "download_text", side_effect=[f"FREAK_IMAGE=ghcr.io/dillerofire/freak@sha256:{old}", old, f"FREAK_IMAGE=ghcr.io/dillerofire/freak@sha256:{new}", new]),
+    ):
+        assert UPDATER.latest_release()[0] == "continuous-" + "d" * 40
 
 
 def test_deploy_rolls_both_bots_back_when_health_check_fails(tmp_path: Path) -> None:
