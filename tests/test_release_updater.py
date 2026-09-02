@@ -51,3 +51,11 @@ def test_deploy_rolls_both_bots_back_when_health_check_fails(tmp_path: Path) -> 
 
     assert image not in (tmp_path / "freak.compose.yml").read_text(encoding="utf-8")
     assert image not in (tmp_path / "personfreak.compose.yml").read_text(encoding="utf-8")
+
+
+def test_main_waits_cleanly_before_the_first_verified_release() -> None:
+    with (
+        patch.object(UPDATER, "latest_release", side_effect=UPDATER.NoVerifiedReleaseError("not ready")),
+        patch.object(sys, "argv", [str(SCRIPT)]),
+    ):
+        assert UPDATER.main() == 0

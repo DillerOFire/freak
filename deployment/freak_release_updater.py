@@ -25,6 +25,10 @@ IMAGE = re.compile(r"^ghcr\.io/dillerofire/freak@sha256:([0-9a-f]{64})$")
 RELEASE_ID = re.compile(r"^[0-9a-f]{64}$")
 
 
+class NoVerifiedReleaseError(ValueError):
+    """No master build has completed its immutable promotion yet."""
+
+
 @dataclass(frozen=True)
 class Target:
     name: str
@@ -88,7 +92,7 @@ def latest_release() -> tuple[str, str]:
         if image_match.group(1) != identifier:
             raise ValueError(f"{tag} image digest does not match its release id")
         return tag, image
-    raise ValueError("no verified continuous release is available")
+    raise NoVerifiedReleaseError("no verified continuous release is available")
 
 
 def load_state(path: Path) -> dict[str, object]:
@@ -195,7 +199,11 @@ def main() -> int:
     if args.health_timeout < 1:
         parser.error("--health-timeout must be positive")
 
-    tag, image = latest_release()
+    try:
+        tag, image = latest_release()
+    except NoVerifiedReleaseError as error:
+        print(error)
+        return 0
     if args.check:
         print(f"{tag} {image}")
         return 0
