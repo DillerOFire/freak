@@ -263,8 +263,35 @@ to `image:`. Back up `./data`, retain the previous digest for rollback, and then
 deploy through your infrastructure orchestrator. A safe update must wait for
 the `/health` endpoint before removing the previous image.
 
-Do not give an unattended registry poller the Docker socket. Image publication
-and production deployment are separate operations.
+Do not give an application container an unattended registry poller with the
+Docker socket. Image publication and production deployment are separate
+operations.
+
+### TW automatic releases
+
+Freak and PersonFreak update together through the host-local
+`freak-release-updater.timer`. It reads public `continuous-<SHA>` GitHub
+releases from this repository, verifies the release asset digest, pulls the
+immutable image, and waits for both health checks. If either bot fails, it
+restores both previous images. It stores only updater state and generated image
+overrides in `/var/lib/freak-release-updater`; it does not clone, read, or need
+credentials for the infrastructure repository.
+
+Install it on TW from a reviewed Freak checkout:
+
+```sh
+sudo ./deployment/install-freak-release-updater.sh
+sudo systemctl start freak-release-updater.service
+sudo journalctl -u freak-release-updater.service -n 100 --no-pager
+```
+
+The updater recreates only the existing `bot` services. It does not alter
+secrets, data volumes, ports, or base Compose files. To inspect the desired
+release without changing containers:
+
+```sh
+sudo /usr/local/lib/freak-release-updater/freak_release_updater.py --check
+```
 
 #### Running multiple instances
 

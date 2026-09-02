@@ -1,0 +1,13 @@
+[Unit]
+Description=Reconcile Freak and PersonFreak to the newest verified release
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /run/freak-release-updater.lock /usr/local/lib/freak-release-updater/freak_release_updater.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run /var/lib/freak-release-updater

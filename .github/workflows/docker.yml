@@ -46,7 +46,7 @@ jobs:
     needs: [test]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
       attestations: write
       id-token: write
@@ -118,3 +118,21 @@ jobs:
           name: freak-image-${{ github.run_id }}
           path: image.env
           retention-days: 30
+
+      - name: Publish immutable master promotion release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release="continuous-${GITHUB_SHA}"
+          release_id="${{ steps.build.outputs.digest }}"
+          test "${release_id#sha256:}" != "$release_id"
+          printf '%s\n' "${release_id#sha256:}" > image.env.release-id
+          if gh release view "$release" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release create "$release" image.env image.env.release-id \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$release" \
+            --notes "Immutable Freak image for ${GITHUB_SHA}."

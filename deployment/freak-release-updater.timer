@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll verified Freak releases
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
