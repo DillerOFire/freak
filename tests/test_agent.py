@@ -458,7 +458,7 @@ async def test_run_ponder_agent_answer_on_first_step(temp_db_path):
     usage.prompt_tokens = 50
     usage.completion_tokens = 10
     usage.total_tokens = 60
-    usage.prompt_tokens_details = {"cached_tokens": 20}
+    usage.prompt_tokens_details = {"cached_tokens": 20, "cache_write_tokens": 7}
     mock_response.usage = usage
 
     with patch.object(
@@ -478,6 +478,8 @@ async def test_run_ponder_agent_answer_on_first_step(temp_db_path):
     assert event["memory_query"] == "what is the answer"
     assert event["prompt_tokens"] == 50
     assert event["prompt_cached_tokens"] == 20
+    assert event["prompt_cache_write_tokens"] == 7
+    assert event["uncached_prompt_tokens"] == 30
     assert event["prompt_cache_hit_rate"] == pytest.approx(0.4)
     assert event["response_messages"] == ["The answer is 42."]
 

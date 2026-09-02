@@ -21,19 +21,30 @@ _JSON_COLUMNS = {
     "pending_scheduled_actions": "pending_scheduled_actions_json",
     "saved_media_options": "saved_media_options_json",
     "saved_media_policy": "saved_media_policy_json",
+    "prompt_sections": "prompt_sections_json",
 }
 
 
 def _decode_json_field(field: str, raw: str | None) -> Any:
     """Decode a stored JSON column, returning a tolerant default on failure."""
     if raw is None:
-        if field in {"used_user_thoughts", "response_media", "saved_media_policy"}:
+        if field in {
+            "used_user_thoughts",
+            "response_media",
+            "saved_media_policy",
+            "prompt_sections",
+        }:
             return {}
         return []
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        if field in {"used_user_thoughts", "response_media", "saved_media_policy"}:
+        if field in {
+            "used_user_thoughts",
+            "response_media",
+            "saved_media_policy",
+            "prompt_sections",
+        }:
             return {}
         return []
 
@@ -63,6 +74,8 @@ async def init_telemetry_db() -> None:
                 latency_ms INTEGER,
                 prompt_tokens INTEGER,
                 prompt_cached_tokens INTEGER,
+                prompt_cache_write_tokens INTEGER,
+                uncached_prompt_tokens INTEGER,
                 prompt_cache_hit_rate REAL,
                 completion_tokens INTEGER,
                 total_tokens INTEGER,
@@ -92,7 +105,17 @@ async def init_telemetry_db() -> None:
                 pending_scheduled_actions_json TEXT NOT NULL DEFAULT '[]',
                 saved_media_options_json TEXT NOT NULL DEFAULT '[]',
                 saved_media_option_count INTEGER NOT NULL DEFAULT 0,
-                saved_media_policy_json TEXT NOT NULL DEFAULT '{}'
+                saved_media_policy_json TEXT NOT NULL DEFAULT '{}',
+                response_id TEXT,
+                response_model TEXT,
+                provider TEXT,
+                system_prompt_hash TEXT,
+                context_prompt_hash TEXT,
+                cache_prefix_hash TEXT,
+                cache_prefix_chars INTEGER NOT NULL DEFAULT 0,
+                cache_stable_message_count INTEGER NOT NULL DEFAULT 0,
+                prompt_sections_json TEXT NOT NULL DEFAULT '{}',
+                response_attempt_count INTEGER NOT NULL DEFAULT 1
             )
             """
         )
@@ -109,6 +132,12 @@ async def init_telemetry_db() -> None:
                 ),
                 "prompt_cache_hit_rate": (
                     "ALTER TABLE llm_telemetry ADD COLUMN prompt_cache_hit_rate REAL"
+                ),
+                "prompt_cache_write_tokens": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN prompt_cache_write_tokens INTEGER"
+                ),
+                "uncached_prompt_tokens": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN uncached_prompt_tokens INTEGER"
                 ),
                 "active_event_states_json": (
                     "ALTER TABLE llm_telemetry ADD COLUMN active_event_states_json "
@@ -129,6 +158,36 @@ async def init_telemetry_db() -> None:
                 "saved_media_policy_json": (
                     "ALTER TABLE llm_telemetry ADD COLUMN saved_media_policy_json "
                     "TEXT NOT NULL DEFAULT '{}'"
+                ),
+                "response_id": "ALTER TABLE llm_telemetry ADD COLUMN response_id TEXT",
+                "response_model": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN response_model TEXT"
+                ),
+                "provider": "ALTER TABLE llm_telemetry ADD COLUMN provider TEXT",
+                "system_prompt_hash": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN system_prompt_hash TEXT"
+                ),
+                "context_prompt_hash": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN context_prompt_hash TEXT"
+                ),
+                "cache_prefix_hash": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN cache_prefix_hash TEXT"
+                ),
+                "cache_prefix_chars": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN cache_prefix_chars "
+                    "INTEGER NOT NULL DEFAULT 0"
+                ),
+                "cache_stable_message_count": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN cache_stable_message_count "
+                    "INTEGER NOT NULL DEFAULT 0"
+                ),
+                "prompt_sections_json": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN prompt_sections_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
+                ),
+                "response_attempt_count": (
+                    "ALTER TABLE llm_telemetry ADD COLUMN response_attempt_count "
+                    "INTEGER NOT NULL DEFAULT 1"
                 ),
             }
             for column, ddl in migrations.items():
@@ -201,7 +260,8 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
             INSERT INTO llm_telemetry (
                 chat_id, source, model, focus_message_id, status,
                 error_type, error_message, latency_ms,
-                prompt_tokens, prompt_cached_tokens, prompt_cache_hit_rate,
+                prompt_tokens, prompt_cached_tokens, prompt_cache_write_tokens,
+                uncached_prompt_tokens, prompt_cache_hit_rate,
                 completion_tokens, total_tokens,
                 context_message_count, context_chars, system_prompt_chars,
                 user_thought_count, retrieved_memory_count, memory_query,
@@ -212,8 +272,12 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 response_messages_json, system_prompt, context_prompt, raw_response,
                 response_media_json, active_event_states_json,
                 pending_scheduled_actions_json, saved_media_options_json,
-                saved_media_option_count, saved_media_policy_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                saved_media_option_count, saved_media_policy_json,
+                response_id, response_model, provider,
+                system_prompt_hash, context_prompt_hash, cache_prefix_hash,
+                cache_prefix_chars, cache_stable_message_count,
+                prompt_sections_json, response_attempt_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(event["chat_id"]),
@@ -226,6 +290,8 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 _opt("latency_ms"),
                 _opt("prompt_tokens"),
                 _opt("prompt_cached_tokens"),
+                _opt("prompt_cache_write_tokens"),
+                _opt("uncached_prompt_tokens"),
                 _opt("prompt_cache_hit_rate"),
                 _opt("completion_tokens"),
                 _opt("total_tokens"),
@@ -256,6 +322,16 @@ async def record_llm_telemetry(event: dict[str, Any]) -> None:
                 _list("saved_media_options"),
                 _count("saved_media_option_count"),
                 _dict("saved_media_policy"),
+                _opt("response_id"),
+                _opt("response_model"),
+                _opt("provider"),
+                _opt("system_prompt_hash"),
+                _opt("context_prompt_hash"),
+                _opt("cache_prefix_hash"),
+                _count("cache_prefix_chars"),
+                _count("cache_stable_message_count"),
+                _dict("prompt_sections"),
+                max(1, _count("response_attempt_count")),
             ),
         )
         await db.commit()

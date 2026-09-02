@@ -39,6 +39,7 @@ EDITABLE_ENV_KEYS: frozenset[str] = frozenset(
         "LLM_VISION_MODEL",
         "LLM_VISION_REASONING_EFFORT",
         "LLM_PROMPT_CACHE",
+        "LLM_HISTORY_CACHE",
         "LLM_PONDER_BASE_URL",
         "LLM_VISION_BASE_URL",
         "LLM_REFERER",
@@ -160,7 +161,7 @@ def validate_env_value(key: str, value: str) -> tuple[str, str]:
             raise EnvUpdateError(
                 "WEB_SETTINGS_URL must be a public HTTPS URL, for example https://bot.example.com."
             )
-    elif normalized_key == "LLM_PROMPT_CACHE":
+    elif normalized_key in {"LLM_PROMPT_CACHE", "LLM_HISTORY_CACHE"}:
         if value.lower() not in _BOOL_VALUES:
             raise EnvUpdateError(f"{normalized_key} must be a boolean value.")
 
@@ -448,6 +449,9 @@ def apply_env_to_runtime(key: str, value: str) -> bool:
 
         llm.LLM_PROMPT_CACHE = enabled
         agent.LLM_PROMPT_CACHE = enabled
+    elif key == "LLM_HISTORY_CACHE":
+        enabled = value.lower() not in {"0", "false", "no"}
+        config.LLM_HISTORY_CACHE = enabled
     elif key == "LLM_PONDER_BASE_URL":
         config.LLM_PONDER_BASE_URL = value
         import bot.agent as agent

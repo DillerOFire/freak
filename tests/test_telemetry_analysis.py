@@ -25,6 +25,8 @@ def _success_event(eid, with_memory=True, response_count=1):
         "completion_tokens": 50,
         "total_tokens": 150,
         "prompt_cached_tokens": 60,
+        "prompt_cache_write_tokens": 12,
+        "uncached_prompt_tokens": 40,
         "prompt_cache_hit_rate": 0.6,
         "saved_media_option_count": 3 if with_memory else 0,
         "saved_media_options": (
@@ -135,6 +137,12 @@ def test_summarize_telemetry_rates_and_memory():
     assert summary["avg_prompt_tokens"] == 100  # ignores None
     assert summary["avg_prompt_cached_tokens"] == 60
     assert summary["avg_prompt_cache_hit_rate"] == 0.6
+    assert summary["weighted_prompt_cache_hit_rate"] == 0.6
+    assert summary["prompt_cache_hit_call_rate"] == 1.0
+    assert summary["total_prompt_tokens"] == 200
+    assert summary["total_prompt_cached_tokens"] == 120
+    assert summary["total_uncached_prompt_tokens"] == 80
+    assert summary["total_prompt_cache_write_tokens"] == 24
     assert summary["avg_saved_media_option_count"] == 1.5
 
 
@@ -165,7 +173,7 @@ def test_build_context_engineering_suggestions_no_tool_calls():
 def test_build_llm_telemetry_export():
     events = [_success_event(1, with_memory=True)]
     export = build_llm_telemetry_export(events, "persona text", {"limit": 100})
-    assert export["schema_version"] == 1
+    assert export["schema_version"] == 2
     assert export["generated_for"] == "llm_context_engineering_review"
     assert export["persona_prompt"] == "persona text"
     assert "summary" in export
@@ -174,6 +182,8 @@ def test_build_llm_telemetry_export():
     assert ev["trigger_messages"][0]["text"] == "message 1"
     assert ev["used_general_memories"] == []
     assert ev["prompt_cached_tokens"] == 60
+    assert ev["prompt_cache_write_tokens"] == 12
+    assert ev["uncached_prompt_tokens"] == 40
     assert ev["prompt_cache_hit_rate"] == 0.6
     assert ev["memory_writes"][0]["status"] == "succeeded"
     assert ev["active_event_states"][0]["state_key"] == "ignore"
@@ -187,6 +197,8 @@ def test_build_llm_telemetry_export_includes_prompt_cache_summary():
 
     assert export["summary"]["avg_prompt_cached_tokens"] == 60
     assert export["summary"]["avg_prompt_cache_hit_rate"] == 0.6
+    assert export["summary"]["weighted_prompt_cache_hit_rate"] == 0.6
+    assert export["summary"]["prompt_cache_hit_call_rate"] == 1.0
     assert export["events"][0]["prompt_cached_tokens"] == 60
     assert export["events"][0]["prompt_cache_hit_rate"] == 0.6
 

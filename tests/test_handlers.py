@@ -406,6 +406,29 @@ def test_saved_media_policy_allows_two_items_only_in_sustained_sticker_exchange(
     assert policy["max_items"] == 2
 
 
+def test_prompt_cache_history_rotates_without_expanding_behavior_history():
+    chat_id = 8080
+    handlers.chat_history.pop(chat_id, None)
+    handlers.prompt_history.reset(chat_id)
+
+    for message_id in range(1, 32):
+        handlers.add_message_to_history(
+            chat_id,
+            message_id,
+            "Alice",
+            f"message {message_id}",
+            123,
+        )
+
+    behavior_ids = [message["message_id"] for message in handlers.chat_history[chat_id]]
+    prompt_messages, stable_count = handlers.prompt_history.snapshot(chat_id)
+    prompt_ids = [message["message_id"] for message in prompt_messages]
+
+    assert behavior_ids == list(range(12, 32))
+    assert prompt_ids == list(range(11, 32))
+    assert stable_count == 20
+
+
 @pytest.mark.asyncio
 async def test_get_message_media_description_saves_photo_metadata(temp_db_path):
     mock_photo = MagicMock()

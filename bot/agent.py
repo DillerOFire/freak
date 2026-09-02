@@ -36,58 +36,19 @@ from bot.logic import (
 )
 from config import LLM_PONDER_MODEL, LLM_PONDER_REASONING_EFFORT, LLM_PONDER_MAX_STEPS, LLM_PONDER_BASE_URL, LLM_API_KEY, LLM_PROMPT_CACHE, LLM_REFERER, LLM_TITLE, ADMIN_ID, FIRECRAWL_API_KEY, FIRECRAWL_API_URL
 from bot.telemetry import record_llm_telemetry
+from bot.telemetry.prompt import (
+    cache_prefix_fingerprint,
+    prompt_section_metrics,
+    text_sha256,
+)
+from bot.telemetry.usage import (
+    accumulate_usage,
+    prompt_cache_hit_rate,
+    response_metadata,
+    uncached_prompt_tokens,
+)
 from openai import AsyncOpenAI
 
-
-def _usage_int(value: object) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _usage_field(usage: object, *path: str) -> object:
-    current = usage
-    for key in path:
-        if current is None:
-            return None
-        if isinstance(current, dict):
-            current = current.get(key)
-        else:
-            current = getattr(current, key, None)
-    return current
-
-
-def _prompt_cached_tokens(usage: object) -> int | None:
-    return _usage_int(_usage_field(usage, "prompt_tokens_details", "cached_tokens"))
-
-
-def _prompt_cache_hit_rate(
-    prompt_tokens: int | None, prompt_cached_tokens: int | None
-) -> float | None:
-    if prompt_tokens is None or prompt_cached_tokens is None or prompt_tokens <= 0:
-        return None
-    cached = max(0, min(int(prompt_cached_tokens), int(prompt_tokens)))
-    return cached / float(prompt_tokens)
-
-
-def _accumulate_usage(totals: dict[str, int | None], usage: object) -> None:
-    prompt = _usage_int(_usage_field(usage, "prompt_tokens"))
-    cached = _prompt_cached_tokens(usage)
-    completion = _usage_int(_usage_field(usage, "completion_tokens"))
-    total = _usage_int(_usage_field(usage, "total_tokens"))
-    for key, value in (
-        ("prompt_tokens", prompt),
-        ("prompt_cached_tokens", cached),
-        ("completion_tokens", completion),
-        ("total_tokens", total),
-    ):
-        if value is None:
-            continue
-        current = totals.get(key)
-        totals[key] = value if current is None else int(current) + value
 
 client = AsyncOpenAI(
     base_url=LLM_PONDER_BASE_URL,
@@ -966,9 +927,13 @@ async def run_ponder_agent(
     usage_totals: dict[str, int | None] = {
         "prompt_tokens": None,
         "prompt_cached_tokens": None,
+        "prompt_cache_write_tokens": None,
         "completion_tokens": None,
         "total_tokens": None,
     }
+    response_id = None
+    response_model = None
+    provider = None
     system_prompt = PONDER_SYSTEM_PROMPT
     context_prompt = ""
     step_budget = LLM_PONDER_MAX_STEPS if max_steps is None else max(1, max_steps)
@@ -1011,7 +976,11 @@ async def run_ponder_agent(
                 kwargs["reasoning_effort"] = LLM_PONDER_REASONING_EFFORT
             response = await client.chat.completions.create(**kwargs)
             step_count += 1
-            _accumulate_usage(usage_totals, getattr(response, "usage", None))
+            accumulate_usage(usage_totals, getattr(response, "usage", None))
+            metadata = response_metadata(response)
+            response_id = metadata["response_id"]
+            response_model = metadata["response_model"]
+            provider = metadata["provider"]
             raw_json_str = response.choices[0].message.content or "{}"
             raw_response = raw_json_str
             try:
@@ -1204,7 +1173,11 @@ async def run_ponder_agent(
             kwargs["reasoning_effort"] = LLM_PONDER_REASONING_EFFORT
         response = await client.chat.completions.create(**kwargs)
         step_count += 1
-        _accumulate_usage(usage_totals, getattr(response, "usage", None))
+        accumulate_usage(usage_totals, getattr(response, "usage", None))
+        metadata = response_metadata(response)
+        response_id = metadata["response_id"]
+        response_model = metadata["response_model"]
+        provider = metadata["provider"]
         raw_json_str = response.choices[0].message.content or "{}"
         raw_response = raw_json_str
         try:
@@ -1234,6 +1207,11 @@ async def run_ponder_agent(
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         prompt_tokens = usage_totals.get("prompt_tokens")
         prompt_cached_tokens = usage_totals.get("prompt_cached_tokens")
+        cache_prefix_hash, cache_prefix_chars = cache_prefix_fingerprint(
+            system_prompt,
+            context_prompt,
+            None,
+        )
         try:
             await record_llm_telemetry(
                 {
@@ -1246,7 +1224,16 @@ async def run_ponder_agent(
                     "latency_ms": latency_ms,
                     "prompt_tokens": prompt_tokens,
                     "prompt_cached_tokens": prompt_cached_tokens,
-                    "prompt_cache_hit_rate": _prompt_cache_hit_rate(
+                    "prompt_cache_write_tokens": usage_totals.get(
+                        "prompt_cache_write_tokens"
+                    ),
+                    "uncached_prompt_tokens": uncached_prompt_tokens(
+                        prompt_tokens if isinstance(prompt_tokens, int) else None,
+                        prompt_cached_tokens
+                        if isinstance(prompt_cached_tokens, int)
+                        else None,
+                    ),
+                    "prompt_cache_hit_rate": prompt_cache_hit_rate(
                         prompt_tokens if isinstance(prompt_tokens, int) else None,
                         prompt_cached_tokens
                         if isinstance(prompt_cached_tokens, int)
@@ -1257,6 +1244,16 @@ async def run_ponder_agent(
                     "context_message_count": 1 if conversation_context else 0,
                     "context_chars": len(context_prompt),
                     "system_prompt_chars": len(system_prompt),
+                    "system_prompt_hash": text_sha256(system_prompt),
+                    "context_prompt_hash": text_sha256(context_prompt),
+                    "cache_prefix_hash": cache_prefix_hash,
+                    "cache_prefix_chars": cache_prefix_chars,
+                    "cache_stable_message_count": 0,
+                    "prompt_sections": prompt_section_metrics(context_prompt),
+                    "response_id": response_id,
+                    "response_model": response_model,
+                    "provider": provider,
+                    "response_attempt_count": step_count,
                     "memory_query": query,
                     "system_prompt": system_prompt,
                     "context_prompt": context_prompt,

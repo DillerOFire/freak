@@ -159,7 +159,8 @@ def test_rendered_telemetry_is_a_telegram_web_app():
     assert "Pending scheduled actions" in html
     assert "active_event_states" in html
     assert "pending_scheduled_actions" in html
-    assert "Prompt cache hit rate" in html
+    assert "Weighted cached share" in html
+    assert "Cache-hit calls" in html
     assert "Media gallery" in html
     assert "saved_media_options" in html
     assert "prompt_cache_hit_rate" in html
@@ -305,4 +306,3 @@ async def test_telemetry_export_dm_requires_live_bot():
 
     assert response.status == 503
     assert "not ready" in json.loads(response.text)["error"].lower()
-

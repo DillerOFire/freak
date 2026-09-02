@@ -16,6 +16,8 @@ from bot.memory import (
     get_saved_media_options,
     get_saved_media_by_unique_id,
     mark_saved_media_used,
+    SAVED_MEDIA_NORMAL_PROMPT_LIMIT,
+    SAVED_MEDIA_PROMPT_LIMIT,
 )
 from bot.media_utils import (
     download_file,
@@ -34,6 +36,8 @@ from bot.persona_output import (
     record_reaction_state,
     record_sent_output,
 )
+from bot.prompt_history import PromptHistoryStore
+import config
 from config import ADMIN_ID
 import os
 import re
@@ -42,6 +46,7 @@ from xml.sax.saxutils import escape as xml_escape
 # In-memory chat history (store last 20 messages per chat)
 # Map: chat_id -> deque
 chat_history: dict[int, deque] = {}
+prompt_history = PromptHistoryStore()
 
 
 
@@ -210,6 +215,7 @@ def add_message_to_history(
     # Initialize chat history if needed
     if chat_id not in chat_history:
         chat_history[chat_id] = deque(maxlen=20)
+        prompt_history.reset(chat_id)
 
     # Add to history
     entry = {
@@ -232,6 +238,7 @@ def add_message_to_history(
     if is_saved_media_reply:
         entry["is_saved_media_reply"] = True
     chat_history[chat_id].append(entry)
+    prompt_history.append(chat_id, entry)
 
 
 def _recent_saved_media_ids(history: list[dict], max_messages: int = 8) -> set[str]:
@@ -881,14 +888,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             recent_media_ids = _recent_saved_media_ids(history_snapshot)
             saved_media_options = await get_saved_media_options(
                 chat_id,
+                limit=(
+                    SAVED_MEDIA_PROMPT_LIMIT
+                    if saved_media_policy["stickers_only"]
+                    else SAVED_MEDIA_NORMAL_PROMPT_LIMIT
+                ),
                 exclude_media_ids=recent_media_ids,
                 media_types={"sticker"} if saved_media_policy["stickers_only"] else None,
+                query="\n".join(
+                    part
+                    for part in (text, reply_to_text)
+                    if isinstance(part, str) and part
+                ),
             )
         settings_chat_id = resolve_settings_chat_id(update.effective_chat)
 
+        prompt_messages = list(current_history)
+        cache_stable_message_count = 0
+        if config.LLM_PROMPT_CACHE and config.LLM_HISTORY_CACHE:
+            epoch_messages, epoch_stable_count = prompt_history.snapshot(chat_id)
+            if epoch_messages:
+                prompt_messages = epoch_messages
+                cache_stable_message_count = epoch_stable_count
+
         # Generate response
         response = await generate_response(
-            list(current_history),
+            prompt_messages,
             user_thoughts,
             general_memories,
             chat_id,
@@ -898,6 +923,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             saved_media_options=saved_media_options,
             settings_chat_id=settings_chat_id,
             saved_media_policy=saved_media_policy,
+            cache_stable_message_count=cache_stable_message_count,
         )
 
         if response:

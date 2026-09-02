@@ -74,6 +74,11 @@ def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int
 LLM_PONDER_MAX_STEPS = _bounded_env_int("LLM_PONDER_MAX_STEPS", 10, 1, 20)
 
 LLM_PROMPT_CACHE = os.getenv("LLM_PROMPT_CACHE", "true").lower() not in {"0", "false", "no"}
+LLM_HISTORY_CACHE = os.getenv("LLM_HISTORY_CACHE", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+}
 REACTION_CHANCE = 0.05
 
 if not TELEGRAM_BOT_TOKEN:

@@ -16,6 +16,7 @@ DB_NAME = os.getenv(
 SAVED_MEDIA_PER_CHAT_LIMIT = 50
 SAVED_MEDIA_GLOBAL_LIMIT = 500
 SAVED_MEDIA_PROMPT_LIMIT = 12
+SAVED_MEDIA_NORMAL_PROMPT_LIMIT = 4
 
 MAX_MEMORY_SUMMARY_LEN = 4000
 MAX_MEDIA_DESCRIPTION_LEN = 2000
@@ -27,6 +28,22 @@ MAX_RESEARCH_RESULT_LEN = 8000
 MAX_RESEARCH_QUERY_LEN = 500
 MAX_RESEARCH_NOTES_PER_CHAT = 40
 RESEARCH_RETRIEVE_LIMIT = 2
+PROMPT_RESEARCH_RETRIEVE_LIMIT = 1
+PROMPT_RESEARCH_RESULT_LEN = 1500
+PROMPT_RESEARCH_MIN_QUERY_TERM_MATCHES = 2
+
+_PROMPT_RESEARCH_STOP_WORDS = frozenset(
+    {
+        "about", "also", "and", "are", "background", "could", "depicted",
+        "featuring", "from", "have", "https", "image", "large", "photo",
+        "sent", "shown", "shows", "sticker", "text", "that", "the", "their",
+        "they", "this", "user", "what", "when", "where", "which", "white",
+        "with", "would", "your", "был", "была", "были", "вам", "вас", "вот",
+        "для", "его", "еще", "ещё", "или", "как", "когда", "кто", "мне",
+        "она", "они", "оно", "почему", "про", "там", "тебя", "тут", "уже",
+        "что", "это",
+    }
+)
 
 
 async def init_db():
@@ -590,6 +607,76 @@ async def get_relevant_research_notes(
         return []
 
 
+def _prompt_research_terms(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[A-Za-zА-Яа-яЁё0-9_]{3,}", (text or "").lower())
+        if token not in _PROMPT_RESEARCH_STOP_WORDS
+    }
+
+
+async def get_prompt_relevant_research_notes(
+    chat_id: int,
+    query: str,
+    limit: int = PROMPT_RESEARCH_RETRIEVE_LIMIT,
+) -> list[dict[str, str | int]]:
+    """Return tightly matched, size-bounded research notes for RP prompts."""
+    query_terms = _prompt_research_terms(query)
+    if len(query_terms) < PROMPT_RESEARCH_MIN_QUERY_TERM_MATCHES:
+        return []
+
+    limit = max(1, min(int(limit), PROMPT_RESEARCH_RETRIEVE_LIMIT))
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute(
+                """
+                SELECT id, query, result, created_at
+                FROM research_notes
+                WHERE chat_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (chat_id, MAX_RESEARCH_NOTES_PER_CHAT),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            scored: list[tuple[int, tuple]] = []
+            for row in rows:
+                overlap = len(query_terms & _prompt_research_terms(str(row[1])))
+                if overlap >= PROMPT_RESEARCH_MIN_QUERY_TERM_MATCHES:
+                    scored.append((overlap, row))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            selected = [row for _, row in scored[:limit]]
+            if not selected:
+                return []
+
+            ids = [row[0] for row in selected]
+            placeholders = ",".join("?" for _ in ids)
+            await db.execute(
+                f"""
+                UPDATE research_notes
+                SET access_count = access_count + 1,
+                    last_accessed = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                """,
+                ids,
+            )
+            await db.commit()
+
+        return [
+            _format_research_note(
+                row[0],
+                row[1],
+                str(row[2])[:PROMPT_RESEARCH_RESULT_LEN],
+                row[3],
+            )
+            for row in selected
+        ]
+    except aiosqlite.Error as error:
+        logging.error("Prompt research lookup failed: %s", error)
+        return []
+
+
 async def get_user_memory_by_target(target: str) -> tuple[int, str, str] | None:
     if not target or target.strip() == ".":
         return None
@@ -979,6 +1066,7 @@ async def get_saved_media_options(
     limit: int = SAVED_MEDIA_PROMPT_LIMIT,
     exclude_media_ids: set[str] | None = None,
     media_types: set[Literal["photo", "sticker", "animation"]] | None = None,
+    query: str | None = None,
 ) -> list[dict]:
     # Clamp limit to 1..SAVED_MEDIA_PROMPT_LIMIT
     limit = max(1, min(SAVED_MEDIA_PROMPT_LIMIT, limit))
@@ -994,7 +1082,8 @@ async def get_saved_media_options(
         placeholders = ", ".join("?" for _ in selected_types)
         exclusion_sql += f" AND media_type IN ({placeholders})"
         params.extend(selected_types)
-    params.append(limit)
+    fetch_limit = SAVED_MEDIA_PER_CHAT_LIMIT if query else limit
+    params.append(fetch_limit)
 
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
@@ -1017,7 +1106,17 @@ async def get_saved_media_options(
             params,
         ) as cursor:
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            options = [dict(row) for row in rows]
+
+    query_terms = _prompt_research_terms(query or "")
+    if query_terms:
+        options.sort(
+            key=lambda option: len(
+                query_terms & _prompt_research_terms(str(option.get("description") or ""))
+            ),
+            reverse=True,
+        )
+    return options[:limit]
 
 
 async def get_saved_media_by_unique_id(chat_id: int, media_unique_id: str) -> dict | None:

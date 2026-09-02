@@ -177,6 +177,7 @@ async def test_generate_response_prompt_cache_enabled_wraps_system_prompt_and_re
     usage.total_tokens = 110
     usage.prompt_cached_tokens = 64
     usage.prompt_tokens_details = {"cached_tokens": 64}
+    usage.prompt_tokens_details["cache_write_tokens"] = 16
     mock_response = _mock_chat_response(
         {
             "tool_calls": [],
@@ -220,7 +221,68 @@ async def test_generate_response_prompt_cache_enabled_wraps_system_prompt_and_re
     assert len(events) == 1
     assert events[0]["prompt_tokens"] == 100
     assert events[0]["prompt_cached_tokens"] == 64
+    assert events[0]["prompt_cache_write_tokens"] == 16
+    assert events[0]["uncached_prompt_tokens"] == 36
     assert events[0]["prompt_cache_hit_rate"] == pytest.approx(0.64)
+
+
+@pytest.mark.asyncio
+async def test_generate_response_retries_invalid_json_once_and_accumulates_usage(
+    temp_db_path,
+):
+    first_usage = MagicMock()
+    first_usage.prompt_tokens = 100
+    first_usage.prompt_tokens_details = {
+        "cached_tokens": 60,
+        "cache_write_tokens": 0,
+    }
+    first_usage.completion_tokens = 5
+    first_usage.total_tokens = 105
+    second_usage = MagicMock()
+    second_usage.prompt_tokens = 120
+    second_usage.prompt_tokens_details = {
+        "cached_tokens": 60,
+        "cache_write_tokens": 20,
+    }
+    second_usage.completion_tokens = 8
+    second_usage.total_tokens = 128
+    invalid = _mock_chat_response('{"tool_calls": [', usage=first_usage)
+    valid = _mock_chat_response(
+        {
+            "tool_calls": [],
+            "reply_to_message_id": 1,
+            "messages": ["recovered"],
+            "polls": [],
+        },
+        usage=second_usage,
+    )
+    async_create_mock = AsyncMock(side_effect=[invalid, valid])
+
+    with patch.object(llm.client.chat.completions, "create", async_create_mock):
+        result = await llm.generate_response(
+            messages_context=[
+                {"message_id": 1, "sender": "Alice", "user_id": 123, "text": "hi"}
+            ],
+            user_thoughts={},
+            general_memories=[],
+            chat_id=5150,
+            focus_message_id=1,
+        )
+
+    assert result is not None
+    assert result["messages"] == ["recovered"]
+    assert async_create_mock.await_count == 2
+    retry_messages = async_create_mock.await_args_list[1].kwargs["messages"]
+    assert "required JSON schema" in retry_messages[-1]["content"]
+
+    from bot.telemetry import fetch_llm_telemetry
+
+    event = (await fetch_llm_telemetry(chat_id=5150))[0]
+    assert event["response_attempt_count"] == 2
+    assert event["prompt_tokens"] == 220
+    assert event["prompt_cached_tokens"] == 120
+    assert event["prompt_cache_write_tokens"] == 20
+    assert event["uncached_prompt_tokens"] == 100
 
 
 @pytest.mark.asyncio
@@ -914,6 +976,70 @@ def test_build_context_prompt_marks_admin_focus():
         prompt = llm.build_context_prompt(messages, {}, [], focus_message_id=10)
     assert 'focus="true"' in prompt
     assert 'is_admin="true"' in prompt
+
+
+def test_cacheable_history_prefix_keeps_focus_instruction_in_dynamic_tail():
+    messages = [
+        {
+            "message_id": message_id,
+            "sender": "Alice",
+            "user_id": 777 if message_id == 20 else 123,
+            "text": f"message {message_id}",
+        }
+        for message_id in range(1, 23)
+    ]
+    with patch.object(llm, "ADMIN_ID", 777):
+        prompt, boundary = llm._build_context_prompt(
+            messages,
+            {},
+            [],
+            focus_message_id=20,
+            cache_stable_message_count=20,
+        )
+
+    assert boundary is not None
+    assert 'focus="true"' not in prompt[:boundary]
+    assert 'is_admin="true"' not in prompt[:boundary]
+    assert '<active_instruction message_id="20" is_admin="true">' in prompt[boundary:]
+
+    with patch.object(llm, "LLM_PROMPT_CACHE", True):
+        content = llm._cacheable_context_content(prompt, boundary)
+    assert isinstance(content, list)
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert content[0]["text"] + content[1]["text"] == prompt
+
+
+def test_cacheable_history_prefix_stays_identical_while_tail_grows():
+    def build_messages(last_message_id: int) -> list[dict]:
+        return [
+            {
+                "message_id": message_id,
+                "sender": "Alice",
+                "user_id": 123,
+                "text": f"message {message_id}",
+            }
+            for message_id in range(1, last_message_id + 1)
+        ]
+
+    first_prompt, first_boundary = llm._build_context_prompt(
+        build_messages(21),
+        {},
+        [],
+        focus_message_id=21,
+        cache_stable_message_count=20,
+    )
+    second_prompt, second_boundary = llm._build_context_prompt(
+        build_messages(22),
+        {},
+        [],
+        focus_message_id=22,
+        cache_stable_message_count=20,
+    )
+
+    assert first_boundary is not None
+    assert second_boundary is not None
+    assert first_prompt[:first_boundary] == second_prompt[:second_boundary]
+    assert first_prompt[first_boundary:] != second_prompt[second_boundary:]
 
 
 def test_build_context_prompt_includes_behavior_settings():

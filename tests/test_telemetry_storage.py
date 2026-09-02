@@ -81,7 +81,19 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
         "saved_media_policy": {"mode": "normal", "max_items": 1, "guidance": "use sparingly"},
         "prompt_tokens": 42,
         "prompt_cached_tokens": 24,
+        "prompt_cache_write_tokens": 11,
+        "uncached_prompt_tokens": 18,
         "prompt_cache_hit_rate": 24 / 42,
+        "response_id": "generation-1",
+        "response_model": "provider-model",
+        "provider": "provider-a",
+        "system_prompt_hash": "system-hash",
+        "context_prompt_hash": "context-hash",
+        "cache_prefix_hash": "prefix-hash",
+        "cache_prefix_chars": 500,
+        "cache_stable_message_count": 20,
+        "prompt_sections": {"working_memory": {"chars": 100, "sha256": "abc"}},
+        "response_attempt_count": 2,
         "completion_tokens": 7,
         "total_tokens": 49,
     }
@@ -107,7 +119,17 @@ async def test_record_and_fetch_llm_telemetry(temp_db_path):
     assert row["pending_scheduled_actions"][0]["action_type"] == "reply"
     assert row["response_media"] == {"media_unique_id": "photo_u1", "media_type": "photo", "description": "some image"}
     assert row["prompt_cached_tokens"] == 24
+    assert row["prompt_cache_write_tokens"] == 11
+    assert row["uncached_prompt_tokens"] == 18
     assert row["prompt_cache_hit_rate"] == pytest.approx(24 / 42)
+    assert row["response_id"] == "generation-1"
+    assert row["response_model"] == "provider-model"
+    assert row["provider"] == "provider-a"
+    assert row["cache_prefix_hash"] == "prefix-hash"
+    assert row["cache_prefix_chars"] == 500
+    assert row["cache_stable_message_count"] == 20
+    assert row["prompt_sections"]["working_memory"]["chars"] == 100
+    assert row["response_attempt_count"] == 2
     assert row["saved_media_options"] == [
         {
             "media_unique_id": "photo_u1",

@@ -237,6 +237,31 @@ async def test_saved_media_options_rotate_used_items_and_support_exclusions(temp
 
 
 @pytest.mark.asyncio
+async def test_saved_media_options_rank_description_matches_before_base_order(
+    temp_db_path,
+):
+    chat_id = 2468
+    await memory.save_reusable_media(
+        chat_id, "sticker_cat", "file_cat", "sticker", "sleepy orange cat"
+    )
+    await memory.save_reusable_media(
+        chat_id, "sticker_party", "file_party", "sticker", "dancing party lights"
+    )
+    await memory.save_reusable_media(
+        chat_id, "sticker_coffee", "file_coffee", "sticker", "tired coffee cup"
+    )
+
+    options = await memory.get_saved_media_options(
+        chat_id,
+        limit=2,
+        query="that sleepy cat looks exhausted",
+    )
+
+    assert options[0]["media_unique_id"] == "sticker_cat"
+    assert len(options) == 2
+
+
+@pytest.mark.asyncio
 async def test_saved_sticker_favorites_persist_rank_first_and_filter_by_type(temp_db_path):
     chat_id = 65432
     await memory.save_reusable_media(chat_id, "photo", "p1", "photo", "photo", 1)
@@ -357,6 +382,34 @@ async def test_research_notes_save_and_related_retrieve(temp_db_path):
     notes = await memory.get_recent_research_notes(chat_id, limit=5)
     assert len(notes) == 1
     assert "price cuts" in notes[0]["result"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_research_requires_two_query_title_terms_and_truncates_result(
+    temp_db_path,
+):
+    chat_id = 4343
+    result = "Gemini cache pricing details. " + ("x" * 3000)
+    note_id = await memory.save_research_note(
+        chat_id,
+        "Gemini prompt cache pricing",
+        result,
+    )
+    assert note_id is not None
+
+    unrelated = await memory.get_prompt_relevant_research_notes(
+        chat_id,
+        "white background sticker",
+    )
+    related = await memory.get_prompt_relevant_research_notes(
+        chat_id,
+        "How does Gemini cache pricing work?",
+    )
+
+    assert unrelated == []
+    assert len(related) == 1
+    assert related[0]["id"] == note_id
+    assert len(related[0]["result"]) == memory.PROMPT_RESEARCH_RESULT_LEN
 
 
 @pytest.mark.asyncio

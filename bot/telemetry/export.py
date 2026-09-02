@@ -31,12 +31,26 @@ def build_llm_telemetry_export(
                 "latency_ms": event.get("latency_ms"),
                 "prompt_tokens": event.get("prompt_tokens"),
                 "prompt_cached_tokens": event.get("prompt_cached_tokens"),
+                "prompt_cache_write_tokens": event.get("prompt_cache_write_tokens"),
+                "uncached_prompt_tokens": event.get("uncached_prompt_tokens"),
                 "prompt_cache_hit_rate": event.get("prompt_cache_hit_rate"),
                 "completion_tokens": event.get("completion_tokens"),
                 "total_tokens": event.get("total_tokens"),
                 "context_message_count": event.get("context_message_count", 0),
                 "context_chars": event.get("context_chars", 0),
                 "system_prompt_chars": event.get("system_prompt_chars", 0),
+                "system_prompt_hash": event.get("system_prompt_hash"),
+                "context_prompt_hash": event.get("context_prompt_hash"),
+                "cache_prefix_hash": event.get("cache_prefix_hash"),
+                "cache_prefix_chars": event.get("cache_prefix_chars", 0),
+                "cache_stable_message_count": event.get(
+                    "cache_stable_message_count", 0
+                ),
+                "prompt_sections": event.get("prompt_sections", {}),
+                "response_attempt_count": event.get("response_attempt_count", 1),
+                "response_id": event.get("response_id"),
+                "response_model": event.get("response_model"),
+                "provider": event.get("provider"),
                 "user_thought_count": event.get("user_thought_count", 0),
                 "retrieved_memory_count": event.get("retrieved_memory_count", 0),
                 "memory_query": event.get("memory_query"),
@@ -61,7 +75,7 @@ def build_llm_telemetry_export(
         )
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_for": "llm_context_engineering_review",
         "filters": filters,
         "persona_prompt": persona_prompt,

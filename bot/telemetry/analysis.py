@@ -91,6 +91,14 @@ def summarize_telemetry(events: list[dict]) -> dict:
             "avg_prompt_tokens": None,
             "avg_prompt_cached_tokens": None,
             "avg_prompt_cache_hit_rate": None,
+            "weighted_prompt_cache_hit_rate": None,
+            "prompt_cache_hit_call_rate": None,
+            "avg_prompt_cache_write_tokens": None,
+            "avg_uncached_prompt_tokens": None,
+            "total_prompt_tokens": 0,
+            "total_prompt_cached_tokens": 0,
+            "total_prompt_cache_write_tokens": 0,
+            "total_uncached_prompt_tokens": 0,
             "avg_completion_tokens": None,
             "avg_saved_media_option_count": None,
             "latest_errors": [],
@@ -162,6 +170,70 @@ def summarize_telemetry(events: list[dict]) -> dict:
     )
     avg_prompt_cache_hit_rate = _safe_average(
         [event.get("prompt_cache_hit_rate") for event in events]
+    )
+    prompt_usage_events = [
+        event
+        for event in events
+        if isinstance(event.get("prompt_tokens"), (int, float))
+        and event.get("prompt_tokens", 0) > 0
+    ]
+    total_prompt_tokens = sum(
+        int(event.get("prompt_tokens") or 0) for event in prompt_usage_events
+    )
+    total_prompt_cached_tokens = sum(
+        min(
+            int(event.get("prompt_tokens") or 0),
+            max(0, int(event.get("prompt_cached_tokens") or 0)),
+        )
+        for event in prompt_usage_events
+    )
+    total_prompt_cache_write_tokens = sum(
+        max(0, int(event.get("prompt_cache_write_tokens") or 0))
+        for event in prompt_usage_events
+    )
+    total_uncached_prompt_tokens = sum(
+        max(
+            0,
+            int(
+                event.get("uncached_prompt_tokens")
+                if event.get("uncached_prompt_tokens") is not None
+                else int(event.get("prompt_tokens") or 0)
+                - int(event.get("prompt_cached_tokens") or 0)
+            ),
+        )
+        for event in prompt_usage_events
+    )
+    weighted_prompt_cache_hit_rate = (
+        total_prompt_cached_tokens / total_prompt_tokens
+        if total_prompt_tokens > 0
+        else None
+    )
+    prompt_cache_hit_call_rate = (
+        sum(
+            1
+            for event in prompt_usage_events
+            if int(event.get("prompt_cached_tokens") or 0) > 0
+        )
+        / len(prompt_usage_events)
+        if prompt_usage_events
+        else None
+    )
+    avg_prompt_cache_write_tokens = _safe_average(
+        [event.get("prompt_cache_write_tokens") for event in events]
+    )
+    avg_uncached_prompt_tokens = _safe_average(
+        [
+            (
+                event.get("uncached_prompt_tokens")
+                if event.get("uncached_prompt_tokens") is not None
+                else max(
+                    0,
+                    int(event.get("prompt_tokens") or 0)
+                    - int(event.get("prompt_cached_tokens") or 0),
+                )
+            )
+            for event in prompt_usage_events
+        ]
     )
     avg_completion_tokens = _safe_average(
         [event.get("completion_tokens") for event in events]
@@ -258,6 +330,14 @@ def summarize_telemetry(events: list[dict]) -> dict:
         "avg_prompt_tokens": avg_prompt_tokens,
         "avg_prompt_cached_tokens": avg_prompt_cached_tokens,
         "avg_prompt_cache_hit_rate": avg_prompt_cache_hit_rate,
+        "weighted_prompt_cache_hit_rate": weighted_prompt_cache_hit_rate,
+        "prompt_cache_hit_call_rate": prompt_cache_hit_call_rate,
+        "avg_prompt_cache_write_tokens": avg_prompt_cache_write_tokens,
+        "avg_uncached_prompt_tokens": avg_uncached_prompt_tokens,
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_prompt_cached_tokens": total_prompt_cached_tokens,
+        "total_prompt_cache_write_tokens": total_prompt_cache_write_tokens,
+        "total_uncached_prompt_tokens": total_uncached_prompt_tokens,
         "avg_completion_tokens": avg_completion_tokens,
         "avg_saved_media_option_count": avg_saved_media_option_count,
         "latest_errors": latest_errors,
@@ -298,8 +378,8 @@ def build_context_engineering_suggestions(events: list[dict]) -> list[str]:
 
     if "invalid_json" in error_statuses or "validation_error" in error_statuses:
         suggestions.append(
-            "Add stricter JSON-only examples that include both `messages` and "
-            "`tool_calls` so the model returns valid structured output."
+            "Inspect malformed responses that survived the automatic retry, then "
+            "tighten the JSON examples or schema language around the failing field."
         )
 
     if no_reply_rate >= 0.50:
@@ -311,8 +391,8 @@ def build_context_engineering_suggestions(events: list[dict]) -> list[str]:
 
     if avg_context_chars >= 8000 or max_context_chars >= 16000:
         suggestions.append(
-            "Reduce working-memory length or summarize older chat history before "
-            "prompt assembly; context prompts are too large."
+            "Inspect `prompt_sections` and trim related research or saved-media "
+            "galleries before shortening the 20-message working memory."
         )
 
     if avg_retrieved_memory_count < 1 and total_events >= 5:

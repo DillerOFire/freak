@@ -255,6 +255,22 @@ def test_format_env_panel_lists_prompt_cache(env_file):
     assert "LLM_PROMPT_CACHE=true" in panel
 
 
+def test_set_env_value_updates_history_cache_runtime(env_file, monkeypatch):
+    env_file.write_text("LLM_HISTORY_CACHE=false\n", encoding="utf-8")
+    monkeypatch.setenv("LLM_HISTORY_CACHE", "false")
+    import config
+
+    config.LLM_HISTORY_CACHE = False
+
+    restart_required, message = env_config.set_env_value("LLM_HISTORY_CACHE", "true")
+
+    assert restart_required is False
+    assert "Updated LLM_HISTORY_CACHE" in message
+    assert "LLM_HISTORY_CACHE=true" in env_file.read_text(encoding="utf-8")
+    assert os.environ["LLM_HISTORY_CACHE"] == "true"
+    assert config.LLM_HISTORY_CACHE is True
+
+
 
 def test_format_env_panel_lists_masked_values(env_file):
     env_file.write_text(
