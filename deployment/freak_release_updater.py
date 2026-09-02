@@ -138,14 +138,15 @@ def compose_project(target: Target) -> tuple[str, Path]:
     try:
         labels = json.loads(raw_labels)
         project = labels["com.docker.compose.project"]
-        files = labels["com.docker.compose.project.config_files"].split(",")
+        files = [Path(value) for value in labels["com.docker.compose.project.config_files"].split(",")]
         working_dir = Path(labels["com.docker.compose.project.working_dir"])
     except (json.JSONDecodeError, KeyError, AttributeError) as error:
         raise ValueError(f"{target.name} is not managed by one Compose project") from error
-    if not isinstance(project, str) or len(files) != 1:
-        raise ValueError(f"{target.name} does not have one usable Compose source")
-    compose = Path(files[0])
-    if not compose.is_file() or compose.parent != working_dir:
+    base_files = [path for path in files if path.parent == working_dir]
+    if not isinstance(project, str) or len(base_files) != 1:
+        raise ValueError(f"{target.name} does not have one usable base Compose source")
+    compose = base_files[0]
+    if not compose.is_file():
         raise ValueError(f"{target.name} Compose metadata does not describe its live project")
     return project, compose
 
