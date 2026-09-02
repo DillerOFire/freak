@@ -27,6 +27,13 @@ from bot.media_utils import (
     ytdlp_manager,
 )
 from bot.vision import analyze_image, analyze_frames
+from bot.persona_output import (
+    OutputActionReport,
+    apply_output_actions,
+    infer_output_kind,
+    record_reaction_state,
+    record_sent_output,
+)
 from config import ADMIN_ID
 import os
 import re
@@ -130,7 +137,7 @@ async def _complete_ponder_followup(
     context: ContextTypes.DEFAULT_TYPE,
     settings_chat_id: int,
     requesting_user_id: int | None = None,
-) -> None:
+) -> OutputActionReport:
     ponder_result = await run_ponder_agent(
         ponder_query,
         chat_id,
@@ -167,8 +174,7 @@ async def _complete_ponder_followup(
     )
 
     if response2:
-        await _send_llm_response(response2, chat_id, bot_username, context)
-        return
+        return await _send_llm_response(response2, chat_id, bot_username, context)
 
     logging.error(
         "Ponder follow-up LLM returned no reply (query=%r, result=%r)",
@@ -183,6 +189,7 @@ async def _complete_ponder_followup(
         )
     except Exception as e:
         logging.error(f"Failed to send ponder fallback message: {e}")
+    return OutputActionReport()
 
 
 def add_message_to_history(
@@ -196,6 +203,9 @@ def add_message_to_history(
     reply_to_text: str | None = None,
     media_unique_id: str | None = None,
     is_saved_media_reply: bool = False,
+    reply_to_user_id: int | None = None,
+    reply_to_is_own: bool = False,
+    is_own: bool = False,
 ):
     # Initialize chat history if needed
     if chat_id not in chat_history:
@@ -211,6 +221,12 @@ def add_message_to_history(
         "reply_to_username": reply_to_username,
         "reply_to_text": reply_to_text,
     }
+    if reply_to_user_id is not None:
+        entry["reply_to_user_id"] = reply_to_user_id
+    if reply_to_is_own:
+        entry["reply_to_is_own"] = True
+    if is_own:
+        entry["is_own"] = True
     if media_unique_id:
         entry["media_unique_id"] = media_unique_id
     if is_saved_media_reply:
@@ -542,7 +558,14 @@ async def _send_llm_response(
     chat_id: int,
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+) -> OutputActionReport:
+    history = chat_history.get(chat_id, ())
+    action_report = await apply_output_actions(
+        context.bot,
+        chat_id,
+        response.get("tool_calls", []),
+        history,
+    )
     reply_to = response.get("reply_to_message_id")
     reply_pending = reply_to is not None
 
@@ -575,7 +598,9 @@ async def _send_llm_response(
                         reply_to_id=current_reply_to,
                         reply_to_username=None,
                         reply_to_text=None,
+                        is_own=True,
                     )
+                    await record_sent_output(chat_id, sent_msg, "text", msg_text)
             except Exception as e:
                 logging.error(f"Failed to send message part: {e}")
             reply_pending = False
@@ -606,6 +631,13 @@ async def _send_llm_response(
                             reply_to_text=None,
                             media_unique_id=media_id,
                             is_saved_media_reply=True,
+                            is_own=True,
+                        )
+                        await record_sent_output(
+                            chat_id,
+                            sent_media_msg,
+                            m_type,
+                            f"[Bot sent saved {m_type}: {m_desc}]",
                         )
                 else:
                     logging.error(f"Saved media row missing for id: {media_id}")
@@ -633,9 +665,18 @@ async def _send_llm_response(
                     reply_to_id=None,
                     reply_to_username=None,
                     reply_to_text=None,
+                    is_own=True,
+                )
+                await record_sent_output(
+                    chat_id,
+                    sent_poll,
+                    "poll",
+                    f"[Poll] {poll['question']}: {' | '.join(poll['options'])}",
                 )
         except Exception as e:
             logging.error(f"Failed to send poll: {e}")
+
+    return action_report
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -759,10 +800,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_to_id = None
     reply_to_username = None
     reply_to_text = None
+    reply_to_user_id = None
+    reply_to_is_own = False
 
     if update.message.reply_to_message:
         reply_to_msg = update.message.reply_to_message
         reply_to_id = reply_to_msg.message_id
+        reply_to_user_id = reply_to_msg.from_user.id
         reply_to_username = (
             reply_to_msg.from_user.username or reply_to_msg.from_user.first_name
         )
@@ -770,6 +814,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not reply_to_text:
             reply_desc, _ = await get_message_media_description(reply_to_msg)
             reply_to_text = reply_desc if reply_desc else "[Media]"
+        bot_id = getattr(context.bot, "id", None)
+        reply_to_is_own = (
+            isinstance(bot_id, int)
+            and not isinstance(bot_id, bool)
+            and reply_to_user_id == bot_id
+        )
+        if reply_to_is_own:
+            await record_sent_output(
+                chat_id,
+                reply_to_msg,
+                infer_output_kind(reply_to_msg),
+                reply_to_text,
+            )
 
     sender_name = user.username or user.first_name
     if getattr(user, "is_bot", False):
@@ -785,11 +842,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_username,
         reply_to_text,
         media_unique_id,
+        reply_to_user_id=reply_to_user_id,
+        reply_to_is_own=reply_to_is_own,
     )
 
     bot_username = context.bot.username
     if not bot_username:
         bot_username = "@Bot"
+
+    deliberate_reaction_ids: set[int] = set()
 
     if await should_reply(update.message, f"@{bot_username}", chat_id):
         logging.info("Decided to reply...")
@@ -848,7 +909,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ponder_query: str | None = None
 
             if ponder_calls:
-                await _send_llm_response(response, chat_id, bot_username, context)
+                report = await _send_llm_response(
+                    response, chat_id, bot_username, context
+                )
+                deliberate_reaction_ids.update(
+                    report.deliberately_reacted_message_ids
+                )
                 ponder_query = _enrich_ponder_query_with_sources(
                     ponder_calls[0]["arguments"].get("query", ""), text, reply_to_text,
                 )
@@ -856,15 +922,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.warning(
                     "LLM promised research without ponder tool_call; running fallback ponder"
                 )
-                await _send_llm_response(response, chat_id, bot_username, context)
+                report = await _send_llm_response(
+                    response, chat_id, bot_username, context
+                )
+                deliberate_reaction_ids.update(
+                    report.deliberately_reacted_message_ids
+                )
                 ponder_query = _enrich_ponder_query_with_sources(
                     _derive_ponder_query(text, memory_query), text, reply_to_text,
                 )
             else:
-                await _send_llm_response(response, chat_id, bot_username, context)
+                report = await _send_llm_response(
+                    response, chat_id, bot_username, context
+                )
+                deliberate_reaction_ids.update(
+                    report.deliberately_reacted_message_ids
+                )
 
             if ponder_query:
-                await _complete_ponder_followup(
+                followup_report = await _complete_ponder_followup(
                     ponder_query=ponder_query,
                     chat_id=chat_id,
                     message_id=message_id,
@@ -878,9 +954,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     settings_chat_id=settings_chat_id,
                     requesting_user_id=user.id,
                 )
+                deliberate_reaction_ids.update(
+                    followup_report.deliberately_reacted_message_ids
+                )
 
     # Reaction Logic
-    if await should_react(chat_id, user.id):
+    if message_id not in deliberate_reaction_ids and await should_react(chat_id, user.id):
         logging.info("Decided to react...")
         emoji = await generate_reaction(text)
         if emoji:
@@ -889,5 +968,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.set_message_reaction(
                     chat_id=chat_id, message_id=message_id, reaction=emoji
                 )
+                await record_reaction_state(chat_id, message_id, emoji)
             except Exception as e:
                 logging.error(f"Failed to set reaction: {e}")

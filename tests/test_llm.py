@@ -607,6 +607,86 @@ def test_llm_response_decodes_html_entities():
 
 
 @pytest.mark.asyncio
+async def test_generate_response_keeps_output_mutation_only_response(temp_db_path):
+    mock_choice = MagicMock()
+    mock_message = MagicMock()
+    mock_message.content = json.dumps(
+        {
+            "tool_calls": [
+                {
+                    "name": "delete_own_message",
+                    "arguments": {"message_id": 44, "reason": "real regret"},
+                }
+            ],
+            "messages": [],
+            "polls": [],
+        }
+    )
+    mock_choice.message = mock_message
+    mock_response = MagicMock(usage=None, choices=[mock_choice])
+
+    with patch.object(
+        llm.client.chat.completions,
+        "create",
+        AsyncMock(return_value=mock_response),
+    ):
+        result = await llm.generate_response(
+            messages_context=[
+                {
+                    "message_id": 44,
+                    "sender": "freak_bot",
+                    "user_id": 9001,
+                    "text": "delete me",
+                    "is_own": True,
+                }
+            ],
+            user_thoughts={},
+            general_memories=[],
+            chat_id=9999,
+            focus_message_id=44,
+        )
+
+    assert result is not None
+    assert result["messages"] == []
+    assert result["tool_calls"][0]["name"] == "delete_own_message"
+
+
+def test_build_context_marks_owned_replied_and_deleted_messages():
+    prompt = llm.build_context_prompt(
+        [
+            {
+                "message_id": 1,
+                "sender": "freak_bot",
+                "user_id": 9001,
+                "text": "old take",
+                "is_own": True,
+                "edited": True,
+                "deleted": True,
+            },
+            {
+                "message_id": 2,
+                "sender": "alice",
+                "user_id": 7,
+                "text": "this one",
+                "reply_to_username": "freak_bot",
+                "reply_to_id": 90,
+                "reply_to_user_id": 9001,
+                "reply_to_text": "outside working memory",
+                "reply_to_is_own": True,
+            },
+        ],
+        {},
+        [],
+    )
+
+    assert 'own="true"' in prompt
+    assert 'edited="true"' in prompt
+    assert 'deleted="true"' in prompt
+    assert 'reply_to_own="true"' in prompt
+    assert 'reply_to_id="90"' in prompt
+
+
+@pytest.mark.asyncio
 async def test_generate_response_media_only_success(temp_db_path):
     mock_messages_context = [
         {"message_id": 1, "sender": "Alice", "user_id": 123, "text": "Hello bot"}

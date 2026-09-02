@@ -28,6 +28,7 @@ from bot.memory import (
     set_config,
     get_relevant_research_notes,
     save_research_note,
+    search_persona_outputs,
 )
 from bot.logic import (
     get_behavior_settings,
@@ -135,6 +136,7 @@ Available tools:
 - web_search: Search the web for current information. Input: search query string.
 - fetch_web_page: Fetch and read a web page. Input: full URL (https only). Returns page text.
 - recall_memories: Search bot's memory database for information about users or topics. Input: search query string.
+- search_own_outputs: Search messages previously sent by the RP bot in this chat. Input: message ID or text description. Read-only; return exact candidate IDs for the RP bot to decide what to do.
 - update_user_thought: Update internal thoughts/opinion about a user. Input: JSON object with user_id (int), username (str), thought (str).
 - add_general_memory: Add a shared general memory for this chat. Input: JSON object with topic (str), summary (str), optional importance (int 1-5, default 3).
 - update_general_memory: Update one existing general memory by id. Input: JSON object with memory_id (int) and at least one of topic, summary, importance.
@@ -561,6 +563,25 @@ async def recall_memories(query: str, chat_id: int) -> str:
     return "\n".join(lines)
 
 
+async def search_own_outputs(tool_input: Any, chat_id: int) -> str:
+    if isinstance(tool_input, dict):
+        query = str(tool_input.get("query") or tool_input.get("message_id") or "")
+    else:
+        query = str(tool_input or "")
+    rows = await search_persona_outputs(chat_id, query, limit=10)
+    if not rows:
+        return "No matching messages sent by the RP bot were found in this chat."
+
+    lines: list[str] = []
+    for row in rows:
+        excerpt = str(row.get("text_excerpt") or "[non-text message]")
+        lines.append(
+            f"message_id={row['message_id']}, kind={row['content_kind']}, "
+            f"state={row['state']}, sent_at={row['sent_at']}, excerpt={excerpt!r}"
+        )
+    return "\n".join(lines)
+
+
 def _parse_tool_args(tool_input: Any) -> dict[str, Any]:
     """Normalize tool_input into a dict (JSON object string or already-parsed dict)."""
     if isinstance(tool_input, dict):
@@ -835,6 +856,11 @@ PONDER_TOOLS: dict[str, dict] = {
     "recall_memories": {
         "description": "Search bot's memory database for information about users or topics. Input: search query string.",
         "function": recall_memories,
+        "context": "chat_id",
+    },
+    "search_own_outputs": {
+        "description": "Search messages sent by the RP bot in this chat. Input: message ID or text description. Read-only.",
+        "function": search_own_outputs,
         "context": "chat_id",
     },
     "update_user_thought": {
@@ -1251,4 +1277,3 @@ async def run_ponder_agent(
             )
         except Exception as telemetry_error:
             logging.error("Failed to record ponder telemetry: %s", telemetry_error)
-

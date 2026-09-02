@@ -18,6 +18,7 @@ from config import (
     reasoning_extra_body,
 )
 from bot.messages import AvailableReactions
+from bot.persona_output import OUTPUT_MUTATION_TOOL_NAMES
 from bot.memory import (
     update_user_thought,
     add_general_memory,
@@ -166,6 +167,9 @@ class LLMToolCall(BaseModel):
         "cancel_scheduled_action",
         "set_event_state",
         "clear_event_state",
+        "edit_own_message",
+        "delete_own_message",
+        "set_own_reactions",
     ]
     arguments: dict[str, Any]
 
@@ -307,6 +311,9 @@ You have access to the following tools:
     - Soft keys: `mood`, `angry`, `quiet`, `excited`, … — affect how you sound.
     - `ignore`: cold shoulder for the whole chat (no target) or one user (`target_user_id`). Not a hard mute on direct pings — you still choose whether to answer.
 13. clear_event_state(state_id?: int, state_key?: str, target_user_id?: int): Drop a vibe early when you're over it.
+14. edit_own_message(message_id: int, replacement_text: str, reason: str): Edit one text message or caption that you sent. The reason is private.
+15. delete_own_message(message_id: int, reason: str): Delete one message that you sent. The reason is private.
+16. set_own_reactions(changes: list, reason: str): Deliberately set, change, or remove your reactions on up to 20 messages. Each change is {"message_id": int, "emoji": allowed_emoji_or_null}. null removes your reaction. The reason is private.
 
 ADMIN AWARENESS (mandatory):
 - The focused message may carry `is_admin="true"` — that means the sender is the bot admin.
@@ -329,6 +336,17 @@ SCHEDULE & STATE RULES (mandatory):
 - Under `ignore`: prefer empty `messages` on pings; soft moods only change tone.
 - When a deferred plan fires later, speak like you just remembered or the vibe returned — not like a cron job. Rarely apologize for the delay.
 - At most five schedule/state tool calls per response. Delays: ~30s min, 30 days max.
+
+OWN OUTPUT RULES (mandatory):
+- You are lazy and stubborn about revising yourself. Do not review, correct, edit, or delete your messages automatically. Typos, awkward wording, bad takes, and minor factual mistakes usually stay.
+- A user's request does not oblige you to edit or delete anything. You may refuse, ignore them, mock the request, or react according to your persona and current mood.
+- Edit or delete only when you personally have a strong reason, such as real regret, accidental disclosure, the wrong chat/person, or a reaction that fits your character. Never schedule a task just to reconsider your own message later.
+- Do not erase your side of an argument merely to make yourself look right. If people already relied on the old wording, usually send a new correction instead.
+- Use only exact message IDs from working memory, a replied-to message marked reply_to_own="true", or a ponder result from search_own_outputs. Never invent IDs.
+- If the target is unavailable, you may call ponder to search your sent-output index, ask for clarification, or refuse. Ponder only finds candidates; you still decide and perform the edit/delete.
+- One edit or delete per response. One reaction batch per response. A batch may target the visible 20-message working memory and can be petty or repetitive when that honestly fits the persona.
+- For set_own_reactions, use only Telegram reactions from the allowed reaction list. null removes your own reaction. Never claim you removed another person's reaction.
+- Successful edits, deletions, and reaction changes normally need no announcement. Never claim deletion guarantees secrecy; people may have already seen the message.
 
 PONDER RULES (mandatory):
 - If you need live/current information *now*, you MUST call ponder in tool_calls.
@@ -668,6 +686,11 @@ def build_context_prompt(
 ) -> str:
     context_parts = []
     context_parts.append("<conversation_context>")
+    context_parts.append(
+        "  <allowed_bot_reactions>"
+        + ", ".join(AvailableReactions)
+        + "</allowed_bot_reactions>"
+    )
 
     # 2. <working_memory> containing recent messages
     context_parts.append("  <working_memory>")
@@ -681,6 +704,12 @@ def build_context_prompt(
             attrs.append(f'reply_to={_xml_attr(msg["reply_to_username"])}')
             if msg.get("reply_to_id") is not None:
                 attrs.append(f'reply_to_id={_xml_attr(msg["reply_to_id"])}')
+            if msg.get("reply_to_user_id") is not None:
+                attrs.append(
+                    f'reply_to_sender_id={_xml_attr(msg["reply_to_user_id"])}'
+                )
+            if msg.get("reply_to_is_own"):
+                attrs.append('reply_to_own="true"')
             if msg.get("reply_to_text"):
                 r_text = msg["reply_to_text"]
                 if len(r_text) > 500:
@@ -688,6 +717,12 @@ def build_context_prompt(
                 attrs.append(f'reply_excerpt={_xml_attr(r_text)}')
         if msg.get("media_unique_id"):
             attrs.append(f'media_unique_id={_xml_attr(msg["media_unique_id"])}')
+        if msg.get("is_own"):
+            attrs.append('own="true"')
+        if msg.get("edited"):
+            attrs.append('edited="true"')
+        if msg.get("deleted"):
+            attrs.append('deleted="true"')
 
         if focus_message_id and msg["message_id"] == focus_message_id:
             attrs.append('focus="true"')
@@ -1050,6 +1085,13 @@ async def generate_response(
                         )
                         continue
 
+                    if name in OUTPUT_MUTATION_TOOL_NAMES:
+                        logging.info(
+                            "Output mutation deferred to Telegram delivery: %s",
+                            name,
+                        )
+                        continue
+
                     if (
                         name in READ_ONLY_TOOLS
                         or name in MEMORY_MUTATION_TOOLS
@@ -1100,7 +1142,16 @@ async def generate_response(
 
                 has_ponder = any(tc.name == "ponder" for tc in parsed.tool_calls) and extra_context is None
                 has_schedule = any(tc.name in SCHEDULE_TOOLS for tc in parsed.tool_calls)
-                if sanitized_messages or parsed.polls or has_ponder or has_schedule:
+                has_output_mutation = any(
+                    tc.name in OUTPUT_MUTATION_TOOL_NAMES for tc in parsed.tool_calls
+                )
+                if (
+                    sanitized_messages
+                    or parsed.polls
+                    or has_ponder
+                    or has_schedule
+                    or has_output_mutation
+                ):
                     status = "success"
                     return parsed.model_dump()
                 else:

@@ -166,6 +166,36 @@ async def init_db():
             ON event_states(chat_id, active, expires_at)
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS persona_outputs (
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                content_kind TEXT NOT NULL
+                    CHECK(content_kind IN ('text', 'caption', 'photo', 'sticker', 'animation', 'poll', 'media')),
+                text_excerpt TEXT,
+                state TEXT NOT NULL DEFAULT 'active'
+                    CHECK(state IN ('active', 'edited', 'deleted')),
+                sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                changed_at TEXT,
+                PRIMARY KEY (chat_id, message_id)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_persona_outputs_chat_sent
+            ON persona_outputs(chat_id, sent_at DESC, message_id DESC)
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS persona_reactions (
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                emoji TEXT,
+                state TEXT NOT NULL DEFAULT 'active'
+                    CHECK(state IN ('active', 'removed')),
+                reacted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                changed_at TEXT,
+                PRIMARY KEY (chat_id, message_id)
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS research_notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
@@ -1198,6 +1228,176 @@ async def get_daily_task(chat_id: int):
             "SELECT * FROM daily_tasks WHERE chat_id = ?", (chat_id,)
         ) as cursor:
             return await cursor.fetchone()
+
+
+# ---------------------------------------------------------------------------
+# Persona output index (ownership checks and old-message lookup)
+# ---------------------------------------------------------------------------
+
+PERSONA_OUTPUT_KINDS = frozenset(
+    {"text", "caption", "photo", "sticker", "animation", "poll", "media"}
+)
+MAX_PERSONA_OUTPUT_EXCERPT_LEN = 1000
+
+
+def _normalize_persona_output_time(value: object | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(datetime.timezone.utc)
+        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    text = str(value).strip()
+    return text[:40] or None
+
+
+async def record_persona_output(
+    chat_id: int,
+    message_id: int,
+    content_kind: str,
+    text: str | None = None,
+    *,
+    sent_at: object | None = None,
+) -> bool:
+    """Record an outgoing persona message without reviving an old terminal row."""
+    content_kind = str(content_kind).strip().lower()
+    if content_kind not in PERSONA_OUTPUT_KINDS:
+        raise ValueError(f"Invalid persona output kind: {content_kind}")
+    excerpt = str(text or "").strip()[:MAX_PERSONA_OUTPUT_EXCERPT_LEN] or None
+    normalized_time = _normalize_persona_output_time(sent_at)
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO persona_outputs (
+                chat_id, message_id, content_kind, text_excerpt, sent_at
+            ) VALUES (?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+            ON CONFLICT(chat_id, message_id) DO NOTHING
+            """,
+            (chat_id, message_id, content_kind, excerpt, normalized_time),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_persona_output(chat_id: int, message_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM persona_outputs WHERE chat_id = ? AND message_id = ?",
+            (chat_id, message_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def mark_persona_output_edited(
+    chat_id: int, message_id: int, replacement_text: str
+) -> bool:
+    excerpt = replacement_text.strip()[:MAX_PERSONA_OUTPUT_EXCERPT_LEN]
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            UPDATE persona_outputs
+            SET state = 'edited', text_excerpt = ?,
+                changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE chat_id = ? AND message_id = ? AND state IN ('active', 'edited')
+            """,
+            (excerpt, chat_id, message_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def mark_persona_output_deleted(chat_id: int, message_id: int) -> bool:
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            UPDATE persona_outputs
+            SET state = 'deleted',
+                changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE chat_id = ? AND message_id = ? AND state IN ('active', 'edited')
+            """,
+            (chat_id, message_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def search_persona_outputs(
+    chat_id: int, query: str, *, limit: int = 10
+) -> list[dict]:
+    """Search the bot's own sent-message index within one chat."""
+    query = str(query or "").strip()[:500]
+    limit = max(1, min(int(limit), 20))
+    id_match = re.search(r"\bmessage(?:_id)?\s*[=:]?\s*(\d+)\b", query, re.I)
+    if query.isdigit():
+        exact_id = int(query)
+    elif id_match:
+        exact_id = int(id_match.group(1))
+    else:
+        exact_id = None
+    search_terms = [query.lower()] if query else []
+    for token in re.findall(r"[\w-]{3,}", query.lower()):
+        if token not in search_terms:
+            search_terms.append(token)
+        if len(search_terms) >= 8:
+            break
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        if exact_id is not None:
+            sql = """
+                SELECT * FROM persona_outputs
+                WHERE chat_id = ? AND message_id = ?
+                ORDER BY sent_at DESC
+                LIMIT ?
+            """
+            params: tuple = (chat_id, exact_id, limit)
+        elif query:
+            predicates = " OR ".join(
+                "lower(COALESCE(text_excerpt, '')) LIKE ?" for _ in search_terms
+            )
+            sql = f"""
+                SELECT * FROM persona_outputs
+                WHERE chat_id = ? AND ({predicates})
+                ORDER BY sent_at DESC, message_id DESC
+                LIMIT ?
+            """
+            params = (chat_id, *(f"%{term}%" for term in search_terms), limit)
+        else:
+            sql = """
+                SELECT * FROM persona_outputs
+                WHERE chat_id = ?
+                ORDER BY sent_at DESC, message_id DESC
+                LIMIT ?
+            """
+            params = (chat_id, limit)
+        async with db.execute(sql, params) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def record_persona_reaction(
+    chat_id: int, message_id: int, emoji: str | None
+) -> None:
+    state = "active" if emoji else "removed"
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO persona_reactions (
+                chat_id, message_id, emoji, state, reacted_at, changed_at
+            ) VALUES (
+                ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            )
+            ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                emoji = excluded.emoji,
+                state = excluded.state,
+                changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            """,
+            (chat_id, message_id, emoji, state),
+        )
+        await db.commit()
 
 
 # ---------------------------------------------------------------------------

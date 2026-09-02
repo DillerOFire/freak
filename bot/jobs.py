@@ -88,13 +88,16 @@ async def execute_daily_task_callback(context: ContextTypes.DEFAULT_TYPE):
             memory_query=task_content,
         )
 
-        if response_json and response_json.get("messages"):
-            for msg_text in response_json["messages"]:
-                msg_text = msg_text.strip()
-                if msg_text:
-                    await context.bot.send_message(
-                        chat_id=chat_id, text=msg_text
-                    )
+        if response_json:
+            from bot.handlers import _send_llm_response
+
+            bot_username = context.bot.username or "Bot"
+            await _send_llm_response(
+                response_json,
+                chat_id,
+                str(bot_username),
+                context,
+            )
 
     except Exception as e:
         logging.error(f"Failed to execute daily task for {chat_id}: {e}")

@@ -9,6 +9,9 @@ def mock_context(mock_context):
     mock_context.bot.send_video = AsyncMock()
     mock_context.bot.send_poll = AsyncMock(return_value=MagicMock(message_id=777, from_user=MagicMock(id=999)))
     mock_context.bot.set_message_reaction = AsyncMock()
+    mock_context.bot.delete_message = AsyncMock(return_value=True)
+    mock_context.bot.edit_message_text = AsyncMock(return_value=True)
+    mock_context.bot.edit_message_caption = AsyncMock(return_value=True)
     mock_context.bot.send_photo = AsyncMock(return_value=MagicMock(message_id=888, from_user=MagicMock(id=999)))
     mock_context.bot.send_sticker = AsyncMock(return_value=MagicMock(message_id=889, from_user=MagicMock(id=999)))
     mock_context.bot.send_animation = AsyncMock(return_value=MagicMock(message_id=890, from_user=MagicMock(id=999)))
@@ -89,6 +92,97 @@ async def test_handle_message_reaction(temp_db_path, mock_update_handler, mock_c
         mock_context.bot.set_message_reaction.assert_called_once_with(
             chat_id=12345, message_id=ANY, reaction="👍"
         )
+
+
+@pytest.mark.asyncio
+async def test_deliberate_reaction_tool_suppresses_random_reaction(
+    temp_db_path, mock_update_handler, mock_context
+):
+    handlers.chat_history.clear()
+    mock_update_handler.message.text = "annoying"
+    mock_update_handler.message.message_id = 321
+
+    with (
+        patch("bot.handlers.get_paused", return_value=False),
+        patch("bot.handlers.is_whitelisted", AsyncMock(return_value=True)),
+        patch("bot.handlers.should_reply", AsyncMock(return_value=True)),
+        patch("bot.handlers.should_react", AsyncMock(return_value=True)),
+        patch("bot.handlers.generate_reaction", AsyncMock(return_value="👍")) as random_reaction,
+        patch(
+            "bot.handlers.generate_response",
+            AsyncMock(
+                return_value={
+                    "tool_calls": [
+                        {
+                            "name": "set_own_reactions",
+                            "arguments": {
+                                "changes": [{"message_id": 321, "emoji": "🤡"}],
+                                "reason": "being petty",
+                            },
+                        }
+                    ],
+                    "messages": [],
+                    "polls": [],
+                    "reply_to_message_id": None,
+                }
+            ),
+        ),
+        patch(
+            "bot.handlers.get_message_media_description",
+            AsyncMock(return_value=(None, None)),
+        ),
+    ):
+        await handlers.handle_message(mock_update_handler, mock_context)
+
+    mock_context.bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=12345,
+        message_id=321,
+        reaction="🤡",
+    )
+    random_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_pipeline_indexes_then_deletes_own_message(
+    temp_db_path, mock_context
+):
+    chat_id = 12345
+    handlers.chat_history.clear()
+    sent = MagicMock(
+        message_id=456,
+        from_user=MagicMock(id=999),
+        date=None,
+    )
+    mock_context.bot.send_message = AsyncMock(return_value=sent)
+
+    await handlers._send_llm_response(
+        {"messages": ["I will regret this"], "tool_calls": [], "polls": []},
+        chat_id,
+        "freak_bot",
+        mock_context,
+    )
+    report = await handlers._send_llm_response(
+        {
+            "messages": [],
+            "polls": [],
+            "tool_calls": [
+                {
+                    "name": "delete_own_message",
+                    "arguments": {"message_id": 456, "reason": "changed my mind"},
+                }
+            ],
+        },
+        chat_id,
+        "freak_bot",
+        mock_context,
+    )
+
+    mock_context.bot.delete_message.assert_awaited_once_with(
+        chat_id=chat_id,
+        message_id=456,
+    )
+    assert report.deleted_message_ids == {456}
+    assert handlers.chat_history[chat_id][-1]["deleted"] is True
 
 
 @pytest.mark.asyncio

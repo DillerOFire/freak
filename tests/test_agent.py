@@ -10,6 +10,7 @@ from bot.memory import (
     get_general_memories,
     get_relevant_research_notes,
     get_user_thought,
+    record_persona_output,
     save_media_description,
     save_research_note,
     search_media_descriptions,
@@ -425,6 +426,17 @@ async def test_recall_memories_combines_results(temp_db_path):
 async def test_recall_memories_empty(temp_db_path):
     result = await agent.recall_memories("nonexistent-topic-xyz", 99)
     assert result == "No relevant memories found."
+
+
+@pytest.mark.asyncio
+async def test_search_own_outputs_is_scoped_to_chat(temp_db_path):
+    await record_persona_output(42, 700, "text", "the embarrassing pineapple take")
+    await record_persona_output(43, 701, "text", "the embarrassing pineapple take")
+
+    result = await agent.search_own_outputs("pineapple", 42)
+
+    assert "message_id=700" in result
+    assert "message_id=701" not in result
 
 
 def _mock_llm_json_response(payload: dict):
@@ -1097,6 +1109,9 @@ async def test_ponder_tools_include_memory_mutations():
     ):
         assert name in agent.PONDER_TOOLS
         assert agent.PONDER_TOOLS[name]["context"] == "chat_id"
+
+    assert "search_own_outputs" in agent.PONDER_TOOLS
+    assert agent.PONDER_TOOLS["search_own_outputs"]["context"] == "chat_id"
 
 
 @pytest.mark.asyncio
